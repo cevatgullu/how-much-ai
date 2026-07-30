@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { appPassword, createSession, safeEqual, SESSION_COOKIE, SESSION_TTL_MS } from "@/lib/session";
+import { sessionCookiePolicy } from "@/lib/strict-local-mode";
 import {
   createLoginRateLimiter,
   loginClientKey,
@@ -58,10 +59,11 @@ export async function POST(req: Request) {
 
   limiter.reset(clientKey);
   const res = NextResponse.json({ ok: true });
+  const cookiePolicy = sessionCookiePolicy();
   res.cookies.set(SESSION_COOKIE, await createSession(), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: cookiePolicy.secure,
+    sameSite: cookiePolicy.sameSite,
     path: "/",
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
   });

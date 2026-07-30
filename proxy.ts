@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, authOpen, verifySession } from "@/lib/session";
+import { strictLocalHostAllowed } from "@/lib/strict-local-mode";
 
 // These endpoints authenticate themselves or must be reachable before a password session exists.
 const PUBLIC_PATHS = [
@@ -29,6 +30,10 @@ function bounceToLogin(req: NextRequest): NextResponse {
 }
 
 export default async function proxy(req: NextRequest): Promise<NextResponse> {
+  if (!strictLocalHostAllowed(req.headers.get("host"))) {
+    return NextResponse.json({ error: "Bad request" }, { status: 400 });
+  }
+
   const { pathname } = req.nextUrl;
 
   if (authOpen()) {

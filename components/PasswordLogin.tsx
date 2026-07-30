@@ -59,7 +59,10 @@ function LoginForm() {
             }}
             placeholder="Password"
             autoFocus
-            autoComplete="current-password"
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore="true"
             aria-invalid={Boolean(error)}
             aria-describedby={error ? "password-error" : undefined}
             className="min-h-11 w-full rounded-lg border border-border bg-surface px-3.5 py-2.5 text-sm text-ivory placeholder:text-faint focus:border-coral/60 focus:outline-none"

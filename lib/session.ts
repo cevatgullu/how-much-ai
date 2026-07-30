@@ -2,6 +2,9 @@
 // Node route handlers and the Edge/Node middleware. The token is just a signed expiry —
 // there's one user (whoever knows APP_PASSWORD), so there's no per-user state to carry.
 
+// @ts-expect-error Node's native TypeScript test runner needs the extension.
+import { assertStrictLocalEnvironment, strictLocalModeEnabled } from "./strict-local-mode.ts";
+
 export const SESSION_COOKIE = "usage_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -49,6 +52,10 @@ export function appPassword(): string | undefined {
 // "clone, npm run dev, done" work with no setup. It is ONLY safe on your own machine or a trusted
 // network; set APP_PASSWORD before exposing the app publicly.
 export function authOpen(): boolean {
+  if (strictLocalModeEnabled()) {
+    assertStrictLocalEnvironment();
+    return false;
+  }
   // A leftover hosted-mode variable must never turn into an accidentally open deployment after an
   // upgrade to the self-hosted edition. Unsupported legacy values fail closed at the login gate.
   const legacyMode = process.env.AUTH_MODE?.trim();

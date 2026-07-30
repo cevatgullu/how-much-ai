@@ -40,6 +40,7 @@ const {
   vaultRevision,
 } = await import("./vault.ts");
 const { toBrowserAccount } = await import("./browser-boundary.ts");
+const { getAccountUsage } = await import("./usage-service.ts");
 const { GET: getVault, PUT: putVault } = await import("../app/api/vault/route.ts");
 
 const TEST_SECRET = "vault-test-secret-with-enough-entropy";
@@ -495,6 +496,62 @@ test("vault metadata and removal mutations preserve server-owned credentials", a
   });
   assert.equal(JSON.stringify(payload).includes(first.tokens.accessToken), false);
   assert.equal(JSON.stringify(payload).includes(first.tokens.refreshToken!), false);
+});
+
+test("vault removal clears only the removed account's production usage cache", async () => {
+  const retained = storedAccount("cache-removal-retained");
+  const removed = storedAccount("cache-removal-removed");
+  const expiresAt = Date.now() + 86_400_000;
+  retained.tokens.expiresAt = expiresAt;
+  removed.tokens.expiresAt = expiresAt;
+  await saveAccounts("default", [retained, removed]);
+  const originalFetch = globalThis.fetch;
+  let usageCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/api/oauth/usage")) {
+      usageCalls += 1;
+      return new Response(JSON.stringify({ sample: `usage-${usageCalls}` }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/oauth/profile")) {
+      return new Response(JSON.stringify({ account: { uuid: "profile-id" } }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  try {
+    const retainedBefore = await getAccountUsage("default", retained);
+    const removedBefore = await getAccountUsage("default", removed);
+    assert.equal(retainedBefore.status, "ready");
+    assert.equal(removedBefore.status, "ready");
+    assert.equal(usageCalls, 2);
+
+    const response = await putVault(
+      new Request("http://localhost/api/vault", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mutations: [{ op: "remove", accountId: removed.id }],
+          revision: vaultRevision([retained, removed]),
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    await mutateAccounts("default", (accounts) => [...accounts, removed]);
+
+    const retainedAfter = await getAccountUsage("default", retained);
+    const removedAfter = await getAccountUsage("default", removed);
+
+    assert.equal(usageCalls, 3);
+    assert.deepEqual(retainedAfter.usage, retainedBefore.usage);
+    assert.notDeepEqual(removedAfter.usage, removedBefore.usage);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("vault PUT rejects whole-account and malformed mutation bodies without clearing data", async () => {

@@ -1,0 +1,43 @@
+﻿bin\connect.mjs:79:  // Read the local credential (macOS Keychain via execFile, else ~/.claude/.credentials.json).
+app\api\connect\local\route.ts:15:// Node runtime: reads the local machine (child_process / fs) and decrypts the vault (node:crypto).
+app\api\connect\local\route.ts:69:  // OpenAI (ChatGPT/Codex): one-click read of this machine's ~/.codex/auth.json, then resolve + save.
+app\api\connect\local\route.ts:101:            recommendation: "Sign in with the Codex CLI (`codex login`), or paste your ~/.codex/auth.json instead.",
+app\api\connect\local\route.ts:107:        { error: "Couldn't connect this ChatGPT account.", recommendation: "Try again, or paste your ~/.codex/auth.json." },
+app\api\connect\local\route.ts:113:  // 1) Read the local credential (macOS Keychain via execFile, else ~/.claude/.credentials.json).
+lib\local-file-lock.ts:97:    const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+lib\credential-source.mjs:8:// It NEVER interpolates a shell string: the macOS keychain is read with execFile + a fixed argv, so
+lib\credential-source.mjs:11:import { execFile as _execFile } from "node:child_process";
+lib\credential-source.mjs:12:import { readFile as _readFile } from "node:fs/promises";
+lib\credential-source.mjs:16:// The macOS Keychain generic-password entry Claude Code stores its OAuth credential under.
+lib\credential-source.mjs:37: * @property {(cmd: string, args: string[]) => Promise<string>} [execFile] - returns stdout.
+lib\credential-source.mjs:38: * @property {(file: string) => Promise<string>} [readFile] - returns file contents (utf8).
+lib\credential-source.mjs:51:    _execFile(cmd, args, { timeout: 10_000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+lib\credential-source.mjs:61: * Strategy: on macOS try the Keychain first (where recent Claude Code stores it), then fall back to
+lib\credential-source.mjs:62: * ~/.claude/.credentials.json (older macOS installs, and the canonical location on Linux/Windows).
+lib\credential-source.mjs:70:  const execFile = deps.execFile ?? defaultExecFile;
+lib\credential-source.mjs:71:  const readFile = deps.readFile ?? ((/** @type {string} */ file) => _readFile(file, "utf8"));
+lib\credential-source.mjs:74:  // 1) macOS Keychain (fixed argv — no shell, no interpolation).
+lib\credential-source.mjs:77:      const out = await execFile("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"]);
+lib\credential-source.mjs:85:  // 2) ~/.claude/.credentials.json — canonical on Linux/Windows, and the older macOS location.
+lib\credential-source.mjs:86:  const file = path.join(homedir(), ".claude", ".credentials.json");
+lib\credential-source.mjs:88:    const content = await readFile(file);
+lib\local-credentials.ts:3:// The real work — reading the macOS Keychain (via execFile, no shell) or ~/.claude/.credentials.json,
+lib\local-credentials.ts:19:  execFile?: (cmd: string, args: string[]) => Promise<string>;
+lib\local-credentials.ts:20:  readFile?: (file: string) => Promise<string>;
+lib\credentials.ts:6:  linux: `cat ~/.claude/.credentials.json`,
+lib\credentials.ts:7:  windows: `type %USERPROFILE%\\.claude\\.credentials.json`,
+lib\credentials.ts:20:// Accept whatever the user pastes: the full keychain/.credentials.json blob
+lib\vault.ts:16:import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+lib\vault.ts:77:    const existing = readFileSync(localKeyFile(), "utf8").trim();
+lib\vault.ts:114:    const existing = readFileSync(keyFile, "utf8").trim();
+lib\vault.ts:339:    return await fs.readFile(file, "utf8");
+lib\vault.ts:645:      const raw = await fs.readFile(source, "utf8");
+lib\vault.ts:671:        unreadableBackupRaw = await fs.readFile(backupSource, "utf8");
+lib\vault.ts:823:    return await fs.readFile(recoveryFileFor(userId, accountId), "utf8");
+lib\providers\openai-credential-source.mjs:3:// half is safe to import in the browser (the Connect dialog parses a pasted `~/.codex/auth.json`),
+lib\providers\openai-credential-source.mjs:7:export const CODEX_AUTH_FILENAME = "auth.json";
+lib\providers\openai-credential-source.mjs:80: * Pull `{ accessToken, refreshToken, expiresAt }` out of a credential blob: the full `~/.codex/auth.json`
+lib\providers\openai-credential-source.mjs:107:/** Read THIS machine's raw `~/.codex/auth.json`. Server/CLI only (dynamically imports Node built-ins). */
+lib\providers\openai-credential-source.mjs:109:  const readFile = deps.readFile ?? (await import("node:fs/promises")).readFile;
+lib\providers\openai-credential-source.mjs:114:    return await readFile(file, "utf8");
+lib\providers\openai-credential-source.mjs:118:        "No Codex credential was found on this machine (~/.codex/auth.json).",

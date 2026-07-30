@@ -53,7 +53,10 @@ export function strictLocalModeEnabled(env: StrictLocalEnvironment = process.env
   return env.HMC_STRICT_LOCAL_MODE?.trim() === "1";
 }
 
-export function strictLocalHostAllowed(host: string | null, env: StrictLocalEnvironment = process.env): boolean {
+export function strictLocalRequestHostAllowed(
+  host: string | null,
+  env: StrictLocalEnvironment = process.env,
+): boolean {
   return !strictLocalModeEnabled(env) || host === "127.0.0.1:37645";
 }
 

@@ -5,8 +5,8 @@ import {
   assertStrictLocalEnvironment,
   sessionCookiePolicy,
   strictLocalEnvironmentErrors,
-  strictLocalHostAllowed,
   strictLocalModeEnabled,
+  strictLocalRequestHostAllowed,
   type StrictLocalEnvironment,
 } from "./strict-local-mode.ts";
 
@@ -71,9 +71,9 @@ test("loopback HTTP uses a host-only strict cookie policy", () => {
 });
 
 test("strict mode accepts only the exact loopback Host header", () => {
-  assert.equal(strictLocalHostAllowed("127.0.0.1:37645", valid()), true);
+  assert.equal(strictLocalRequestHostAllowed("127.0.0.1:37645", valid()), true);
   for (const host of [null, "", "127.0.0.1", "localhost:37645", "[::1]:37645", "127.0.0.1:3000", "evil.example"]) {
-    assert.equal(strictLocalHostAllowed(host, valid()), false);
+    assert.equal(strictLocalRequestHostAllowed(host, valid()), false);
   }
-  assert.equal(strictLocalHostAllowed("evil.example", { NODE_ENV: "production" }), true);
+  assert.equal(strictLocalRequestHostAllowed("evil.example", { NODE_ENV: "production" }), true);
 });

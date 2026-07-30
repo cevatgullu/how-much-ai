@@ -146,7 +146,23 @@ interface PushOutcome extends ChannelOutcome {
   failed: number;
 }
 
-async function sendPush(userId: string, events: AccountEvent[]): Promise<PushOutcome> {
+type WebPushClient = Pick<typeof import("web-push"), "sendNotification" | "setVapidDetails">;
+
+export interface NotificationDispatchDependencies {
+  loadSubscriptions: typeof loadSubscriptions;
+  loadWebPush: () => Promise<WebPushClient>;
+}
+
+const notificationDispatchDependencies: NotificationDispatchDependencies = {
+  loadSubscriptions,
+  loadWebPush: async () => (await import("web-push")).default,
+};
+
+async function sendPush(
+  userId: string,
+  events: AccountEvent[],
+  dependencies: NotificationDispatchDependencies,
+): Promise<PushOutcome> {
   const cfg = pushConfig();
   const empty: PushOutcome = {
     channel: "push",
@@ -169,10 +185,10 @@ async function sendPush(userId: string, events: AccountEvent[]): Promise<PushOut
   // aggregate dispatch and take the other channels down. Unlike the old best-effort path, the
   // failure is retained so the cron can surface it and keep event-producing state retryable.
   try {
-    const subs = await loadSubscriptions(userId);
+    const subs = await dependencies.loadSubscriptions(userId);
     if (subs.length === 0) return empty;
 
-    const webpush = (await import("web-push")).default;
+    const webpush = await dependencies.loadWebPush();
     webpush.setVapidDetails(cfg.subject, cfg.publicKey, cfg.privateKey);
 
     for (const sub of subs) {
@@ -231,7 +247,11 @@ export interface DispatchResult {
   delivered: boolean;
 }
 
-export async function dispatch(userId: string, events: AccountEvent[]): Promise<DispatchResult> {
+export async function dispatch(
+  userId: string,
+  events: AccountEvent[],
+  dependencies: NotificationDispatchDependencies = notificationDispatchDependencies,
+): Promise<DispatchResult> {
   const result: DispatchResult = {
     channels: [],
     telegram: false,
@@ -253,7 +273,7 @@ export async function dispatch(userId: string, events: AccountEvent[]): Promise<
   const [telegram, webhook, push] = await Promise.all([
     globalChannelsAllowed ? sendTelegram(text, events.length) : Promise.resolve(skippedTelegram),
     globalChannelsAllowed ? sendWebhook(userId, events, text) : Promise.resolve(skippedWebhook),
-    sendPush(userId, events),
+    sendPush(userId, events, dependencies),
   ]);
 
   const outcomes: ChannelOutcome[] = [telegram, webhook, push];

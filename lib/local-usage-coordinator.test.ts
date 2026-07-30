@@ -279,3 +279,168 @@ test("an upstream failure without cached data returns an error result", async ()
     error: "first fetch failed",
   });
 });
+
+test("settled cache growth is capped by least-recently-used eviction", async () => {
+  let now = 0;
+  const attempts = new Map<string, number>();
+  const coordinator = new LocalUsageCoordinator<TestAccount>(
+    () => now,
+    async (request) => {
+      const id = request.account.id;
+      attempts.set(id, (attempts.get(id) ?? 0) + 1);
+      return commitReady(request);
+    },
+    { maxEntries: 2, idleTtlMs: 10_000 },
+  );
+  const read = (id: string) =>
+    coordinator.getAccountUsage(`usage:${id}`, "default", { id });
+
+  await read("oldest");
+  now = 1;
+  await read("recent");
+  now = 2;
+  await read("oldest");
+  now = 3;
+  await read("newest");
+
+  await read("oldest");
+  await read("newest");
+  await read("recent");
+
+  assert.deepEqual(attemptsObject(attempts), {
+    oldest: 1,
+    recent: 2,
+    newest: 1,
+  });
+  assert.equal(coordinator.cacheSizeForTest(), 2);
+});
+
+test("idle cache entries expire at the lifecycle TTL without disturbing a recently used sibling", async () => {
+  let now = 0;
+  const attempts = new Map<string, number>();
+  const coordinator = new LocalUsageCoordinator<TestAccount>(
+    () => now,
+    async (request) => {
+      const id = request.account.id;
+      attempts.set(id, (attempts.get(id) ?? 0) + 1);
+      return commitReady(request);
+    },
+    { maxEntries: 10, idleTtlMs: 100 },
+  );
+  const read = (id: string) =>
+    coordinator.getAccountUsage(`usage:${id}`, "default", { id });
+
+  await read("expired");
+  await read("retained");
+  now = 50;
+  await read("retained");
+  now = 100;
+  await read("prune-trigger");
+  await read("expired");
+  await read("retained");
+
+  assert.deepEqual(attemptsObject(attempts), {
+    expired: 2,
+    retained: 1,
+    "prune-trigger": 1,
+  });
+  assert.equal(coordinator.cacheSizeForTest(), 3);
+});
+
+test("cache pressure never prunes or duplicates an active in-flight entry", async () => {
+  let now = 0;
+  const attempts = new Map<string, number>();
+  let signalActiveCommitted!: () => void;
+  const activeCommitted = new Promise<void>((resolve) => {
+    signalActiveCommitted = resolve;
+  });
+  let releaseActive!: () => void;
+  const activeGate = new Promise<void>((resolve) => {
+    releaseActive = resolve;
+  });
+  const coordinator = new LocalUsageCoordinator<TestAccount>(
+    () => now,
+    async (request) => {
+      const id = request.account.id;
+      attempts.set(id, (attempts.get(id) ?? 0) + 1);
+      const result = await commitReady(request);
+      if (id === "active") {
+        signalActiveCommitted();
+        await activeGate;
+      }
+      return result;
+    },
+    { maxEntries: 2, idleTtlMs: 10_000 },
+  );
+  const read = (id: string) =>
+    coordinator.getAccountUsage(`usage:${id}`, "default", { id });
+
+  const active = read("active");
+  await activeCommitted;
+  now = 10;
+  await read("settled");
+  now = 20;
+  await read("pressure");
+
+  const duplicateActive = read("active");
+  await Promise.resolve();
+  assert.equal(attempts.get("active"), 1);
+  releaseActive();
+  await Promise.all([active, duplicateActive]);
+
+  await read("active");
+  await read("settled");
+
+  assert.deepEqual(attemptsObject(attempts), {
+    active: 1,
+    settled: 2,
+    pressure: 1,
+  });
+  assert.equal(coordinator.cacheSizeForTest(), 2);
+});
+
+test("clearing an active account fences its eventual cache commit without altering a sibling", async () => {
+  const attempts = new Map<string, number>();
+  let signalTargetStarted!: () => void;
+  const targetStarted = new Promise<void>((resolve) => {
+    signalTargetStarted = resolve;
+  });
+  let releaseTarget!: () => void;
+  const targetGate = new Promise<void>((resolve) => {
+    releaseTarget = resolve;
+  });
+  const coordinator = new LocalUsageCoordinator<TestAccount>(
+    () => 0,
+    async (request) => {
+      const id = request.account.id;
+      const count = (attempts.get(id) ?? 0) + 1;
+      attempts.set(id, count);
+      if (id === "target" && count === 1) {
+        signalTargetStarted();
+        await targetGate;
+      }
+      return commitReady(request);
+    },
+  );
+  const read = (id: string) =>
+    coordinator.getAccountUsage(`usage:${id}`, "default", { id });
+
+  await read("sibling");
+  const target = read("target");
+  await targetStarted;
+  coordinator.clear("usage:target");
+  const duplicateTarget = read("target");
+  await Promise.resolve();
+  assert.equal(attempts.get("target"), 1);
+
+  releaseTarget();
+  await Promise.all([target, duplicateTarget]);
+  await read("sibling");
+  await read("target");
+
+  assert.deepEqual(attemptsObject(attempts), {
+    sibling: 1,
+    target: 2,
+  });
+  assert.equal(coordinator.cacheSizeForTest(), 2);
+});

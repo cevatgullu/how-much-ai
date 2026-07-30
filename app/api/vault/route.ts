@@ -9,6 +9,7 @@ import {
 } from "@/lib/vault";
 import { browserMutationFailure, readJsonObject, requestBodyFailure } from "@/lib/request-body";
 import { reportServerError } from "@/lib/server-error-diagnostics";
+import { clearAccountUsageState } from "@/lib/usage-service";
 import type { StoredAccount, VaultMutation } from "@/lib/types";
 
 // Force the Node runtime — the vault uses node:crypto to decrypt.
@@ -239,6 +240,12 @@ export async function PUT(req: Request) {
         { status: 409 },
       );
     }
+    const removedAccountIds = new Set(
+      mutations.flatMap((mutation) => (mutation.op === "remove" ? [mutation.accountId] : [])),
+    );
+    await Promise.all(
+      [...removedAccountIds].map((accountId) => clearAccountUsageState(userId, accountId)),
+    );
     return NextResponse.json({ ok: true, ...snapshotResponse(saved) });
   } catch (err) {
     const { errorId } = reportServerError("vault.mutate", err);

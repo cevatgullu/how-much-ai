@@ -146,7 +146,7 @@ test("parseManualCredential parses a pasted auth.json", () => {
 test("readLocalCredential reads ~/.codex/auth.json via injected deps", async () => {
   const parsed = await openaiProvider.readLocalCredential?.({
     readFile: async (file: string) => {
-      assert.match(file, /\.codex\/auth\.json$/);
+      assert.match(file, /\.codex[\/\\]auth\.json$/);
       return JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: token, refresh_token: "rt-local" } });
     },
     homedir: () => "/home/tester",

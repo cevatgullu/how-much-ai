@@ -144,8 +144,10 @@ test("recovery atomically archives an unreadable local vault, preserves vault.ke
   assert.equal(path.basename(result.archive), result.archive, "the API returns a label, never a filesystem path");
   await assert.rejects(() => fs.lstat(source), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
   assert.equal(await fs.readFile(path.join(dataDir, result.archive), "utf8"), corrupt);
-  assert.equal((await fs.stat(dataDir)).mode & 0o777, 0o700);
-  assert.equal((await fs.stat(path.join(dataDir, result.archive))).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal((await fs.stat(dataDir)).mode & 0o777, 0o700);
+    assert.equal((await fs.stat(path.join(dataDir, result.archive))).mode & 0o777, 0o600);
+  }
   assert.equal(await fs.readFile(keyFile, "utf8"), generatedKey);
   assert.deepEqual(await loadAccounts("default"), []);
 });

@@ -313,6 +313,37 @@ function fileFor(userId: string): string {
   return path.join(dataDir, `vault${suffix}.enc`);
 }
 
+function localDataDir(): string {
+  return process.env.VAULT_DATA_DIR || path.join(process.cwd(), ".data");
+}
+
+function localDataDirectoryError(): NodeJS.ErrnoException {
+  const error = new Error("Local vault data directory is not a directory") as NodeJS.ErrnoException;
+  error.code = "ENOTDIR";
+  return error;
+}
+
+async function validateLocalDataDirectoryAfterMissing(): Promise<void> {
+  let info;
+  try {
+    info = await fs.stat(localDataDir());
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!info.isDirectory()) throw localDataDirectoryError();
+}
+
+async function readOptionalLocalVaultFile(file: string): Promise<string | null> {
+  try {
+    return await fs.readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await validateLocalDataDirectoryAfterMissing();
+    return null;
+  }
+}
+
 function backupFileFor(userId: string): string {
   return `${fileFor(userId)}.last-good`;
 }
@@ -393,14 +424,7 @@ async function readRaw(userId: string): Promise<string | null> {
   if (storage.type === "redis") {
     return (await redisCommand(storage.config, ["GET", scopedKey(REDIS_BASE, userId)])) as string | null;
   }
-  try {
-    return await fs.readFile(fileFor(userId), "utf8");
-  } catch (err) {
-    // A missing file is a new/empty vault. Permission errors, directories at the file path, I/O
-    // errors, and every other failure must surface rather than masquerading as an empty vault.
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    throw err;
-  }
+  return readOptionalLocalVaultFile(fileFor(userId));
 }
 
 async function readBackupRaw(userId: string): Promise<string | null> {
@@ -415,12 +439,7 @@ async function readBackupRaw(userId: string): Promise<string | null> {
   if (storage.type === "redis") {
     return (await redisCommand(storage.config, ["GET", scopedKey(REDIS_BACKUP_BASE, userId)])) as string | null;
   }
-  try {
-    return await fs.readFile(backupFileFor(userId), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    throw error;
-  }
+  return readOptionalLocalVaultFile(backupFileFor(userId));
 }
 
 async function readStoredKeyProof(userId: string): Promise<string | null> {

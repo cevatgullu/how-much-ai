@@ -32,6 +32,10 @@ Credentials are encrypted in the server-side vault and are never returned to the
 
 Same-machine CLI discovery is automatic in development. In a production-mode local install it requires `ENABLE_LOCAL_CONNECT=1`; never enable that route on a remote server.
 
+## Secure Windows local mode
+
+For the reviewed, authenticated, loopback-only Windows installation and its exact threat boundary, see [Secure Windows local mode](docs/WINDOWS_SECURE_LOCAL.md). Complete its pre-credential security gate before connecting any real provider account.
+
 ## Choose a storage mode
 
 The server selects one backend from the environment:

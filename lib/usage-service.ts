@@ -27,6 +27,13 @@ import {
 } from "./anthropic";
 import { getProvider, httpStatusOf } from "./providers/index";
 import {
+  LocalUsageCoordinator,
+  type AccountUsageResult,
+  type AccountUsageStatus,
+  type LocalUsageCacheStore as CacheStore,
+  type LocalUsagePrior as Prior,
+} from "./local-usage-coordinator";
+import {
   createRedisUsageCacheFromConfig,
   redisUsageConfig,
   type RedisRestConfig,
@@ -52,21 +59,7 @@ import {
 } from "./usage-cache-core";
 import type { AccountTokens, ProfileData, StoredAccount, UsageData } from "./types";
 
-export type AccountUsageStatus = "ready" | "reauth" | "stale" | "error" | "loading";
-
-export interface AccountUsageResult {
-  usage: UsageData | null;
-  profile: ProfileData | null;
-  status: AccountUsageStatus;
-  fetchedAt: number | null;
-  cooldownUntil: number;
-  stale: boolean;
-  error?: string;
-  tokens?: AccountTokens; // rotated pair; normally already durable, echoed only to keep this tab current
-  // Present only when renewal succeeded but every durable vault write failed. Normal rotated pairs
-  // are already saved server-side and must not trigger a redundant browser whole-vault write.
-  tokensNeedPersistence?: true;
-}
+export type { AccountUsageResult, AccountUsageStatus } from "./local-usage-coordinator";
 
 // Per-(tenant, account) cache key. The self-hosted API uses the historical `default` tenant, so its
 // keys remain bare and existing caches continue to work. Account ids are UUIDs, so `usage:<id>` is
@@ -204,26 +197,6 @@ async function persistAccountTokens(
     }
   }
   throw new RotatedTokenPersistenceError(tokens, lastError);
-}
-
-// Abstracts the two backends: commit writes the outcome AND releases the lock; release just frees the
-// lock (error paths). Fields left undefined on commit preserve the prior stored value.
-interface CacheStore {
-  commit(o: {
-    usage?: UsageData;
-    profile?: ProfileData | null;
-    fetchedAt?: number;
-    status: string;
-    cooldownUntil: number;
-  }): Promise<void>;
-  release(): Promise<void>;
-}
-
-interface Prior {
-  usage: UsageData | null;
-  profile: ProfileData | null;
-  fetchedAt: number | null;
-  status: string | null;
 }
 
 const LEGACY_REFRESH_THROTTLE_REAUTH_AFTER = 3;
@@ -697,97 +670,22 @@ async function getAccountUsageRedis(
 // The in-process promise coalesces ordinary calls; a portable filesystem lock also serializes
 // refreshes across multiple local Node processes sharing the same vault directory.
 
-interface LocalEntry {
-  usage: UsageData | null;
-  profile: ProfileData | null;
-  fetchedAt: number;
-  status: string;
-  cooldownUntil: number;
-}
-
-const localCache = new Map<string, LocalEntry>();
-const localInflight = new Map<string, Promise<AccountUsageResult>>();
-
-function localToEntry(e: LocalEntry | null): CacheEntry | null {
-  if (!e) return null;
-  return { hasUsage: e.usage != null, fetchedAt: e.fetchedAt, status: e.status, cooldownUntil: e.cooldownUntil, refreshingUntil: 0 };
-}
-
-function localResult(e: LocalEntry | null, stale: boolean): AccountUsageResult {
-  if (!e) return { usage: null, profile: null, status: "loading", fetchedAt: null, cooldownUntil: 0, stale };
-  const refreshThrottled = e.status.startsWith("refresh_throttled_");
-  const status = (
-    e.status === "reauth"
-      ? "reauth"
-      : stale
-        ? e.usage
-          ? "stale"
-          : e.status === "error" || refreshThrottled
-            ? "error"
-            : "loading"
-        : "ready"
-  ) as AccountUsageStatus;
-  return {
-    usage: e.usage,
-    profile: null,
-    status,
-    fetchedAt: e.fetchedAt || null,
-    cooldownUntil: e.cooldownUntil,
-    stale,
-    ...(refreshThrottled
-      ? { error: "Automatic renewal is temporarily throttled. The app will retry after its cooldown." }
-      : {}),
-  };
-}
-
-async function getAccountUsageLocal(userId: string, account: StoredAccount): Promise<AccountUsageResult> {
-  const key = usageCacheKey(userId, account.id);
-  const now = Date.now();
-  const entry = localCache.get(key) ?? null;
-
-  const action = coordinatedCacheAction(localToEntry(entry), now);
-  if (action === "fresh") return localResult(entry, false);
-  if (action === "cooldown") return localResult(entry, true);
-
-  // In-process single-flight: concurrent callers share the one upstream fetch.
-  const existing = localInflight.get(key);
-  if (existing) return existing;
-
-  const store: CacheStore = {
-    commit: async (o) => {
-      const prev = localCache.get(key);
-      localCache.set(key, {
-        usage: o.usage !== undefined ? o.usage : (prev?.usage ?? null),
-        profile: o.profile !== undefined ? o.profile : (prev?.profile ?? null),
-        fetchedAt: o.fetchedAt !== undefined ? o.fetchedAt : (prev?.fetchedAt ?? 0),
-        status: o.status,
-        cooldownUntil: o.cooldownUntil,
-      });
-    },
-    release: async () => {},
-  };
-  const prior: Prior = {
-    usage: entry?.usage ?? null,
-    profile: null,
-    fetchedAt: entry?.fetchedAt || null,
-    status: entry?.status ?? null,
-  };
-
-  const p = (async () => {
+const localUsageCoordinator = new LocalUsageCoordinator<StoredAccount>(
+  () => Date.now(),
+  async ({ userId, account, now, store, prior }) => {
     try {
       return await withLocalUsageRefreshLock(userId, account.id, () =>
         refreshAndFetch(userId, account, now, store, prior),
       );
-    } catch (err) {
-      return failedRefreshResult(prior, err);
+    } catch (error) {
+      return failedRefreshResult(prior, error);
     }
-  })();
-  localInflight.set(key, p);
-  try {
-    return await p;
-  } finally {
-    localInflight.delete(key);
-  }
+  },
+);
+
+async function getAccountUsageLocal(userId: string, account: StoredAccount): Promise<AccountUsageResult> {
+  const key = usageCacheKey(userId, account.id);
+  return localUsageCoordinator.getAccountUsage(key, userId, account);
 }
 
 // Drop an account's cached reauth/cooldown state after it's (re)connected with fresh tokens, so the
@@ -795,7 +693,7 @@ async function getAccountUsageLocal(userId: string, account: StoredAccount): Pro
 // Best-effort: the read-path heal (decideCacheActionWithTokens) covers a missed clear.
 export async function clearAccountUsageState(userId: string, accountId: string): Promise<void> {
   const key = usageCacheKey(userId, accountId);
-  localCache.delete(key);
+  localUsageCoordinator.clear(key);
   const cx = convexConfig();
   if (cx) {
     try {

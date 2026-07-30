@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import type { AccountSnapshot, BrowserAccount, UsageResponse, VaultMutation } from "@/lib/types";
 import type { ProviderId } from "@/lib/providers/types";
 import { loadSettings, saveSettings } from "@/lib/storage";
+import { refreshAllAccounts } from "@/lib/refresh-all";
 import {
   archiveUnreadableVault,
   fetchVault,
@@ -337,10 +338,10 @@ export function Dashboard({ showSignOut }: DashboardProps) {
   );
 
   const refreshAll = useCallback(async () => {
-    const ids = accountsRef.current.map((a) => a.id);
+    const ids = accountsRef.current.map((account) => account.id);
     if (ids.length === 0) return;
-    const results = await Promise.all(ids.map((id) => refreshAccount(id)));
-    setLastRefreshAll({ at: Date.now(), updated: results.filter(Boolean).length, total: ids.length });
+    const summary = await refreshAllAccounts(ids, refreshAccount);
+    setLastRefreshAll({ at: Date.now(), ...summary });
   }, [refreshAccount]);
 
   // The local + pairing connect flows add the account to the vault SERVER-side (never handing the

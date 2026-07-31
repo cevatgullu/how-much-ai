@@ -28,6 +28,7 @@ const moduleHooks = registerHooks({
 
 const ENV_KEYS = [
   "APP_PASSWORD",
+  "AUTH_SECRET",
   "VAULT_ENCRYPTION_SECRET",
   "VAULT_DATA_DIR",
   "CONVEX_URL",
@@ -45,6 +46,8 @@ for (const key of ENV_KEYS) delete process.env[key];
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "usage-vault-recovery-test-"));
 process.env.VAULT_DATA_DIR = dataDir;
 process.env.VAULT_ENCRYPTION_SECRET = "vault-recovery-test-secret-with-enough-entropy";
+process.env.APP_PASSWORD = "vault-recovery-test-password";
+process.env.AUTH_SECRET = "vault-recovery-test-auth-secret";
 
 const {
   loadAccounts,
@@ -53,6 +56,8 @@ const {
   VAULT_RECOVERY_CONFIRMATION,
 } = await import("./vault.ts");
 const { POST: recoverPost } = await import("../app/api/vault/recover/route.ts");
+const { createSession, SESSION_COOKIE } = await import("./session.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
 
 after(async () => {
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -67,7 +72,8 @@ after(async () => {
 beforeEach(async () => {
   await fs.rm(dataDir, { recursive: true, force: true });
   await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
-  delete process.env.APP_PASSWORD;
+  process.env.APP_PASSWORD = "vault-recovery-test-password";
+  process.env.AUTH_SECRET = "vault-recovery-test-auth-secret";
   delete process.env.CONVEX_URL;
   delete process.env.NEXT_PUBLIC_CONVEX_URL;
   delete process.env.VAULT_ACCESS_SECRET;
@@ -80,10 +86,13 @@ beforeEach(async () => {
   process.env.VAULT_ENCRYPTION_SECRET = "vault-recovery-test-secret-with-enough-entropy";
 });
 
-function request(body: string): Request {
+function request(body: string, authenticated = true): Request {
   return new Request("http://localhost/api/vault/recover", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(authenticated ? { Cookie: sessionCookie } : {}),
+    },
     body,
   });
 }
@@ -101,7 +110,7 @@ function account(): StoredAccount {
 
 test("recovery requires authentication when the local app is password protected", async () => {
   process.env.APP_PASSWORD = "local-login-password";
-  const response = await recoverPost(request(JSON.stringify({ confirmation: VAULT_RECOVERY_CONFIRMATION })));
+  const response = await recoverPost(request(JSON.stringify({ confirmation: VAULT_RECOVERY_CONFIRMATION }), false));
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), { error: "Not signed in" });
 });

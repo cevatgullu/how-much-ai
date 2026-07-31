@@ -133,7 +133,9 @@ function encryptionKey(secret = encryptionSecret()): Buffer {
 
 function encrypt(plaintext: string, secret = encryptionSecret()): string {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(secret), iv);
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(secret), iv, {
+    authTagLength: 16,
+  });
   const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `v2:${iv.toString("base64")}:${tag.toString("base64")}:${enc.toString("base64")}`;
@@ -145,7 +147,12 @@ function keyProof(secret: string): string {
 
 function decryptParts(ivB64: string, tagB64: string, dataB64: string, secret: string): string {
   if (!ivB64 || !tagB64 || !dataB64) throw new Error("malformed vault blob");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(secret), Buffer.from(ivB64, "base64"));
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    encryptionKey(secret),
+    Buffer.from(ivB64, "base64"),
+    { authTagLength: 16 },
+  );
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
   return Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]).toString("utf8");
 }

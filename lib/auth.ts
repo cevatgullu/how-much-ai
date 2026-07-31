@@ -1,5 +1,5 @@
-// Resolve the single self-hosted tenant for an API request. A local zero-config install is open;
-// when APP_PASSWORD is set, every API route requires the signed password-session cookie.
+// Resolve the single self-hosted tenant. Every ordinary request requires the signed
+// password-session cookie; strict Windows bootstrap creates the same session without open mode.
 import { authOpen, SESSION_COOKIE, verifySession } from "./session";
 
 export async function requireUser(req: Request): Promise<string | null> {

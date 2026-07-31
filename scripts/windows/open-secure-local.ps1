@@ -198,21 +198,175 @@ function Get-HmaVerifiedServiceListenerPid {
     }
 }
 
+function ConvertTo-HmaBase64Url {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+
+    return [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function Test-HmaCanonicalBase64Url32 {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Value)
+
+    if ($Value -isnot [string] -or
+        [string]$Value -cnotmatch '^[A-Za-z0-9_-]{43}$') {
+        return $false
+    }
+    $decoded = $null
+    try {
+        $encoded = ([string]$Value).Replace('-', '+').Replace('_', '/') + '='
+        $decoded = [Convert]::FromBase64String($encoded)
+        return (
+            $decoded.Length -eq 32 -and
+            [string]::Equals(
+                (ConvertTo-HmaBase64Url -Bytes $decoded),
+                [string]$Value,
+                [StringComparison]::Ordinal
+            )
+        )
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $decoded) {
+            [Array]::Clear($decoded, 0, $decoded.Length)
+        }
+    }
+}
+
+function Get-HmaBootstrapHmac {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Secret,
+        [Parameter(Mandatory)][string]$Context,
+        [Parameter(Mandatory)][string]$Challenge
+    )
+
+    $keyBytes = $null
+    $messageBytes = $null
+    $hashBytes = $null
+    $hmac = $null
+    try {
+        $keyBytes = [Text.Encoding]::UTF8.GetBytes($Secret)
+        $message = $Context + [char]0 + $Challenge
+        $messageBytes = [Text.Encoding]::UTF8.GetBytes($message)
+        $hmac = New-Object Security.Cryptography.HMACSHA256
+        $hmac.Key = $keyBytes
+        $hashBytes = $hmac.ComputeHash($messageBytes)
+        return ConvertTo-HmaBase64Url -Bytes $hashBytes
+    } finally {
+        if ($null -ne $hmac) {
+            $hmac.Dispose()
+        }
+        foreach ($bytes in @($keyBytes, $messageBytes, $hashBytes)) {
+            if ($null -ne $bytes) {
+                [Array]::Clear($bytes, 0, $bytes.Length)
+            }
+        }
+        $message = $null
+    }
+}
+
+function Test-HmaConstantTimeProof {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object]$Actual,
+        [Parameter(Mandatory)][string]$Expected
+    )
+
+    if (-not (Test-HmaCanonicalBase64Url32 -Value $Actual) -or
+        -not (Test-HmaCanonicalBase64Url32 -Value $Expected)) {
+        return $false
+    }
+    $actualBytes = $null
+    $expectedBytes = $null
+    try {
+        $actualBytes = [Text.Encoding]::ASCII.GetBytes([string]$Actual)
+        $expectedBytes = [Text.Encoding]::ASCII.GetBytes($Expected)
+        $difference = 0
+        for ($index = 0; $index -lt $actualBytes.Length; $index += 1) {
+            $difference = $difference -bor (
+                [int]$actualBytes[$index] -bxor [int]$expectedBytes[$index]
+            )
+        }
+        return $difference -eq 0
+    } finally {
+        foreach ($bytes in @($actualBytes, $expectedBytes)) {
+            if ($null -ne $bytes) {
+                [Array]::Clear($bytes, 0, $bytes.Length)
+            }
+        }
+    }
+}
+
 function Get-HmaBootstrapTicket {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Password)
+    param([Parameter(Mandatory)][string]$AuthSecret)
 
+    $challenge = $null
+    $serverProof = $null
+    $expectedServerProof = $null
+    $clientProof = $null
     $requestBody = $null
     $response = $null
+    $bootstrapHeaders = @{ 'X-HMA-Local-Bootstrap' = 'proof-v1' }
     try {
+        $response = Invoke-WebRequest `
+            -Uri 'http://127.0.0.1:37645/api/auth/bootstrap/start' `
+            -Method Get `
+            -Headers $bootstrapHeaders `
+            -UseBasicParsing `
+            -MaximumRedirection 0 `
+            -TimeoutSec 10 `
+            -ErrorAction Stop
+        if ([int]$response.StatusCode -ne 200 -or
+            [string]::IsNullOrWhiteSpace([string]$response.Content) -or
+            ([string]$response.Content).Length -gt 4096) {
+            throw 'The bootstrap response is invalid.'
+        }
+
+        $payload = ConvertFrom-Json -InputObject ([string]$response.Content) -ErrorAction Stop
+        $properties = @($payload.PSObject.Properties | ForEach-Object { $_.Name })
+        if ([bool](Compare-Object `
+                -ReferenceObject @('challenge', 'expiresInMs', 'serverProof') `
+                -DifferenceObject @($properties | Sort-Object) `
+                -CaseSensitive) -or
+            $payload.expiresInMs -isnot [int] -or
+            [int]$payload.expiresInMs -ne 10000 -or
+            -not (Test-HmaCanonicalBase64Url32 -Value $payload.challenge) -or
+            -not (Test-HmaCanonicalBase64Url32 -Value $payload.serverProof)) {
+            throw 'The bootstrap response is invalid.'
+        }
+
+        $challenge = [string]$payload.challenge
+        $serverProof = [string]$payload.serverProof
+        $expectedServerProof = Get-HmaBootstrapHmac `
+            -Secret $AuthSecret `
+            -Context 'how-much-ai:local-bootstrap:server-proof:v1' `
+            -Challenge $challenge
+        if (-not (Test-HmaConstantTimeProof `
+                -Actual $serverProof `
+                -Expected $expectedServerProof)) {
+            throw 'The bootstrap response is invalid.'
+        }
+
+        $clientProof = Get-HmaBootstrapHmac `
+            -Secret $AuthSecret `
+            -Context 'how-much-ai:local-bootstrap:client-proof:v1' `
+            -Challenge $challenge
         $requestBody = ConvertTo-Json `
-            -InputObject ([ordered]@{ password = $Password }) `
+            -InputObject ([ordered]@{
+                challenge = $challenge
+                proof = $clientProof
+            }) `
             -Compress
+        $response = $null
         $response = Invoke-WebRequest `
             -Uri 'http://127.0.0.1:37645/api/auth/bootstrap/start' `
             -Method Post `
             -ContentType 'application/json' `
             -Body $requestBody `
+            -Headers $bootstrapHeaders `
             -UseBasicParsing `
             -MaximumRedirection 0 `
             -TimeoutSec 10 `
@@ -239,14 +393,19 @@ function Get-HmaBootstrapTicket {
     } catch {
         throw 'The bootstrap request failed.'
     } finally {
+        $challenge = $null
+        $serverProof = $null
+        $expectedServerProof = $null
+        $clientProof = $null
         $requestBody = $null
         $response = $null
         $payload = $null
+        $bootstrapHeaders = $null
     }
 }
 
 $bundle = $null
-$password = $null
+$authSecret = $null
 $ticket = $null
 $response = $null
 $servicePlan = $null
@@ -277,7 +436,7 @@ try {
         -Force `
         -ErrorAction Stop
     $bundle = Unprotect-HmaSecretBundle -Path (Join-Path $state 'secrets.dpapi')
-    $password = [string]$bundle.appPassword
+    $authSecret = [string]$bundle.authSecret
     $servicePlan = New-HmaServiceLaunchPlan `
         -Config $config `
         -StateRoot $state `
@@ -287,9 +446,13 @@ try {
     $edgePath = Get-HmaStableMicrosoftEdge
     Wait-HmaSecureLocalReady
 
-    $ticket = Get-HmaBootstrapTicket -Password $password
-    $secondListenerPid = Get-HmaVerifiedServiceListenerPid -Plan $servicePlan
-    if ($secondListenerPid -ne $firstListenerPid) {
+    $readyListenerPid = Get-HmaVerifiedServiceListenerPid -Plan $servicePlan
+    if ($readyListenerPid -ne $firstListenerPid) {
+        throw 'The listener changed.'
+    }
+    $ticket = Get-HmaBootstrapTicket -AuthSecret $authSecret
+    $postListenerPid = Get-HmaVerifiedServiceListenerPid -Plan $servicePlan
+    if ($postListenerPid -ne $readyListenerPid) {
         $ticket = $null
         throw 'The listener changed.'
     }
@@ -312,6 +475,6 @@ try {
     $servicePlan = $null
     $response = $null
     $ticket = $null
-    $password = $null
+    $authSecret = $null
     $bundle = $null
 }

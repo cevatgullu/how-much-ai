@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { after, test } from "node:test";
 import { registerHooks } from "node:module";
 import path from "node:path";
@@ -51,7 +52,9 @@ process.env = validStrictEnvironment();
 const { NextRequest } = await import("next/server.js");
 const { default: proxy } = await import("../proxy.ts");
 const { POST: loginPost } = await import("../app/api/auth/login/route.ts");
-const { POST: startPost } = await import("../app/api/auth/bootstrap/start/route.ts");
+const { GET: startGet, POST: startPost } = await import(
+  "../app/api/auth/bootstrap/start/route.ts"
+);
 const { POST: consumePost } = await import("../app/api/auth/bootstrap/consume/route.ts");
 const { beginBootstrapSession } = await import("./bootstrap-session.ts");
 const { createSession, SESSION_COOKIE } = await import("./session.ts");
@@ -71,15 +74,60 @@ function jsonRequest(
     headers: {
       "Content-Type": "application/json",
       Host: "127.0.0.1:37645",
+      "X-HMA-Local-Bootstrap": "proof-v1",
       ...headers,
     },
     body: JSON.stringify(body),
   });
 }
 
+function startGetRequest(headers: Record<string, string> = {}): Request {
+  return new Request("http://127.0.0.1:37645/api/auth/bootstrap/start", {
+    headers: {
+      Host: "127.0.0.1:37645",
+      "X-HMA-Local-Bootstrap": "proof-v1",
+      ...headers,
+    },
+  });
+}
+
+function bootstrapProof(context: string, challenge: string): string {
+  const secret = process.env.AUTH_SECRET;
+  assert.ok(secret);
+  return createHmac("sha256", secret)
+    .update(context, "utf8")
+    .update(Buffer.from([0]))
+    .update(challenge, "utf8")
+    .digest("base64url");
+}
+
 async function startTicket(): Promise<string> {
+  const challengeResponse = await startGet(startGetRequest());
+  assert.equal(challengeResponse.status, 200);
+  const challengeData = (await challengeResponse.json()) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(challengeData).sort(), [
+    "challenge",
+    "expiresInMs",
+    "serverProof",
+  ]);
+  assert.equal(challengeData.expiresInMs, 10_000);
+  assert.match(challengeData.challenge, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(
+    challengeData.serverProof,
+    bootstrapProof(
+      "how-much-ai:local-bootstrap:server-proof:v1",
+      challengeData.challenge as string,
+    ),
+  );
+
   const response = await startPost(
-    jsonRequest("/api/auth/bootstrap/start", { password: process.env.APP_PASSWORD }),
+    jsonRequest("/api/auth/bootstrap/start", {
+      challenge: challengeData.challenge,
+      proof: bootstrapProof(
+        "how-much-ai:local-bootstrap:client-proof:v1",
+        challengeData.challenge as string,
+      ),
+    }),
   );
   assert.equal(response.status, 200);
   const data = (await response.json()) as Record<string, unknown>;
@@ -115,49 +163,137 @@ test("the three exact bootstrap paths bypass the session proxy without a broad p
   }
 });
 
-test("bootstrap start is strict-only, requires the exact Host, and rejects every Origin", async () => {
+test("bootstrap start GET and POST are strict-only, require the exact Host, and reject every Origin", async () => {
   process.env = { NODE_ENV: "production", APP_PASSWORD: "p".repeat(64) };
-  let response = await startPost(
-    jsonRequest("/api/auth/bootstrap/start", { password: process.env.APP_PASSWORD }),
-  );
+  let response = await startGet(startGetRequest());
   assert.equal(response.status, 404);
   assert.equal(response.headers.get("cache-control"), "no-store");
 
   process.env = validStrictEnvironment();
-  response = await startPost(
-    jsonRequest(
-      "/api/auth/bootstrap/start",
-      { password: process.env.APP_PASSWORD },
-      { Host: "localhost:37645" },
-    ),
-  );
-  assert.equal(response.status, 421);
+  for (const handler of ["GET", "POST"] as const) {
+    response =
+      handler === "GET"
+        ? await startGet(startGetRequest({ Host: "localhost:37645" }))
+        : await startPost(
+            jsonRequest(
+              "/api/auth/bootstrap/start",
+              { challenge: "a".repeat(43), proof: "b".repeat(43) },
+              { Host: "localhost:37645" },
+            ),
+          );
+    assert.equal(response.status, 421, handler);
+  }
 
   for (const origin of ["http://127.0.0.1:37645", "https://attacker.example", "null"]) {
-    response = await startPost(
-      jsonRequest(
-        "/api/auth/bootstrap/start",
-        { password: process.env.APP_PASSWORD },
-        { Origin: origin },
-      ),
-    );
-    assert.equal(response.status, 403, origin);
+    for (const handler of ["GET", "POST"] as const) {
+      response =
+        handler === "GET"
+          ? await startGet(startGetRequest({ Origin: origin }))
+          : await startPost(
+              jsonRequest(
+                "/api/auth/bootstrap/start",
+                { challenge: "a".repeat(43), proof: "b".repeat(43) },
+                { Origin: origin },
+              ),
+            );
+      assert.equal(response.status, 403, `${handler} ${origin}`);
+    }
   }
 });
 
-test("bootstrap start verifies the password without setting a cookie", async () => {
+test("bootstrap start rejects browser-shaped or unmarked requests without consuming a valid challenge", async () => {
+  process.env = validStrictEnvironment();
+
+  const challengeResponse = await startGet(startGetRequest());
+  assert.equal(challengeResponse.status, 200);
+  const challengeData = (await challengeResponse.json()) as Record<string, unknown>;
+
+  const crossSite = await startGet(
+    new Request("http://127.0.0.1:37645/api/auth/bootstrap/start", {
+      headers: {
+        Host: "127.0.0.1:37645",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Dest": "image",
+      },
+    }),
+  );
+  assert.equal(crossSite.status, 403);
+  assert.equal(crossSite.headers.get("cache-control"), "no-store");
+
+  const missingGetHeader = await startGet(
+    new Request("http://127.0.0.1:37645/api/auth/bootstrap/start", {
+      headers: { Host: "127.0.0.1:37645" },
+    }),
+  );
+  assert.equal(missingGetHeader.status, 403);
+  assert.equal(missingGetHeader.headers.get("cache-control"), "no-store");
+
+  const completed = await startPost(
+    jsonRequest("/api/auth/bootstrap/start", {
+      challenge: challengeData.challenge,
+      proof: bootstrapProof(
+        "how-much-ai:local-bootstrap:client-proof:v1",
+        challengeData.challenge as string,
+      ),
+    }),
+  );
+  assert.equal(completed.status, 200);
+
+  const missingPostHeader = await startPost(
+    new Request("http://127.0.0.1:37645/api/auth/bootstrap/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "127.0.0.1:37645",
+      },
+      body: JSON.stringify({
+        challenge: "a".repeat(43),
+        proof: "b".repeat(43),
+      }),
+    }),
+  );
+  assert.equal(missingPostHeader.status, 403);
+  assert.equal(missingPostHeader.headers.get("cache-control"), "no-store");
+});
+
+test("bootstrap start proves both peers without accepting or returning a long-lived secret", async () => {
   process.env = validStrictEnvironment();
   const password = process.env.APP_PASSWORD;
+  const authSecret = process.env.AUTH_SECRET;
   assert.ok(password);
+  assert.ok(authSecret);
 
-  const denied = await startPost(
+  const passwordBody = await startPost(
     jsonRequest("/api/auth/bootstrap/start", { password: `${password}x` }),
   );
-  assert.equal(denied.status, 401);
-  assert.equal((await denied.text()).includes(password), false);
+  assert.equal(passwordBody.status, 400);
+  assert.equal((await passwordBody.text()).includes(password), false);
+
+  const challengeResponse = await startGet(startGetRequest());
+  assert.equal(challengeResponse.status, 200);
+  assert.equal(challengeResponse.headers.get("cache-control"), "no-store");
+  assert.equal(challengeResponse.headers.get("set-cookie"), null);
+  const challengeData = (await challengeResponse.json()) as Record<string, unknown>;
+  const serializedChallenge = JSON.stringify(challengeData);
+  assert.equal(serializedChallenge.includes(password), false);
+  assert.equal(serializedChallenge.includes(authSecret), false);
+  assert.equal(
+    challengeData.serverProof,
+    bootstrapProof(
+      "how-much-ai:local-bootstrap:server-proof:v1",
+      challengeData.challenge as string,
+    ),
+  );
 
   const response = await startPost(
-    jsonRequest("/api/auth/bootstrap/start", { password }),
+    jsonRequest("/api/auth/bootstrap/start", {
+      challenge: challengeData.challenge,
+      proof: bootstrapProof(
+        "how-much-ai:local-bootstrap:client-proof:v1",
+        challengeData.challenge as string,
+      ),
+    }),
   );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -166,6 +302,78 @@ test("bootstrap start verifies the password without setting a cookie", async () 
   assert.deepEqual(Object.keys(data).sort(), ["expiresInMs", "ticket"]);
   assert.equal(data.expiresInMs, 20_000);
   assert.match(data.ticket, /^[A-Za-z0-9_-]{43}$/);
+  const serializedTicket = JSON.stringify(data);
+  assert.equal(serializedTicket.includes(password), false);
+  assert.equal(serializedTicket.includes(authSecret), false);
+});
+
+test("invalid proof, replay, malformed bodies, and extra schema fields fail closed", async () => {
+  process.env = validStrictEnvironment();
+  let challengeResponse = await startGet(startGetRequest());
+  let challengeData = (await challengeResponse.json()) as Record<string, unknown>;
+  const validProof = bootstrapProof(
+    "how-much-ai:local-bootstrap:client-proof:v1",
+    challengeData.challenge as string,
+  );
+
+  const wrong = await startPost(
+    jsonRequest("/api/auth/bootstrap/start", {
+      challenge: challengeData.challenge,
+      proof: "A".repeat(43),
+    }),
+  );
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.headers.get("cache-control"), "no-store");
+  const replayAfterWrong = await startPost(
+    jsonRequest("/api/auth/bootstrap/start", {
+      challenge: challengeData.challenge,
+      proof: validProof,
+    }),
+  );
+  assert.equal(replayAfterWrong.status, 401);
+  assert.equal(replayAfterWrong.headers.get("cache-control"), "no-store");
+
+  challengeResponse = await startGet(startGetRequest());
+  challengeData = (await challengeResponse.json()) as Record<string, unknown>;
+  const extra = await startPost(
+    jsonRequest("/api/auth/bootstrap/start", {
+      challenge: challengeData.challenge,
+      proof: bootstrapProof(
+        "how-much-ai:local-bootstrap:client-proof:v1",
+        challengeData.challenge as string,
+      ),
+      extra: true,
+    }),
+  );
+  assert.equal(extra.status, 400);
+  assert.equal(extra.headers.get("cache-control"), "no-store");
+
+  challengeResponse = await startGet(startGetRequest());
+  challengeData = (await challengeResponse.json()) as Record<string, unknown>;
+  const malformed = await startPost(
+    new Request("http://127.0.0.1:37645/api/auth/bootstrap/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "127.0.0.1:37645",
+        "X-HMA-Local-Bootstrap": "proof-v1",
+      },
+      body: "{",
+    }),
+  );
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.headers.get("cache-control"), "no-store");
+  const invalidated = await startPost(
+    jsonRequest("/api/auth/bootstrap/start", {
+      challenge: challengeData.challenge,
+      proof: bootstrapProof(
+        "how-much-ai:local-bootstrap:client-proof:v1",
+        challengeData.challenge as string,
+      ),
+    }),
+  );
+  assert.equal(invalidated.status, 401);
+  assert.equal(invalidated.headers.get("cache-control"), "no-store");
 });
 
 test("bootstrap consume requires the exact same origin, consumes once, and sets one host-only strict cookie", async () => {
@@ -295,26 +503,22 @@ test("an already-authenticated browser still erases, consumes, and cannot replay
   assert.equal(replay.status, 401);
 });
 
-test("ordinary login and bootstrap start share one rate-limit bucket", async () => {
+test("ordinary password login remains separate from the proof-only bootstrap endpoint", async () => {
   process.env = validStrictEnvironment();
   const wrong = "not-the-password";
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    const handler = attempt % 2 === 0 ? loginPost : startPost;
-    const pathname =
-      attempt % 2 === 0 ? "/api/auth/login" : "/api/auth/bootstrap/start";
-    const headers =
-      attempt % 2 === 0
-        ? { Origin: "http://127.0.0.1:37645", "Sec-Fetch-Site": "same-origin" }
-        : {};
-    const response = await handler(jsonRequest(pathname, { password: wrong }, headers));
+    const response = await loginPost(
+      jsonRequest(
+        "/api/auth/login",
+        { password: wrong },
+        { Origin: "http://127.0.0.1:37645", "Sec-Fetch-Site": "same-origin" },
+      ),
+    );
     assert.equal(response.status, 401, `attempt ${attempt + 1}`);
   }
 
-  const blocked = await startPost(
-    jsonRequest("/api/auth/bootstrap/start", { password: process.env.APP_PASSWORD }),
-  );
-  assert.equal(blocked.status, 429);
-  assert.ok(Number(blocked.headers.get("retry-after")) >= 1);
-  assert.equal(blocked.headers.get("cache-control"), "no-store");
+  const challenge = await startGet(startGetRequest());
+  assert.equal(challenge.status, 200);
+  assert.equal(challenge.headers.get("cache-control"), "no-store");
 });

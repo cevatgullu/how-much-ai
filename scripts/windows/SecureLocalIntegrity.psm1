@@ -19,12 +19,14 @@ $script:HmaBootstrapHashProperties = @(
     'integrity',
     'runtime',
     'secrets',
+    'finalVerifier',
     'extensionManifest',
     'extensionCallback'
 )
 $script:HmaManifestProperties = @(
     'commit',
     'nodeSha256',
+    'installerSha256',
     'runtimeFiles',
     'bootstrapFiles'
 )
@@ -36,6 +38,7 @@ $script:HmaBootstrapHashFiles = [ordered]@{
     integrity = 'SecureLocalIntegrity.psm1'
     runtime = 'SecureLocalRuntime.psm1'
     secrets = 'SecureLocalSecrets.psm1'
+    finalVerifier = 'verify-final-local-state.ps1'
     extensionManifest = 'oauth-handoff-extension/manifest.json'
     extensionCallback = 'oauth-handoff-extension/callback.js'
 }
@@ -586,6 +589,7 @@ function Assert-HmaStartupIntegrity {
             throw 'The integrity manifest is invalid.'
         }
         Assert-HmaSha256 -Value $manifest.nodeSha256
+        Assert-HmaSha256 -Value $manifest.installerSha256
 
         $runtimeEntries = @(
             Get-HmaValidatedManifestEntries -Entries $manifest.runtimeFiles -Kind runtime
@@ -658,6 +662,9 @@ function Assert-HmaStartupIntegrity {
                 integrity = ([string]$install.bootstrapHashes.integrity).ToLowerInvariant()
                 runtime = ([string]$install.bootstrapHashes.runtime).ToLowerInvariant()
                 secrets = ([string]$install.bootstrapHashes.secrets).ToLowerInvariant()
+                finalVerifier = (
+                    [string]$install.bootstrapHashes.finalVerifier
+                ).ToLowerInvariant()
                 extensionManifest = (
                     [string]$install.bootstrapHashes.extensionManifest
                 ).ToLowerInvariant()

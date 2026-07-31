@@ -8,8 +8,8 @@ This is the open-source, self-hosted, single-tenant edition of How Much AI.
 
 It must retain:
 
-- zero-configuration local use;
-- optional password authentication;
+- authenticated local use;
+- password authentication for ordinary development and self-hosting;
 - Claude and ChatGPT/Codex provider tracking;
 - encrypted local-file, Convex, and Redis/KV REST vaults;
 - local, Redis, and Convex refresh coordination;
@@ -24,10 +24,11 @@ Use Node.js 22.18.0 or newer. Run commands from the repository root.
 
 ```bash
 npm ci
+cp .env.example .env.local
 npm run dev
 ```
 
-The default development URL is [http://localhost:3000](http://localhost:3000). With no environment file, the app is intentionally open and uses the encrypted local vault under `.data/`.
+Set an independent strong `APP_PASSWORD` in `.env.local` before starting. The default development URL is [http://localhost:3000](http://localhost:3000). `npm run dev` binds explicitly to `127.0.0.1` and uses the encrypted local vault under `.data/`; development and production both fail closed without `APP_PASSWORD`. The secure Windows launcher instead creates the session through challenge/server-proof/client-proof HMAC with the DPAPI-protected `AUTH_SECRET` and never transmits the password.
 
 Copy `.env.example` to `.env.local` only when a task needs explicit configuration. Use placeholder/test values, never credentials from another project or a production service.
 

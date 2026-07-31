@@ -48,19 +48,11 @@ export function appPassword(): string | undefined {
   return pw && pw.length > 0 ? pw : undefined;
 }
 
-// The zero-config local default: no APP_PASSWORD runs the app fully OPEN. This is what makes
-// "clone, npm run dev, done" work with no setup. It is ONLY safe on your own machine or a trusted
-// network; set APP_PASSWORD before exposing the app publicly.
+// Authentication stays closed in every environment. Strict-local mode additionally validates its
+// exact environment before the HMAC bootstrap or an ordinary password session can be accepted.
 export function authOpen(): boolean {
-  if (strictLocalModeEnabled()) {
-    assertStrictLocalEnvironment();
-    return false;
-  }
-  // A leftover hosted-mode variable must never turn into an accidentally open deployment after an
-  // upgrade to the self-hosted edition. Unsupported legacy values fail closed at the login gate.
-  const legacyMode = process.env.AUTH_MODE?.trim();
-  if (legacyMode && legacyMode !== "password") return false;
-  return !appPassword();
+  if (strictLocalModeEnabled()) assertStrictLocalEnvironment();
+  return false;
 }
 
 // Constant-time string comparison to avoid leaking the password via timing.

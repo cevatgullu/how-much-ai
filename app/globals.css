@@ -28,8 +28,8 @@
 
 /* Font tokens reference next/font variables, so they must be inlined into utilities. */
 @theme inline {
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-lora), ui-serif, Georgia, serif;
+  --font-sans: "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-display: Georgia, "Times New Roman", ui-serif, serif;
 }
 
 /* Per-provider accent tokens. Default is Claude's coral; a [data-provider] scope (each account card,

@@ -92,12 +92,24 @@ afterEach(() => {
   for (const name of strictEnvironmentNames) restore(name, originalStrictEnvironment.get(name));
 });
 
-test("zero configuration is open, while APP_PASSWORD enables the gate", () => {
+test("development with APP_PASSWORD keeps the password gate closed", () => {
+  delete process.env.AUTH_MODE;
+  process.env.NODE_ENV = "development";
+  process.env.APP_PASSWORD = "a strong local password";
+  assert.equal(authOpen(), false);
+});
+
+test("development without APP_PASSWORD never becomes unauthenticated open mode", () => {
+  delete process.env.HMC_STRICT_LOCAL_MODE;
+  delete process.env.APP_PASSWORD;
+  process.env.NODE_ENV = "development";
+  assert.equal(authOpen(), false);
+});
+
+test("production without APP_PASSWORD fails closed", () => {
   delete process.env.AUTH_MODE;
   delete process.env.APP_PASSWORD;
-  assert.equal(authOpen(), true);
-
-  process.env.APP_PASSWORD = "a strong local password";
+  process.env.NODE_ENV = "production";
   assert.equal(authOpen(), false);
 });
 

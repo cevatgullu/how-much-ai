@@ -32,6 +32,8 @@ async function createFixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "hma-immutable-source-"));
   const runtime = new Map([
     ["package.json", Buffer.from('{"private":true}\n')],
+    [".next/BUILD_ID", Buffer.from("reviewed-build\n")],
+    [".next/app-path-routes-manifest.json", Buffer.from("{}\n")],
     [".next/server/app.js", Buffer.from("compiled\n")],
     ["node_modules/example/index.js", Buffer.from("dependency\n")],
   ]);
@@ -46,13 +48,16 @@ async function createFixture() {
     manifest: {
       commit: "e".repeat(40),
       nodeSha256: sha256(nodeBytes),
+      installerSha256: "f".repeat(64),
       runtimeFiles: [...runtime.entries()]
         .map(([relative, bytes]) => ({
           path: relative,
           size: bytes.byteLength,
           sha256: sha256(bytes),
         }))
-        .sort((left, right) => left.path.localeCompare(right.path, "en")),
+        .sort((left, right) =>
+          left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+        ),
       bootstrapFiles: [],
     },
   };
@@ -74,6 +79,53 @@ test("two injected production cycles leave every staged runtime byte unchanged",
   };
   const fixture = await createFixture();
   const seenSecrets = new Set<string>();
+  const baseEnvironmentNames = [
+    "APPDATA",
+    "COMSPEC",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+  ];
+  const syntheticBaseNames = new Set([
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+  ]);
+  const processEnvironmentNames = new Set(
+    Object.entries(process.env)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .map(([name]) => name.toUpperCase()),
+  );
+  const expectedEnvironmentNames = [
+    ...baseEnvironmentNames.filter(
+      (name) => syntheticBaseNames.has(name) || processEnvironmentNames.has(name),
+    ),
+    "APP_PASSWORD",
+    "AUTH_SECRET",
+    "ENABLE_LOCAL_CONNECT",
+    "HMC_LISTEN_HOST",
+    "HMC_LISTEN_PORT",
+    "HMC_STRICT_LOCAL_MODE",
+    "NEXT_TELEMETRY_DISABLED",
+    "NODE_ENV",
+    "PORT",
+    "TRUST_PROXY_IP_HEADERS",
+    "VAULT_DATA_DIR",
+    "VAULT_ENCRYPTION_SECRET",
+  ].sort();
 
   try {
     const result = await proveRuntimeImmutability({
@@ -87,6 +139,11 @@ test("two injected production cycles leave every staged runtime byte unchanged",
         assert.equal(environment.HMC_LISTEN_HOST, "127.0.0.1");
         assert.equal(environment.PORT, "37645");
         assert.match(environment.APP_PASSWORD, /^[A-Za-z0-9_-]{43}$/u);
+        assert.deepEqual(Object.keys(environment).sort(), expectedEnvironmentNames);
+        assert.equal("PATH" in environment, false);
+        assert.equal("HOME" in environment, false);
+        assert.equal("NODE_OPTIONS" in environment, false);
+        assert.equal("NPM_CONFIG_USERCONFIG" in environment, false);
         assert.notEqual(
           path.resolve(environment.USERPROFILE).toLowerCase(),
           path.resolve(process.env.USERPROFILE ?? os.homedir()).toLowerCase(),
@@ -105,11 +162,66 @@ test("two injected production cycles leave every staged runtime byte unchanged",
       },
     });
 
-    assert.deepEqual(result, { ok: true, cycles: 2, files: 3 });
-    assert.equal(seenSecrets.size, 2);
+    assert.deepEqual(result, { ok: true, cycles: 2, files: 5 });
+    assert.equal(seenSecrets.size, 1);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("production observation dwells through repeated owned readiness checks", async () => {
+  const { observeOwnedRuntimeStability } = (await import(moduleUrl)) as {
+    observeOwnedRuntimeStability: (options: {
+      child: { pid: number; exitCode: number | null; signalCode: string | null };
+      listenerProbe: () => Promise<RuntimeListener[]>;
+      readiness: () => Promise<boolean>;
+      pause: () => Promise<void>;
+      observations?: number;
+    }) => Promise<void>;
+  };
+  const child = { pid: 930, exitCode: null, signalCode: null };
+  let pauses = 0;
+  let readinessCalls = 0;
+  let listenerCalls = 0;
+
+  await observeOwnedRuntimeStability({
+    child,
+    listenerProbe: async () => {
+      listenerCalls += 1;
+      return [{ localAddress: "127.0.0.1", localPort: 37645, pid: child.pid }];
+    },
+    readiness: async () => {
+      readinessCalls += 1;
+      return true;
+    },
+    pause: async () => {
+      pauses += 1;
+    },
+    observations: 10,
+  });
+
+  assert.equal(pauses, 10);
+  assert.equal(readinessCalls, 10);
+  assert.equal(listenerCalls, 20);
+
+  let replacementProbe = 0;
+  await assert.rejects(
+    observeOwnedRuntimeStability({
+      child,
+      listenerProbe: async () => {
+        replacementProbe += 1;
+        return [{
+          localAddress: "127.0.0.1",
+          localPort: 37645,
+          pid: replacementProbe < 4 ? child.pid : child.pid + 1,
+        }];
+      },
+      readiness: async () => true,
+      pause: async () => {},
+      observations: 10,
+    }),
+    /service-listener-owner-mismatch/u,
+  );
 });
 
 test("a child-created runtime file is rejected with no path, hash, or secret in the error", async () => {
@@ -202,6 +314,7 @@ test("changed source bytes and wrong Node hash are rejected before a cycle", asy
       root: string;
       manifest: {
         nodeSha256: string;
+        installerSha256: string;
         runtimeFiles: Array<{ path: string; size: number; sha256: string }>;
       };
       nodePath: string;
@@ -251,6 +364,54 @@ test("changed source bytes and wrong Node hash are rejected before a cycle", asy
     } finally {
       await rm(fresh.root, { recursive: true, force: true });
     }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a jointly replaced manifest and digest cannot reach a production cycle", async () => {
+  const { proveRuntimeImmutabilityFromManifest } = (await import(moduleUrl)) as {
+    proveRuntimeImmutabilityFromManifest: (options: {
+      root: string;
+      manifestPath: string;
+      expectedManifestSha256: string;
+      nodePath: string;
+      applyPrivateAcl: () => Promise<void>;
+      runCycle: () => Promise<void>;
+    }) => Promise<unknown>;
+  };
+  const fixture = await createFixture();
+  const manifestPath = path.join(fixture.root, "runtime-manifest.json");
+  const digestPath = path.join(fixture.root, "runtime-manifest.sha256");
+  let cycles = 0;
+
+  try {
+    const trustedBytes = Buffer.from(JSON.stringify(fixture.manifest), "utf8");
+    const expectedManifestSha256 = sha256(trustedBytes);
+    await writeFile(manifestPath, trustedBytes);
+    await writeFile(digestPath, expectedManifestSha256, "ascii");
+    const replacedManifest = {
+      ...fixture.manifest,
+      nodeSha256: "0".repeat(64),
+    };
+    const replacedBytes = Buffer.from(JSON.stringify(replacedManifest), "utf8");
+    await writeFile(manifestPath, replacedBytes);
+    await writeFile(digestPath, sha256(replacedBytes), "ascii");
+
+    await assert.rejects(
+      proveRuntimeImmutabilityFromManifest({
+        root: fixture.root,
+        manifestPath,
+        expectedManifestSha256,
+        nodePath: process.execPath,
+        applyPrivateAcl: async () => {},
+        runCycle: async () => {
+          cycles += 1;
+        },
+      }),
+      /runtime-immutability-failed/u,
+    );
+    assert.equal(cycles, 0);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -462,6 +623,54 @@ test(
           clearTimeout(timer);
           resolve();
         });
+      });
+      await assert.rejects(
+        assertRuntimePortAvailable(),
+        /service-port-in-use/u,
+      );
+    } finally {
+      await stopRuntimeChildAndAssertPortFree({ child });
+    }
+  },
+);
+
+test(
+  "the Windows port probe rejects an IPv6-only listener",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const {
+      assertRuntimePortAvailable,
+      stopRuntimeChildAndAssertPortFree,
+    } = (await import(moduleUrl)) as {
+      assertRuntimePortAvailable: () => Promise<void>;
+      stopRuntimeChildAndAssertPortFree: (options: {
+        child: ReturnType<typeof spawn>;
+      }) => Promise<void>;
+    };
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "require('node:net').createServer().listen(37645,'::1',()=>process.stdout.write('ready\\n'))",
+      ],
+      {
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+        shell: false,
+      },
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("listener-start-timeout")),
+          5_000,
+        );
+        child.stdout!.once("data", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        child.once("error", reject);
       });
       await assert.rejects(
         assertRuntimePortAvailable(),

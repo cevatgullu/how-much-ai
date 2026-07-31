@@ -14,12 +14,13 @@ You need Node.js 22.18.0 or newer.
 git clone https://github.com/SeraphKc/how-much-ai.git
 cd how-much-ai
 npm ci
+cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). With no environment variables, the dashboard is intentionally open and stores accounts in an encrypted local vault under `.data/`.
+Before starting, set `APP_PASSWORD` in `.env.local` to an independent strong value. Then open [http://localhost:3000](http://localhost:3000). The development command binds explicitly to `127.0.0.1` and stores accounts in an encrypted local vault under `.data/`.
 
-That zero-configuration mode is suitable only for your own computer or a trusted private network. Set `APP_PASSWORD` before making the app reachable by anyone else.
+Development and production both fail closed when `APP_PASSWORD` is missing. Ordinary development and self-hosting never enter an unauthenticated open mode.
 
 ## Connect accounts
 
@@ -34,7 +35,7 @@ Same-machine CLI discovery is automatic in development. In a production-mode loc
 
 ## Secure Windows local mode
 
-For the reviewed, authenticated, loopback-only Windows installation and its exact threat boundary, see [Secure Windows local mode](docs/WINDOWS_SECURE_LOCAL.md). Complete its pre-credential security gate before connecting any real provider account.
+For the reviewed, authenticated, loopback-only Windows installation and its exact threat boundary, see [Secure Windows local mode](docs/WINDOWS_SECURE_LOCAL.md). Its launcher establishes the browser session with challenge/server-proof/client-proof HMAC using the protected `AUTH_SECRET`; it never transmits `APP_PASSWORD`. Complete its pre-credential security gate before connecting any real provider account.
 
 ## Choose a storage mode
 

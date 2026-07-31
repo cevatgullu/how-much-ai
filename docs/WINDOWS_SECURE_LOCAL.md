@@ -15,7 +15,7 @@ The strict-local installation is designed to reduce these risks:
 
 - access to the dashboard from the LAN or another network interface;
 - access to saved state by another Windows user;
-- accidentally starting the application in its unauthenticated open mode;
+- accidentally starting the application without its authenticated session gate;
 - storing the dashboard secrets or provider credentials in plaintext at rest;
 - accidentally running source or dependencies that differ from the reviewed
   manifest;
@@ -42,8 +42,10 @@ plus the exact reviewed local hardening commit stored in
 executable hash, every installed runtime file, and every bootstrap file. Its
 SHA-256 is published beside it in `audit/final/runtime-manifest.sha256` and is
 also retained as an in-memory trust anchor in the same PowerShell session. The
-installer refuses a dirty source tree, the wrong ancestry, a manifest mismatch,
-an added or missing installable file, and a changed file hash or size.
+trusted manifest-generation pre-gate refuses a dirty source tree or the wrong
+ancestry. The installer then authenticates and retains the manifest-bound files
+and refuses a manifest mismatch, an added or missing installable file, or a
+changed file hash or size.
 
 Never run `git pull` in the reviewed source or installed runtime. Never install
 from an unreviewed archive, binary, branch tip, or rebuilt dependency tree.
@@ -176,15 +178,20 @@ ticket, provider identifier, or raw task XML.
 
 The service launcher runs `Assert-HmaStartupIntegrity` before importing the
 DPAPI module or decrypting `secrets.dpapi`. The Edge launcher repeats integrity
-and exact listener-owner checks before sending the DPAPI-held password to the
-loopback bootstrap endpoint.
+and exact listener-owner checks, then proves possession of the DPAPI-held
+`AUTH_SECRET` with the bootstrap HMAC exchange. It never transmits
+`APP_PASSWORD` or `AUTH_SECRET` to the service or browser.
 
 ## Browser bootstrap
 
-`open-secure-local.ps1` obtains a cryptographically random bootstrap ticket
-from the already verified service. The server retains only the ticket's
-SHA-256, permits at most one live ticket, and makes it redeemable for at most
-20 seconds and one use.
+`open-secure-local.ps1` requests a challenge and server proof from the already
+verified service. Using separate domain-separated HMAC contexts, the launcher
+verifies the server proof with the DPAPI-held `AUTH_SECRET`, then returns a
+client proof. Only after that mutual proof succeeds does the service issue a
+cryptographically random bootstrap ticket. Neither the password nor
+`AUTH_SECRET` crosses the process boundary. The server retains only the
+ticket's SHA-256, permits at most one live ticket, and makes it redeemable for
+at most 20 seconds and one use.
 
 The ticket enters Edge only in
 `/bootstrap#bootstrap=`. The bootstrap page synchronously removes the fragment
@@ -269,29 +276,632 @@ profile contents are hidden from code running as the same user.
 
 ## Installation
 
-Use Windows PowerShell 5.1 from a clean, separately cloned source tree. Node.js
-must be `22.18.0` or newer. The reviewed machine uses Node.js `24.14.0`.
-Microsoft Edge, Task Scheduler, and Microsoft Defender must be available.
-
-First record the toolchain and source state:
+Use Windows PowerShell 5.1 from a clean, separately cloned source tree. Start
+the entire retained-anchor workflow in a new exact `-NoProfile` child first;
+do not run the later blocks in the ambient/profile-loaded parent:
 
 ```powershell
-node --version
-npm.cmd --version
-git status --porcelain
-git log --oneline --decorate -6
+$cleanPs51 = [IO.Path]::Combine(
+    [Environment]::SystemDirectory,
+    'WindowsPowerShell\v1.0\powershell.exe'
+)
+& $cleanPs51 -NoLogo -NoProfile -ExecutionPolicy Bypass
 ```
 
-Enumerate dependency lifecycle scripts, review each result, then install
-without running them:
+Run every remaining block in that child session. Node.js must be `22.18.0` or
+newer. The reviewed machine uses Node.js `24.14.0`. Microsoft Edge, Task
+Scheduler, and Microsoft Defender must be available.
+
+First bind the exact signed toolchain. Keep this PowerShell session open; the
+retained hashes below are trust anchors and must not be recomputed after a
+failed check:
 
 ```powershell
+$ps51 = [IO.Path]::Combine(
+    [Environment]::SystemDirectory,
+    'WindowsPowerShell\v1.0\powershell.exe'
+)
+$currentPowerShell = (Microsoft.PowerShell.Management\Get-Process -Id $PID).Path
+if (-not [string]::Equals(
+        $currentPowerShell,
+        $ps51,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    $PSVersionTable.PSVersion.Major -ne 5) {
+    throw 'The workflow is not running in the exact Windows PowerShell 5.1 child.'
+}
+$windowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$windowsPrincipal = New-Object Security.Principal.WindowsPrincipal($windowsIdentity)
+if ($windowsPrincipal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )) {
+    throw 'The retained-anchor workflow must not run elevated.'
+}
+function Test-HmaToolchainEnvironmentName {
+    param([string]$Name)
+
+    if ([string]::IsNullOrEmpty($Name)) {
+        return $false
+    }
+    foreach ($prefix in @('NODE_', 'NPM_CONFIG_', 'GIT_')) {
+        if ($Name.StartsWith(
+                $prefix,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            return $true
+        }
+    }
+    return $false
+}
+foreach ($environmentNameValue in @(
+        [Environment]::GetEnvironmentVariables(
+            [EnvironmentVariableTarget]::Process
+        ).Keys
+    )) {
+    $environmentName = [string]$environmentNameValue
+    if (Test-HmaToolchainEnvironmentName -Name $environmentName) {
+        [Environment]::SetEnvironmentVariable(
+            $environmentName,
+            $null,
+            [EnvironmentVariableTarget]::Process
+        )
+    }
+}
+foreach ($environmentNameValue in @(
+        [Environment]::GetEnvironmentVariables(
+            [EnvironmentVariableTarget]::Process
+        ).Keys
+    )) {
+    if (Test-HmaToolchainEnvironmentName -Name ([string]$environmentNameValue)) {
+        throw 'A toolchain-affecting environment variable remains.'
+    }
+}
+$systemModuleRoot = [IO.Path]::Combine(
+    [Environment]::SystemDirectory,
+    'WindowsPowerShell\v1.0\Modules'
+)
+$env:PSModulePath = $systemModuleRoot
+foreach ($moduleManifest in @(
+        'CimCmdlets\CimCmdlets.psd1',
+        'NetTCPIP\NetTCPIP.psd1',
+        'ScheduledTasks\ScheduledTasks.psd1'
+    )) {
+    Microsoft.PowerShell.Core\Import-Module `
+        -Name (Join-Path $systemModuleRoot $moduleManifest) `
+        -Force `
+        -ErrorAction Stop
+}
+$requiredCommandSources = [ordered]@{
+    'Get-AuthenticodeSignature' = 'Microsoft.PowerShell.Security'
+    'Get-FileHash' = 'Microsoft.PowerShell.Utility'
+    'Get-Item' = 'Microsoft.PowerShell.Management'
+    'Get-ChildItem' = 'Microsoft.PowerShell.Management'
+    'Copy-Item' = 'Microsoft.PowerShell.Management'
+    'Import-Module' = 'Microsoft.PowerShell.Core'
+    'Get-CimInstance' = 'CimCmdlets'
+    'Get-NetTCPConnection' = 'NetTCPIP'
+    'Get-ScheduledTask' = 'ScheduledTasks'
+    'Register-ScheduledTask' = 'ScheduledTasks'
+    'Start-ScheduledTask' = 'ScheduledTasks'
+}
+foreach ($commandName in $requiredCommandSources.Keys) {
+    $resolvedCommand = Microsoft.PowerShell.Core\Get-Command `
+        -Name $commandName `
+        -ErrorAction Stop
+    if (-not [string]::Equals(
+            [string]$resolvedCommand.Source,
+            [string]$requiredCommandSources[$commandName],
+            [StringComparison]::Ordinal
+        )) {
+        throw 'A security-critical PowerShell command is shadowed.'
+    }
+}
+$systemDriveRoot = [IO.Path]::GetPathRoot([Environment]::SystemDirectory)
+$node = [IO.Path]::Combine(
+    $systemDriveRoot,
+    'Program Files',
+    'nodejs',
+    'node.exe'
+)
+$git = [IO.Path]::Combine(
+    $systemDriveRoot,
+    'Program Files',
+    'Git',
+    'mingw64',
+    'bin',
+    'git.exe'
+)
+$defenderRegistryKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+    'SOFTWARE\Microsoft\Windows Defender',
+    $false
+)
+if ($null -eq $defenderRegistryKey) {
+    throw 'The installed Microsoft Defender platform is unavailable.'
+}
+try {
+    $defenderInstallLocation = [string]$defenderRegistryKey.GetValue(
+        'InstallLocation',
+        $null,
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+    )
+} finally {
+    $defenderRegistryKey.Dispose()
+}
+if ([string]::IsNullOrWhiteSpace($defenderInstallLocation)) {
+    throw 'The installed Microsoft Defender platform is unavailable.'
+}
+$defenderPlatformRoot = [IO.Path]::GetFullPath(
+    [IO.Path]::Combine(
+        [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::CommonApplicationData
+        ),
+        'Microsoft',
+        'Windows Defender',
+        'Platform'
+    )
+)
+$defenderPlatformDirectory = [IO.Path]::GetFullPath(
+    $defenderInstallLocation.TrimEnd([char[]]@('\', '/'))
+)
+$defenderPlatformParent = [IO.Directory]::GetParent(
+    $defenderPlatformDirectory
+)
+if ($null -eq $defenderPlatformParent -or
+    -not [string]::Equals(
+        $defenderPlatformParent.FullName,
+        $defenderPlatformRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw 'The installed Microsoft Defender platform path is invalid.'
+}
+$mpCmdRun = [IO.Path]::Combine(
+    $defenderPlatformDirectory,
+    'MpCmdRun.exe'
+)
+$ps51Signature = Get-AuthenticodeSignature -LiteralPath $ps51
+$nodeSignature = Get-AuthenticodeSignature -LiteralPath $node
+$gitSignature = Get-AuthenticodeSignature -LiteralPath $git
+$mpCmdRunSignature = Get-AuthenticodeSignature -LiteralPath $mpCmdRun
+if ($ps51Signature.Status -ne 'Valid' -or
+    $ps51Signature.SignerCertificate.Subject -notmatch '(?:^|, )O=Microsoft Corporation(?:,|$)' -or
+    $nodeSignature.Status -ne 'Valid' -or
+    $nodeSignature.SignerCertificate.Subject -notmatch '(?:^|, )O=OpenJS Foundation(?:,|$)' -or
+    $gitSignature.Status -ne 'Valid' -or
+    $gitSignature.SignerCertificate.Subject -notmatch '(?:^|, )O=Johannes Schindelin(?:,|$)' -or
+    $mpCmdRunSignature.Status -ne 'Valid' -or
+    $mpCmdRunSignature.SignerCertificate.Subject -notmatch '(?:^|, )O=Microsoft Corporation(?:,|$)') {
+    throw 'The reviewed Node, Git, or Microsoft Defender signature is unavailable.'
+}
+$trustedPs51Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ps51).Hash.ToLowerInvariant()
+$trustedNodeSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $node).Hash.ToLowerInvariant()
+$trustedGitSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $git).Hash.ToLowerInvariant()
+$trustedMpCmdRunSha256 = (
+    Get-FileHash -Algorithm SHA256 -LiteralPath $mpCmdRun
+).Hash.ToLowerInvariant()
+$nodeDirectory = [IO.Path]::GetDirectoryName($node)
+$npm = Join-Path $nodeDirectory 'npm.cmd'
+$npmCli = Join-Path $nodeDirectory 'node_modules\npm\bin\npm-cli.js'
+$npmPrefix = Join-Path $nodeDirectory 'node_modules\npm\bin\npm-prefix.js'
+foreach ($toolDirectoryPath in @(
+        $defenderPlatformRoot,
+        $defenderPlatformDirectory
+    )) {
+    $directoryItem = Get-Item `
+        -LiteralPath $toolDirectoryPath `
+        -Force `
+        -ErrorAction Stop
+    if (-not $directoryItem.PSIsContainer -or
+        ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'The reviewed toolchain contains a non-ordinary directory.'
+    }
+}
+foreach ($toolPath in @(
+        $ps51,
+        $node,
+        $git,
+        $npm,
+        $npmCli,
+        $npmPrefix,
+        $mpCmdRun
+    )) {
+    $item = Get-Item -LiteralPath $toolPath -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'The reviewed toolchain contains a non-ordinary path.'
+    }
+}
+$trustedNpmHashes = [ordered]@{
+    command = (Get-FileHash -Algorithm SHA256 -LiteralPath $npm).Hash.ToLowerInvariant()
+    cli = (Get-FileHash -Algorithm SHA256 -LiteralPath $npmCli).Hash.ToLowerInvariant()
+    prefix = (Get-FileHash -Algorithm SHA256 -LiteralPath $npmPrefix).Hash.ToLowerInvariant()
+}
+$packageJsonPath = (Resolve-Path 'package.json').Path
+$packageLockPath = (Resolve-Path 'package-lock.json').Path
+$trustedPackageJsonSha256 = (
+    Get-FileHash -Algorithm SHA256 -LiteralPath $packageJsonPath
+).Hash.ToLowerInvariant()
+$trustedPackageLockSha256 = (
+    Get-FileHash -Algorithm SHA256 -LiteralPath $packageLockPath
+).Hash.ToLowerInvariant()
+function Assert-HmaTrustedNpmToolchain {
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $node).Hash.ToLowerInvariant() -cne
+            $trustedNodeSha256 -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $npm).Hash.ToLowerInvariant() -cne
+            $trustedNpmHashes.command -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $npmCli).Hash.ToLowerInvariant() -cne
+            $trustedNpmHashes.cli -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $npmPrefix).Hash.ToLowerInvariant() -cne
+            $trustedNpmHashes.prefix) {
+        throw 'The retained Node/npm toolchain changed.'
+    }
+}
+[Environment]::SetEnvironmentVariable(
+    'GIT_CONFIG_NOSYSTEM',
+    '1',
+    [EnvironmentVariableTarget]::Process
+)
+[Environment]::SetEnvironmentVariable(
+    'GIT_CONFIG_SYSTEM',
+    'NUL',
+    [EnvironmentVariableTarget]::Process
+)
+[Environment]::SetEnvironmentVariable(
+    'GIT_CONFIG_GLOBAL',
+    'NUL',
+    [EnvironmentVariableTarget]::Process
+)
+$gitStatusLines = @(
+    & $git `
+        --no-pager `
+        -c core.fsmonitor=false `
+        -c core.untrackedCache=false `
+        status `
+        --porcelain=v1 `
+        --untracked-files=all `
+        --ignore-submodules=none
+)
+$gitStatusExitCode = $LASTEXITCODE
+if ($gitStatusExitCode -ne 0 -or $gitStatusLines.Count -ne 0) {
+    throw 'The reviewed source tree is not clean.'
+}
+```
+
+Establish the trusted launcher below before parsing the npm lockfile or
+executing `ci`, `ls`, or `audit`. Windows PowerShell 5.1 cannot safely
+materialize every valid npm lockfile as a case-insensitive object, so the
+reviewed Node entrypoint creates the lifecycle-script inventory instead.
+
+Run the repository validation through the reviewed minimal-environment
+launcher:
+
+```powershell
+$trustedAuditLauncher = (Resolve-Path 'scripts\audit\invoke-trusted-node.ps1').Path
+$trustedAuditLauncherSha256 = (
+    Get-FileHash -Algorithm SHA256 -LiteralPath $trustedAuditLauncher
+).Hash.ToLowerInvariant()
+$trustedAuditScripts = @{}
+foreach ($name in @(
+        'run-sanitized-validation.mjs',
+        'create-runtime-manifest.mjs',
+        'safe-secret-scan.mjs',
+        'prove-runtime-immutability.mjs'
+    )) {
+    $scriptPath = (Resolve-Path (Join-Path 'scripts\audit' $name)).Path
+    $trustedAuditScripts[$name] = [pscustomobject]@{
+        path = $scriptPath
+        sha256 = (
+            Get-FileHash -Algorithm SHA256 -LiteralPath $scriptPath
+        ).Hash.ToLowerInvariant()
+    }
+}
+function Invoke-HmaTrustedAudit {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet(
+            'run-sanitized-validation.mjs',
+            'create-runtime-manifest.mjs',
+            'safe-secret-scan.mjs',
+            'prove-runtime-immutability.mjs'
+        )]
+        [string]$Name,
+        [string[]]$Arguments = @()
+    )
+
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $node).Hash.ToLowerInvariant() -cne
+            $trustedNodeSha256) {
+        throw 'A retained audit trust anchor changed.'
+    }
+    $entry = $trustedAuditScripts[$Name]
+    if ($null -eq $entry -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.path).Hash.ToLowerInvariant() -cne
+            $entry.sha256) {
+        throw 'A retained audit script changed.'
+    }
+    $argumentBytes = [Text.Encoding]::UTF8.GetBytes(
+        (ConvertTo-Json -Compress -Depth 3 -InputObject ([ordered]@{
+                    version = 1
+                    arguments = @($Arguments)
+                }))
+    )
+    try {
+        $encodedArguments = [Convert]::ToBase64String($argumentBytes)
+        $encodedArguments = $encodedArguments.TrimEnd('=').Replace('+', '-').Replace('/', '_')
+
+        $launcherStream = [IO.File]::Open(
+            $trustedAuditLauncher,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        $launcherMemory = New-Object IO.MemoryStream
+        $launcherBytes = $null
+        try {
+            $launcherStream.CopyTo($launcherMemory)
+            $launcherBytes = $launcherMemory.ToArray()
+            $sha256 = [Security.Cryptography.SHA256]::Create()
+            try {
+                $launcherSha256 = [BitConverter]::ToString(
+                    $sha256.ComputeHash($launcherBytes)
+                )
+                $launcherSha256 = $launcherSha256.Replace('-', '').ToLowerInvariant()
+            } finally {
+                $sha256.Dispose()
+            }
+            if ($launcherSha256 -cne $trustedAuditLauncherSha256) {
+                throw 'A retained audit trust anchor changed.'
+            }
+            $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+            $launcherScript = [ScriptBlock]::Create(
+                $strictUtf8.GetString($launcherBytes)
+            )
+            $result = & $launcherScript `
+                -NodePath $node `
+                -ExpectedNodeSha256 $trustedNodeSha256 `
+                -ScriptPath $entry.path `
+                -ExpectedScriptSha256 $entry.sha256 `
+                -EncodedScriptArguments $encodedArguments `
+                -PassThruResult
+        } finally {
+            if ($null -ne $launcherBytes) {
+                [Array]::Clear($launcherBytes, 0, $launcherBytes.Length)
+            }
+            $launcherScript = $null
+            $launcherMemory.Dispose()
+            $launcherStream.Dispose()
+        }
+        if ($null -eq $result -or $result -is [Array]) {
+            throw "Trusted audit failed: $Name"
+        }
+        $resultProperties = @(
+            $result.PSObject.Properties |
+                ForEach-Object { $_.Name } |
+                Sort-Object
+        )
+        if ([bool](Compare-Object `
+                -ReferenceObject @(
+                    'exitCode',
+                    'ok',
+                    'stderr',
+                    'stdout',
+                    'version'
+                ) `
+                -DifferenceObject $resultProperties `
+                -CaseSensitive) -or
+            $result.version -isnot [int] -or
+            [int]$result.version -ne 1 -or
+            $result.ok -isnot [bool] -or
+            $result.exitCode -isnot [int] -or
+            $result.stdout -isnot [string] -or
+            $result.stderr -isnot [string]) {
+            throw "Trusted audit failed: $Name"
+        }
+        if (-not [bool]$result.ok -or [int]$result.exitCode -ne 0) {
+            throw "Trusted audit failed: $Name"
+        }
+        if ([string]$result.stderr -ne '') {
+            [Console]::Error.Write([string]$result.stderr)
+        }
+        Write-Output -NoEnumerate ([string]$result.stdout)
+    } finally {
+        [Array]::Clear($argumentBytes, 0, $argumentBytes.Length)
+        $encodedArguments = $null
+    }
+}
+
 New-Item -ItemType Directory -Force 'audit\final' | Out-Null
-node -e "const l=require('./package-lock.json'); const rows=Object.entries(l.packages).filter(([,v])=>v&&v.hasInstallScript).map(([p,v])=>({path:p,name:v.name||p,version:v.version})); process.stdout.write(JSON.stringify(rows,null,2))" | Set-Content -Encoding utf8 'audit\final\npm-install-scripts.json'
-npm.cmd ci --ignore-scripts --audit=false --fund=false
-npm.cmd ls --all | Set-Content -Encoding utf8 'audit\final\npm-ls.txt'
-npm.cmd audit --json | Set-Content -Encoding utf8 'audit\final\npm-audit.json'
-git diff -- package.json package-lock.json
+$inventoryLines = @(
+    Invoke-HmaTrustedAudit `
+        -Name 'run-sanitized-validation.mjs' `
+        -Arguments @(
+            '--inventory-install-scripts', $packageLockPath,
+            '--expected-lockfile-sha256', $trustedPackageLockSha256
+        )
+)
+if ($inventoryLines.Count -ne 1 -or
+    $inventoryLines[0] -isnot [string] -or
+    $inventoryLines[0].Length -gt 16777216) {
+    throw 'The install-script inventory is invalid.'
+}
+try {
+    $inventory = ConvertFrom-Json `
+        -InputObject $inventoryLines[0] `
+        -ErrorAction Stop
+    $inventoryProperties = @(
+        $inventory.PSObject.Properties |
+            ForEach-Object { $_.Name } |
+            Sort-Object
+    )
+    if ([bool](Compare-Object `
+            -ReferenceObject @('installScripts', 'ok') `
+            -DifferenceObject $inventoryProperties `
+            -CaseSensitive) -or
+        $inventory.ok -isnot [bool] -or
+        -not [bool]$inventory.ok -or
+        @($inventory.installScripts).Count -gt 10000) {
+        throw 'The install-script inventory is invalid.'
+    }
+    foreach ($installScript in @($inventory.installScripts)) {
+        $properties = @(
+            $installScript.PSObject.Properties |
+                ForEach-Object { $_.Name } |
+                Sort-Object
+        )
+        if ([bool](Compare-Object `
+                -ReferenceObject @('name', 'path', 'version') `
+                -DifferenceObject $properties `
+                -CaseSensitive) -or
+            $installScript.name -isnot [string] -or
+            $installScript.path -isnot [string] -or
+            $installScript.version -isnot [string]) {
+            throw 'The install-script inventory is invalid.'
+        }
+    }
+    [IO.File]::WriteAllText(
+        (Join-Path (Resolve-Path 'audit\final').Path 'npm-install-scripts.json'),
+        $inventoryLines[0],
+        (New-Object Text.UTF8Encoding($false))
+    )
+} catch {
+    throw 'The install-script inventory is invalid.'
+}
+
+function Get-HmaRetainedNpmTreeSha256 {
+    $measureLines = @(
+        Invoke-HmaTrustedAudit `
+            -Name 'run-sanitized-validation.mjs' `
+            -Arguments @('--measure-npm-tree', $npm)
+    )
+    if ($measureLines.Count -ne 1 -or
+        $measureLines[0] -isnot [string] -or
+        $measureLines[0].Length -gt 1024) {
+        throw 'The retained npm tree measurement is invalid.'
+    }
+    try {
+        $measurement = ConvertFrom-Json `
+            -InputObject $measureLines[0] `
+            -ErrorAction Stop
+        $measurementProperties = @(
+            $measurement.PSObject.Properties |
+                ForEach-Object { $_.Name } |
+                Sort-Object
+        )
+        if ([bool](Compare-Object `
+                -ReferenceObject @('npmTreeSha256', 'ok') `
+                -DifferenceObject $measurementProperties `
+                -CaseSensitive) -or
+            $measurement.ok -isnot [bool] -or
+            -not [bool]$measurement.ok -or
+            $measurement.npmTreeSha256 -isnot [string] -or
+            [string]$measurement.npmTreeSha256 -cnotmatch '^[a-f0-9]{64}$') {
+            throw 'The retained npm tree measurement is invalid.'
+        }
+        return [string]$measurement.npmTreeSha256
+    } catch {
+        throw 'The retained npm tree measurement is invalid.'
+    }
+}
+
+$trustedNpmTreeSha256 = Get-HmaRetainedNpmTreeSha256
+function Invoke-HmaPinnedNpmCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('ci', 'ls', 'audit')]
+        [string]$Operation
+    )
+
+    $operationLines = @(
+        Invoke-HmaTrustedAudit `
+            -Name 'run-sanitized-validation.mjs' `
+            -Arguments @(
+                '--run-pinned-npm', $Operation,
+                '--npm', $npm,
+                '--expected-npm-cli-sha256', $trustedNpmHashes.cli,
+                '--expected-npm-tree-sha256', $trustedNpmTreeSha256,
+                '--package-json', $packageJsonPath,
+                '--expected-package-json-sha256', $trustedPackageJsonSha256,
+                '--package-lock', $packageLockPath,
+                '--expected-lockfile-sha256', $trustedPackageLockSha256
+            )
+    )
+    if ($operationLines.Count -ne 1 -or
+        $operationLines[0] -isnot [string] -or
+        $operationLines[0].Length -gt 16777216) {
+        throw "Pinned npm operation failed: $Operation"
+    }
+    try {
+        $operationResult = ConvertFrom-Json `
+            -InputObject $operationLines[0] `
+            -ErrorAction Stop
+        $operationProperties = @(
+            $operationResult.PSObject.Properties |
+                ForEach-Object { $_.Name } |
+                Sort-Object
+        )
+        if ([bool](Compare-Object `
+                -ReferenceObject @('ok', 'operation', 'output') `
+                -DifferenceObject $operationProperties `
+                -CaseSensitive) -or
+            $operationResult.ok -isnot [bool] -or
+            -not [bool]$operationResult.ok -or
+            $operationResult.operation -isnot [string] -or
+            [string]$operationResult.operation -cne $Operation -or
+            $operationResult.output -isnot [string]) {
+            throw "Pinned npm operation failed: $Operation"
+        }
+        $operationOutput = [string]$operationResult.output
+    } catch {
+        throw "Pinned npm operation failed: $Operation"
+    }
+    switch ($Operation) {
+        'ci' {
+            [Console]::Out.Write($operationOutput)
+        }
+        'ls' {
+            [IO.File]::WriteAllText(
+                (Join-Path (Resolve-Path 'audit\final').Path 'npm-ls.txt'),
+                $operationOutput,
+                (New-Object Text.UTF8Encoding($false))
+            )
+        }
+        'audit' {
+            [IO.File]::WriteAllText(
+                (Join-Path (Resolve-Path 'audit\final').Path 'npm-audit.json'),
+                $operationOutput,
+                (New-Object Text.UTF8Encoding($false))
+            )
+        }
+    }
+}
+
+Invoke-HmaPinnedNpmCommand -Operation 'ci'
+Invoke-HmaPinnedNpmCommand -Operation 'ls'
+Invoke-HmaPinnedNpmCommand -Operation 'audit'
+& $git `
+    --no-pager `
+    -c core.fsmonitor=false `
+    -c core.untrackedCache=false `
+    diff `
+    --no-ext-diff `
+    --no-textconv `
+    --exit-code `
+    --quiet `
+    -- `
+    package.json `
+    package-lock.json
+$gitDiffExitCode = $LASTEXITCODE
+if ($gitDiffExitCode -ne 0) { throw 'Lockfile comparison failed.' }
+
+Invoke-HmaTrustedAudit `
+    -Name 'run-sanitized-validation.mjs' `
+    -Arguments @(
+        '--npm', $npm,
+        '--expected-npm-cli-sha256', $trustedNpmHashes.cli,
+        '--expected-npm-tree-sha256', $trustedNpmTreeSha256,
+        '--package-json', $packageJsonPath,
+        '--expected-package-json-sha256', $trustedPackageJsonSha256
+    )
 ```
 
 Review the realized dependency tree with the supply-chain risk audit. Run the
@@ -300,55 +910,436 @@ the security gate. Do not continue with an unexplained install script,
 maintainer-takeover signal, unpinned executable download, high-risk package, or
 unresolved production high/critical finding.
 
-Run the repository validation through the reviewed minimal-environment
-launcher:
-
-```powershell
-$npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-node scripts/audit/run-sanitized-validation.mjs --npm $npm
-```
-
 After the audit tooling is committed and the final source/static gate passes,
 create and scan the installable manifest and prove that two production starts
 do not mutate the staged runtime:
 
 ```powershell
-git rev-parse HEAD | Set-Content -Encoding ascii 'audit\final\final-commit.txt'
-$node = (Get-Command node.exe -ErrorAction Stop).Source
-$git = (Get-Command git.exe -ErrorAction Stop).Source
-node scripts/audit/create-runtime-manifest.mjs --root . --commit (Get-Content -Raw 'audit\final\final-commit.txt').Trim() --node $node --git $git --output audit/final/runtime-manifest.json --sha256-output audit/final/runtime-manifest.sha256
-if ($LASTEXITCODE -ne 0) { throw 'Runtime manifest generation failed.' }
-$trustedManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath 'audit\final\runtime-manifest.json').Hash.ToLowerInvariant()
-$publishedManifestSha256 = (Get-Content -Raw -LiteralPath 'audit\final\runtime-manifest.sha256').Trim().ToLowerInvariant()
-if ($trustedManifestSha256 -notmatch '^[a-f0-9]{64}$' -or
+$upstreamBase = '1238189b7017601d21e3579d041480ce3773e191'
+$finalCommit = (& $git rev-parse --verify 'HEAD^{commit}').Trim()
+if ($LASTEXITCODE -ne 0 -or $finalCommit -cnotmatch '^[a-f0-9]{40}$') {
+    throw 'Final commit resolution failed.'
+}
+[IO.File]::WriteAllText(
+    (Join-Path (Resolve-Path 'audit\final').Path 'final-commit.txt'),
+    $finalCommit,
+    (New-Object Text.UTF8Encoding($false))
+)
+$manifestResultLines = @(
+    Invoke-HmaTrustedAudit `
+        -Name 'create-runtime-manifest.mjs' `
+        -Arguments @(
+            '--root', (Resolve-Path '.').Path,
+            '--commit', $finalCommit,
+            '--node', $node,
+            '--git', $git,
+            '--expected-git-sha256', $trustedGitSha256,
+            '--upstream-base', $upstreamBase,
+            '--output', (Join-Path (Resolve-Path 'audit\final').Path 'runtime-manifest.json'),
+            '--sha256-output', (Join-Path (Resolve-Path 'audit\final').Path 'runtime-manifest.sha256')
+        )
+)
+if ($manifestResultLines.Count -ne 1 -or
+    $manifestResultLines[0] -isnot [string] -or
+    $manifestResultLines[0].Length -gt 1024) {
+    throw 'Runtime manifest result is invalid.'
+}
+try {
+    $manifestResult = ConvertFrom-Json `
+        -InputObject $manifestResultLines[0] `
+        -ErrorAction Stop
+    $manifestResultProperties = @(
+        $manifestResult.PSObject.Properties |
+            ForEach-Object { $_.Name } |
+            Sort-Object
+    )
+    if ([bool](Compare-Object `
+            -ReferenceObject @(
+                'bootstrapFiles',
+                'manifestSha256',
+                'ok',
+                'runtimeFiles'
+            ) `
+            -DifferenceObject $manifestResultProperties `
+            -CaseSensitive) -or
+        $manifestResult.ok -isnot [bool] -or
+        -not [bool]$manifestResult.ok -or
+        $manifestResult.runtimeFiles -isnot [int] -or
+        [int]$manifestResult.runtimeFiles -le 0 -or
+        $manifestResult.bootstrapFiles -isnot [int] -or
+        [int]$manifestResult.bootstrapFiles -le 0 -or
+        $manifestResult.manifestSha256 -isnot [string] -or
+        [string]$manifestResult.manifestSha256 -cnotmatch '^[a-f0-9]{64}$') {
+        throw 'Runtime manifest result is invalid.'
+    }
+    $trustedManifestSha256 = [string]$manifestResult.manifestSha256
+} catch {
+    throw 'Runtime manifest result is invalid.'
+}
+$publishedManifestSha256 = [IO.File]::ReadAllText(
+    (Resolve-Path 'audit\final\runtime-manifest.sha256').Path
+)
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath 'audit\final\runtime-manifest.json').Hash.ToLowerInvariant() -cne
+        $trustedManifestSha256 -or
     $publishedManifestSha256 -cne $trustedManifestSha256) {
     throw 'Runtime manifest trust anchor mismatch.'
 }
-node scripts/audit/safe-secret-scan.mjs --json audit/final/secret-scan.json --manifest audit/final/runtime-manifest.json
-node scripts/audit/prove-runtime-immutability.mjs --root . --manifest audit/final/runtime-manifest.json
+Invoke-HmaTrustedAudit `
+    -Name 'safe-secret-scan.mjs' `
+    -Arguments @(
+        '--json', (Join-Path (Resolve-Path 'audit\final').Path 'secret-scan.json'),
+        '--manifest', (Join-Path (Resolve-Path 'audit\final').Path 'runtime-manifest.json'),
+        '--expected-manifest-sha256', $trustedManifestSha256
+    )
+Invoke-HmaTrustedAudit `
+    -Name 'prove-runtime-immutability.mjs' `
+    -Arguments @(
+        '--root', (Resolve-Path '.').Path,
+        '--manifest', (Join-Path (Resolve-Path 'audit\final').Path 'runtime-manifest.json'),
+        '--expected-manifest-sha256', $trustedManifestSha256
+    )
 ```
 
 Keep this PowerShell session open through installation and final-state
 verification. Do not reconstruct `$trustedManifestSha256` from the adjacent
 hash file later.
 
-Locate Microsoft Defender's installed platform `MpCmdRun.exe`, bind
-`$mpCmdRun` to that resolved executable, and scan the reviewed source and
+Use the exact Microsoft-signed Defender platform executable and retained hash
+bound above. Keep that executable read-locked through the scan, verify its
+locked bytes before and after execution, and scan the reviewed source and
 production build without remediation:
 
 ```powershell
-& $mpCmdRun -Scan -ScanType 3 -File (Resolve-Path '.').Path -DisableRemediation
-$exitCode = $LASTEXITCODE
-"DefenderExitCode=$exitCode" | Set-Content -Encoding ascii 'audit\final\defender.txt'
-if ($exitCode -ne 0) { throw "Defender did not return a clean scan result." }
+function Get-HmaLockedFileSha256 {
+    param([Parameter(Mandatory)][IO.FileStream]$Stream)
+
+    $position = $Stream.Position
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $Stream.Position = 0
+        return ([BitConverter]::ToString(
+                $sha256.ComputeHash($Stream)
+            )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $Stream.Position = $position
+        $sha256.Dispose()
+    }
+}
+
+$defenderScanRoot = (Resolve-Path '.').Path
+$defenderManifestPath = (
+    Resolve-Path 'audit\final\runtime-manifest.json'
+).Path
+$defenderManifestStream = $null
+$defenderSourceLeases = New-Object 'Collections.Generic.List[object]'
+$strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+try {
+    $defenderManifestStream = [IO.File]::Open(
+        $defenderManifestPath,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    if ((Get-HmaLockedFileSha256 -Stream $defenderManifestStream) -cne
+        $trustedManifestSha256) {
+        throw 'The Defender manifest lease is invalid.'
+    }
+    $defenderManifestBytes = [IO.File]::ReadAllBytes(
+        $defenderManifestPath
+    )
+    try {
+        $defenderManifest = ConvertFrom-Json `
+            -InputObject $strictUtf8.GetString($defenderManifestBytes) `
+            -ErrorAction Stop
+    } finally {
+        [Array]::Clear(
+            $defenderManifestBytes,
+            0,
+            $defenderManifestBytes.Length
+        )
+    }
+    $installerLeasePath = 'scripts/windows/install-secure-local.ps1'
+    $installerLeaseItem = Get-Item `
+        -LiteralPath $installerLeasePath `
+        -Force `
+        -ErrorAction Stop
+    $defenderEntries = @($defenderManifest.runtimeFiles) +
+        @($defenderManifest.bootstrapFiles) +
+        @([pscustomobject]@{
+                path = $installerLeasePath
+                size = [long]$installerLeaseItem.Length
+                sha256 = [string]$defenderManifest.installerSha256
+            })
+    $defenderSeenPaths = @{}
+    $defenderRootPrefix = $defenderScanRoot.TrimEnd('\') + '\'
+    foreach ($entry in $defenderEntries) {
+        $relativePath = [string]$entry.path
+        if ($relativePath -cnotmatch '^[^\\/:]+(?:/[^\\/:]+)*$' -or
+            $relativePath.Contains('//') -or
+            @($relativePath.Split('/') | Where-Object {
+                    $_ -ceq '.' -or $_ -ceq '..' -or
+                    $_.EndsWith('.') -or $_.EndsWith(' ')
+                }).Count -ne 0 -or
+            [string]$entry.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+            [long]$entry.size -lt 0) {
+            throw 'A Defender manifest entry is invalid.'
+        }
+        $foldedPath = $relativePath.ToLowerInvariant()
+        if ($defenderSeenPaths.ContainsKey($foldedPath)) {
+            throw 'A Defender manifest entry is duplicated.'
+        }
+        $defenderSeenPaths[$foldedPath] = $true
+        $absolutePath = [IO.Path]::GetFullPath(
+            [IO.Path]::Combine(
+                $defenderScanRoot,
+                $relativePath.Replace('/', '\')
+            )
+        )
+        if (-not $absolutePath.StartsWith(
+                $defenderRootPrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'A Defender manifest path escaped the source root.'
+        }
+        $item = Get-Item -LiteralPath $absolutePath -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'A Defender manifest file is not ordinary.'
+        }
+        $stream = [IO.File]::Open(
+            $absolutePath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        [void]$defenderSourceLeases.Add([pscustomobject]@{
+                Stream = $stream
+                Size = [long]$entry.size
+                Sha256 = [string]$entry.sha256
+            })
+        if ($stream.Length -ne [long]$entry.size -or
+            (Get-HmaLockedFileSha256 -Stream $stream) -cne
+                [string]$entry.sha256) {
+            throw 'A Defender manifest file changed.'
+        }
+    }
+} catch {
+    foreach ($lease in $defenderSourceLeases) {
+        $lease.Stream.Dispose()
+    }
+    if ($null -ne $defenderManifestStream) {
+        $defenderManifestStream.Dispose()
+    }
+    throw
+}
+
+$mpCmdRunStream = $null
+$mpCmdRunProcess = $null
+$defenderExitCode = -1
+try {
+    $mpCmdRunStream = [IO.File]::Open(
+        $mpCmdRun,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    if ($mpCmdRunStream.Length -le 0 -or
+        $mpCmdRunStream.Length -gt 134217728) {
+        throw 'The retained Microsoft Defender executable is invalid.'
+    }
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $mpCmdRunStream.Position = 0
+        $mpCmdRunHashBefore = [BitConverter]::ToString(
+            $sha256.ComputeHash($mpCmdRunStream)
+        )
+        $mpCmdRunHashBefore = $mpCmdRunHashBefore.Replace(
+            '-',
+            ''
+        ).ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($mpCmdRunHashBefore -cne $trustedMpCmdRunSha256) {
+        throw 'The retained Microsoft Defender executable changed.'
+    }
+
+    if ($defenderScanRoot.IndexOf('"') -ge 0 -or
+        $defenderScanRoot.EndsWith('\')) {
+        throw 'The Defender scan root is invalid.'
+    }
+    foreach ($character in $defenderScanRoot.ToCharArray()) {
+        if ([char]::IsControl($character)) {
+            throw 'The Defender scan root is invalid.'
+        }
+    }
+    $mpCmdRunStartInfo = New-Object Diagnostics.ProcessStartInfo
+    $mpCmdRunStartInfo.FileName = $mpCmdRun
+    $mpCmdRunStartInfo.Arguments = (
+        '-Scan -ScanType 3 -File "' +
+        $defenderScanRoot +
+        '" -DisableRemediation'
+    )
+    $mpCmdRunStartInfo.WorkingDirectory = $defenderScanRoot
+    $mpCmdRunStartInfo.UseShellExecute = $false
+    $mpCmdRunStartInfo.CreateNoWindow = $true
+    $mpCmdRunProcess = New-Object Diagnostics.Process
+    $mpCmdRunProcess.StartInfo = $mpCmdRunStartInfo
+    if (-not $mpCmdRunProcess.Start()) {
+        throw 'Microsoft Defender did not start.'
+    }
+    $mpCmdRunProcess.WaitForExit()
+    $defenderExitCode = [int]$mpCmdRunProcess.ExitCode
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $mpCmdRunStream.Position = 0
+        $mpCmdRunHashAfter = [BitConverter]::ToString(
+            $sha256.ComputeHash($mpCmdRunStream)
+        )
+        $mpCmdRunHashAfter = $mpCmdRunHashAfter.Replace(
+            '-',
+            ''
+        ).ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($mpCmdRunHashAfter -cne $trustedMpCmdRunSha256) {
+        throw 'The retained Microsoft Defender executable changed.'
+    }
+    if ((Get-HmaLockedFileSha256 -Stream $defenderManifestStream) -cne
+        $trustedManifestSha256) {
+        throw 'The Defender manifest lease changed during the scan.'
+    }
+    foreach ($lease in $defenderSourceLeases) {
+        if ($lease.Stream.Length -ne $lease.Size -or
+            (Get-HmaLockedFileSha256 -Stream $lease.Stream) -cne
+                $lease.Sha256) {
+            throw 'A manifest-bound Defender source file changed during the scan.'
+        }
+    }
+} finally {
+    if ($null -ne $mpCmdRunProcess) {
+        $mpCmdRunProcess.Dispose()
+    }
+    if ($null -ne $mpCmdRunStream) {
+        $mpCmdRunStream.Dispose()
+    }
+    foreach ($lease in $defenderSourceLeases) {
+        $lease.Stream.Dispose()
+    }
+    if ($null -ne $defenderManifestStream) {
+        $defenderManifestStream.Dispose()
+    }
+}
+[IO.File]::WriteAllText(
+    (Join-Path (Resolve-Path 'audit\final').Path 'defender.txt'),
+    ('DefenderExitCode=' + [string]$defenderExitCode),
+    [Text.Encoding]::ASCII
+)
+if ($defenderExitCode -ne 0) {
+    throw 'Microsoft Defender did not return a clean scan result.'
+}
 ```
+
+The scan keeps the reviewed manifest and every manifest-bound source file open
+with a retained read lease, then re-hashes the same handles before releasing
+them. A concurrent replace, truncate, or write therefore fails closed instead
+of letting Defender scan different bytes from the ones later installed.
 
 Install only after every pre-credential gate is green:
 
 ```powershell
-$ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 if ($trustedManifestSha256 -notmatch '^[a-f0-9]{64}$') { throw 'The manifest trust anchor is unavailable.' }
-& $ps51 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\windows\install-secure-local.ps1 -SourceRoot (Resolve-Path '.').Path -ExpectedManifestSha256 $trustedManifestSha256
+$sourceRoot = (Resolve-Path '.').Path
+$manifestPath = (Resolve-Path 'audit\final\runtime-manifest.json').Path
+$manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+try {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $manifestHash = [BitConverter]::ToString(
+            $sha256.ComputeHash($manifestBytes)
+        )
+        $manifestHash = $manifestHash.Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($manifestHash -cne $trustedManifestSha256) {
+        throw 'The reviewed manifest changed.'
+    }
+    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    $manifest = ConvertFrom-Json `
+        -InputObject ($strictUtf8.GetString($manifestBytes)) `
+        -ErrorAction Stop
+    $manifestProperties = @(
+        $manifest.PSObject.Properties |
+            ForEach-Object { $_.Name } |
+            Sort-Object
+    )
+    if ([bool](Compare-Object `
+            -ReferenceObject @(
+                'bootstrapFiles',
+                'commit',
+                'installerSha256',
+                'nodeSha256',
+                'runtimeFiles'
+            ) `
+            -DifferenceObject $manifestProperties `
+            -CaseSensitive) -or
+        $manifest.installerSha256 -isnot [string] -or
+        [string]$manifest.installerSha256 -cnotmatch '^[a-f0-9]{64}$') {
+        throw 'The reviewed installer hash is invalid.'
+    }
+    $expectedInstallerSha256 = [string]$manifest.installerSha256
+} finally {
+    [Array]::Clear($manifestBytes, 0, $manifestBytes.Length)
+}
+
+$installerPath = (Resolve-Path 'scripts\windows\install-secure-local.ps1').Path
+$installerStream = [IO.File]::Open(
+    $installerPath,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+)
+$installerMemory = New-Object IO.MemoryStream
+$installerBytes = $null
+try {
+    if ($installerStream.Length -le 0 -or $installerStream.Length -gt 1048576) {
+        throw 'The reviewed installer size is invalid.'
+    }
+    $installerStream.CopyTo($installerMemory)
+    $installerBytes = $installerMemory.ToArray()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $installerHash = [BitConverter]::ToString(
+            $sha256.ComputeHash($installerBytes)
+        )
+        $installerHash = $installerHash.Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($installerHash -cne $expectedInstallerSha256) {
+        throw 'The reviewed installer changed.'
+    }
+    $installerScript = [ScriptBlock]::Create(
+        $strictUtf8.GetString($installerBytes)
+    )
+    & $installerScript `
+        -SourceRoot $sourceRoot `
+        -ExpectedManifestSha256 $trustedManifestSha256 `
+        -NodePath $node `
+        -ExpectedNodeSha256 $trustedNodeSha256 `
+        -Ps51Path $ps51 `
+        -ExpectedPs51Sha256 $trustedPs51Sha256
+} finally {
+    if ($null -ne $installerBytes) {
+        [Array]::Clear($installerBytes, 0, $installerBytes.Length)
+    }
+    $installerMemory.Dispose()
+    $installerStream.Dispose()
+    $installerScript = $null
+}
 ```
 
 The idempotent installer creates and verifies
@@ -364,11 +1355,23 @@ Node executable, and then open the reviewed Edge window:
 ```powershell
 Start-ScheduledTask -TaskName 'HowMuchAI-Service'
 $deadline = [DateTime]::UtcNow.AddSeconds(60)
+$dashboardReady = $false
 do {
     Start-Sleep -Milliseconds 500
-    try { $health = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 'http://127.0.0.1:37645/login' -ErrorAction Stop } catch { $health = $_.Exception.Response }
-} until ($null -ne $health -or [DateTime]::UtcNow -ge $deadline)
-if ($null -eq $health) { throw 'The local dashboard did not become ready.' }
+    try {
+        $health = Invoke-WebRequest `
+            -UseBasicParsing `
+            -MaximumRedirection 0 `
+            'http://127.0.0.1:37645/login' `
+            -ErrorAction Stop
+        $dashboardReady = ([int]$health.StatusCode -eq 200)
+    } catch {
+        $dashboardReady = $false
+    }
+} until ($dashboardReady -or [DateTime]::UtcNow -ge $deadline)
+if (-not $dashboardReady) {
+    throw 'The local dashboard did not return HTTP 200.'
+}
 $serviceTask = Get-ScheduledTask -TaskName 'HowMuchAI-Service'
 $listener = Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort 37645
 $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
@@ -400,16 +1403,35 @@ invariant.
 Re-run the sanitized test, typecheck, and production-build sequence:
 
 ```powershell
-$npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-node scripts/audit/run-sanitized-validation.mjs --npm $npm
+Invoke-HmaTrustedAudit `
+    -Name 'run-sanitized-validation.mjs' `
+    -Arguments @(
+        '--npm', $npm,
+        '--expected-npm-cli-sha256', $trustedNpmHashes.cli,
+        '--expected-npm-tree-sha256', $trustedNpmTreeSha256,
+        '--package-json', $packageJsonPath,
+        '--expected-package-json-sha256', $trustedPackageJsonSha256
+    )
 ```
 
 Re-run the safe scanner and immutable-runtime proof against the exact final
 manifest:
 
 ```powershell
-node scripts/audit/safe-secret-scan.mjs --json audit/final/secret-scan.json --manifest audit/final/runtime-manifest.json
-node scripts/audit/prove-runtime-immutability.mjs --root . --manifest audit/final/runtime-manifest.json
+Invoke-HmaTrustedAudit `
+    -Name 'safe-secret-scan.mjs' `
+    -Arguments @(
+        '--json', (Join-Path (Resolve-Path 'audit\final').Path 'secret-scan.json'),
+        '--manifest', (Join-Path (Resolve-Path 'audit\final').Path 'runtime-manifest.json'),
+        '--expected-manifest-sha256', $trustedManifestSha256
+    )
+Invoke-HmaTrustedAudit `
+    -Name 'prove-runtime-immutability.mjs' `
+    -Arguments @(
+        '--root', (Resolve-Path '.').Path,
+        '--manifest', (Join-Path (Resolve-Path 'audit\final').Path 'runtime-manifest.json'),
+        '--expected-manifest-sha256', $trustedManifestSha256
+    )
 ```
 
 Re-run the comprehensive local Semgrep and insecure-defaults reviews on the
@@ -497,18 +1519,11 @@ not prove that a natural Windows logon trigger fired.
 
 ### Five-account and final-state checks
 
-Prove deterministic partial-failure isolation without revoking a real
-credential:
-
-```powershell
-node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test lib/refresh-all.test.ts lib/usage-cache-core.test.ts lib/providers/usage-service-openai.test.ts lib/browser-boundary.test.ts lib/oauth-secure-handoff.test.ts
-```
-
-Prove the five-minute production cache boundary:
-
-```powershell
-node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-name-pattern="one-minute polls of five accounts|entry within TTL|exactly at TTL boundary" lib/local-usage-coordinator.test.ts lib/usage-cache-core.test.ts
-```
+The trusted sanitized validation above includes the deterministic
+partial-failure isolation, browser-boundary, OAuth handoff, and exact
+five-minute cache-boundary tests. Do not rerun selected tests through an
+ambient `node`; retain the corresponding passing test names from the trusted
+validation output.
 
 For each Claude card, compare the same named usage windows with the official
 **Settings -> Usage** view within 60 seconds of a newly advanced `fetchedAt`.
@@ -556,14 +1571,38 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $verifier).Hash -ne $verifierHa
     Stop-ScheduledTask -TaskName 'HowMuchAI-Service' -ErrorAction SilentlyContinue
     throw 'Final verifier integrity failed; local processes were stopped.'
 }
-$ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$stateSummaryJson = & $ps51 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifier -StateRoot $state -ExpectedRuntimeHash $runtimeHash -ExpectedIntegrityHash $integrityHash -ExpectedSecretsHash $secretsHash
-if ($LASTEXITCODE -ne 0) { throw 'Fail-safe state verification failed; service remains stopped.' }
+$finalPs51Stream = [IO.File]::Open(
+    $ps51,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+)
+try {
+    if ((Get-HmaLockedFileSha256 -Stream $finalPs51Stream) -cne
+        $trustedPs51Sha256) {
+        throw 'The retained Windows PowerShell executable changed.'
+    }
+    $stateSummaryJson = & $ps51 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifier -StateRoot $state -ExpectedRuntimeHash $runtimeHash -ExpectedIntegrityHash $integrityHash -ExpectedSecretsHash $secretsHash
+    if ($LASTEXITCODE -ne 0) { throw 'Fail-safe state verification failed; service remains stopped.' }
+    if ((Get-HmaLockedFileSha256 -Stream $finalPs51Stream) -cne
+        $trustedPs51Sha256) {
+        throw 'The retained Windows PowerShell executable changed.'
+    }
+} finally {
+    $finalPs51Stream.Dispose()
+}
 $stateSummary = $stateSummaryJson | ConvertFrom-Json
 $stateSummary | ConvertTo-Json -Compress | Set-Content -Encoding utf8 'audit\final\state-summary.json'
 
-node scripts/audit/safe-secret-scan.mjs --json audit/final/state-secret-scan.json --root (Join-Path $state 'install.json') --root (Join-Path $state 'integrity.json') --root (Join-Path $state 'secrets.dpapi') --root (Join-Path $state 'vault')
-if ($LASTEXITCODE -ne 0) { throw 'State secret scan found a forbidden plaintext pattern; service remains stopped.' }
+Invoke-HmaTrustedAudit `
+    -Name 'safe-secret-scan.mjs' `
+    -Arguments @(
+        '--json', (Join-Path (Resolve-Path 'audit\final').Path 'state-secret-scan.json'),
+        '--root', (Join-Path $state 'install.json'),
+        '--root', (Join-Path $state 'integrity.json'),
+        '--root', (Join-Path $state 'secrets.dpapi'),
+        '--root', (Join-Path $state 'vault')
+    )
 ```
 
 The verifier must leave both tasks stopped even on failure and emit only

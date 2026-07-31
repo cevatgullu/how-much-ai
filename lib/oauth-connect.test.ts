@@ -44,10 +44,14 @@ for (const key of [
 }
 process.env.VAULT_DATA_DIR = dataDir;
 process.env.VAULT_ENCRYPTION_SECRET = "oauth-connect-test-secret";
+process.env.APP_PASSWORD = "oauth-connect-test-password";
+process.env.AUTH_SECRET = "oauth-connect-test-auth-secret";
 
 const { POST } = await import("../app/api/connect/oauth/route.ts");
 const { CLAUDE_SUBSCRIPTION_OAUTH } = await import("./anthropic.ts");
+const { createSession, SESSION_COOKIE } = await import("./session.ts");
 const { loadAccounts, saveAccounts } = await import("./vault.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
 
 const ACCESS_TOKEN = "sk-ant-oat01-oauth-access-secret";
 const REFRESH_TOKEN = "oauth-refresh-secret";
@@ -97,7 +101,8 @@ beforeEach(async () => {
   mode = "success";
   profileAccountId = "acct-oauth";
   calls = [];
-  delete process.env.APP_PASSWORD;
+  process.env.APP_PASSWORD = "oauth-connect-test-password";
+  process.env.AUTH_SECRET = "oauth-connect-test-auth-secret";
   await saveAccounts("default", []);
 });
 
@@ -108,10 +113,19 @@ after(async () => {
   moduleHooks.deregister();
 });
 
-function request(overrides: Record<string, unknown> = {}, headers: HeadersInit = {}): Request {
+function request(
+  overrides: Record<string, unknown> = {},
+  headers: HeadersInit = {},
+  authenticated = true,
+): Request {
   return new Request("http://localhost/api/connect/oauth", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Origin: "http://localhost", ...headers },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "http://localhost",
+      ...(authenticated ? { Cookie: sessionCookie } : {}),
+      ...headers,
+    },
     body: JSON.stringify({ code: CODE, state: STATE, verifier: VERIFIER, ...overrides }),
   });
 }
@@ -271,17 +285,15 @@ test("verified reconnect dedupes by account id and retains the user's metadata",
 });
 
 test("route rejects unauthenticated, cross-origin, primitive, oversized, and malformed input before exchange", async () => {
-  process.env.APP_PASSWORD = "configured-password";
-  const unauthenticated = await POST(request());
+  const unauthenticated = await POST(request({}, {}, false));
   assert.equal(unauthenticated.status, 401);
-  delete process.env.APP_PASSWORD;
 
   const crossOrigin = await POST(request({}, { Origin: "https://attacker.example" }));
   assert.equal(crossOrigin.status, 403);
   const primitive = await POST(
     new Request("http://localhost/api/connect/oauth", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Cookie: sessionCookie },
       body: "null",
     }),
   );
@@ -291,7 +303,7 @@ test("route rejects unauthenticated, cross-origin, primitive, oversized, and mal
   const oversized = await POST(
     new Request("http://localhost/api/connect/oauth", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": "99999" },
+      headers: { "Content-Type": "application/json", "Content-Length": "99999", Cookie: sessionCookie },
       body: "{}",
     }),
   );

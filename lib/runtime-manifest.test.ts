@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -25,12 +26,14 @@ const scannerUrl = pathToFileURL(
 ).href;
 const gitExecutablePath =
   process.platform === "win32"
-    ? execFileSync("where.exe", ["git.exe"], {
-        encoding: "utf8",
-        windowsHide: true,
-      })
-        .split(/\r?\n/u)
-        .find(Boolean)
+    ? path.join(
+        path.parse(process.env.SystemRoot ?? "C:\\Windows").root,
+        "Program Files",
+        "Git",
+        "mingw64",
+        "bin",
+        "git.exe",
+      )
     : execFileSync("sh", ["-c", "command -v git"], {
         encoding: "utf8",
       }).trim();
@@ -38,28 +41,61 @@ const gitExecutablePath =
 if (!gitExecutablePath || !path.isAbsolute(gitExecutablePath)) {
   throw new Error("The runtime-manifest tests require an absolute Git executable.");
 }
+const gitExecutableSha256 = createHash("sha256")
+  .update(readFileSync(gitExecutablePath))
+  .digest("hex");
 
 const bootstrapPaths = [
+  "scripts/windows/SecureLocalIntegrity.psm1",
+  "scripts/windows/SecureLocalRuntime.psm1",
+  "scripts/windows/SecureLocalSecrets.psm1",
   "scripts/windows/connect-claude-secure.ps1",
   "scripts/windows/oauth-handoff-extension/callback.js",
   "scripts/windows/oauth-handoff-extension/manifest.json",
   "scripts/windows/open-secure-local.ps1",
-  "scripts/windows/SecureLocalIntegrity.psm1",
-  "scripts/windows/SecureLocalRuntime.psm1",
-  "scripts/windows/SecureLocalSecrets.psm1",
   "scripts/windows/start-secure-local.ps1",
   "scripts/windows/verify-final-local-state.ps1",
 ];
 
+test("reviewed text inputs keep exact LF bytes on every Git checkout", async () => {
+  const attributes = await readFile(path.resolve(".gitattributes"), "utf8");
+  assert.equal(attributes, "* text=auto eol=lf\n");
+});
+
 async function createFixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "hma-manifest-"));
+  const syntheticPrivateKeyMarker = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
   const files = new Map<string, string | Buffer>([
     ["package.json", '{"private":true}\n'],
     ["package-lock.json", '{"lockfileVersion":3}\n'],
     ["next.config.ts", "export default {};\n"],
     ["public/icon.svg", "<svg></svg>\n"],
     ["node_modules/example/index.js", "module.exports = true;\n"],
+    [
+      "node_modules/convex/dist/cli.bundle.cjs",
+      `"${syntheticPrivateKeyMarker}"\n`,
+    ],
+    [
+      "node_modules/convex/dist/cli.bundle.cjs.map",
+      `"${syntheticPrivateKeyMarker}"\n`,
+    ],
+    [
+      "node_modules/convex/src/cli/lib/formatEnvValueForDotfile.test.ts",
+      `"${syntheticPrivateKeyMarker}"\n`,
+    ],
+    [
+      "node_modules/next/dist/docs/01-app/02-guides/environment-variables.md",
+      `${syntheticPrivateKeyMarker}\n`,
+    ],
+    [
+      "node_modules/convex/dist/cli.bundle.cjs.runtime",
+      "module.exports = 'near-match';\n",
+    ],
+    [".next/BUILD_ID", "reviewed-build\n"],
+    [".next/app-path-routes-manifest.json", "{}\n"],
     [".next/server/app.js", "production bundle\n"],
+    [".next/server/app.js.map", '"refreshToken":"synthetic"\n'],
+    [".next/server/app.js.map.runtime", "production near-match\n"],
     [".next/cache/transient.bin", Buffer.from([1, 2, 3])],
     ...bootstrapPaths.map(
       (entry) =>
@@ -132,6 +168,8 @@ function runManifestCli({
   sha256Path,
   cwd = root,
   env = withoutAmbientGitEnvironment(),
+  expectedGitSha256 = gitExecutableSha256,
+  upstreamBase = commit,
 }: {
   root: string;
   commit: string;
@@ -139,6 +177,8 @@ function runManifestCli({
   sha256Path: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  expectedGitSha256?: string;
+  upstreamBase?: string;
 }) {
   return spawnSync(
     process.execPath,
@@ -152,6 +192,10 @@ function runManifestCli({
       process.execPath,
       "--git",
       gitExecutablePath,
+      "--expected-git-sha256",
+      expectedGitSha256,
+      "--upstream-base",
+      upstreamBase,
       "--output",
       outputPath,
       "--sha256-output",
@@ -221,6 +265,7 @@ test("runtime manifest is deterministic and selects only exact installable files
       manifest: {
         commit: string;
         nodeSha256: string;
+        installerSha256: string;
         runtimeFiles: Array<{ path: string; size: number; sha256: string }>;
         bootstrapFiles: Array<{ path: string; size: number; sha256: string }>;
       };
@@ -248,8 +293,12 @@ test("runtime manifest is deterministic and selects only exact installable files
       createHash("sha256").update(first.bytes).digest("hex"),
     );
     assert.deepEqual(runtimePaths, [
+      ".next/BUILD_ID",
+      ".next/app-path-routes-manifest.json",
       ".next/server/app.js",
+      ".next/server/app.js.map.runtime",
       "next.config.ts",
+      "node_modules/convex/dist/cli.bundle.cjs.runtime",
       "node_modules/example/index.js",
       "package-lock.json",
       "package.json",
@@ -267,6 +316,10 @@ test("runtime manifest is deterministic and selects only exact installable files
       false,
     );
     assert.match(first.manifest.nodeSha256, /^[a-f0-9]{64}$/u);
+    assert.equal(
+      first.manifest.installerSha256,
+      createHash("sha256").update("public installer\n").digest("hex"),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -298,6 +351,23 @@ test("manifest generation rejects relative and reparse-point Git executables", a
       }),
       /runtime-manifest-failed/u,
     );
+    if (process.platform === "win32") {
+      await assert.rejects(
+        createRuntimeManifest({
+          root,
+          commit,
+          nodePath: process.execPath,
+          gitPath: path.join(
+            path.parse(process.execPath).root,
+            "Program Files",
+            "Git",
+            "cmd",
+            "git.exe",
+          ),
+        }),
+        /runtime-manifest-failed/u,
+      );
+    }
     await symlink(path.dirname(gitExecutablePath), junction, "junction");
     await assert.rejects(
       createRuntimeManifest({
@@ -350,15 +420,55 @@ test(
       });
       assert.equal(result.status, 0);
       const manifestBytes = await readFile(outputPath);
+      const manifestSha256 = createHash("sha256")
+        .update(manifestBytes)
+        .digest("hex");
       assert.equal(
         await readFile(sha256Path, "ascii"),
-        `${createHash("sha256").update(manifestBytes).digest("hex")}\n`,
+        manifestSha256,
       );
+      const publishedManifest = JSON.parse(manifestBytes.toString("utf8"));
+      assert.deepEqual(JSON.parse(result.stdout), {
+        ok: true,
+        runtimeFiles: publishedManifest.runtimeFiles.length,
+        bootstrapFiles: publishedManifest.bootstrapFiles.length,
+        manifestSha256,
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   },
 );
+
+test("manifest CLI rejects an untrusted Git hash and an unproven upstream base", async () => {
+  const { root, commit } = await createReviewedFixture();
+  const outputPath = path.join(root, "audit", "runtime-manifest.json");
+  const sha256Path = path.join(root, "audit", "runtime-manifest.sha256");
+
+  try {
+    for (const overrides of [
+      { expectedGitSha256: "0".repeat(64) },
+      { upstreamBase: "0".repeat(40) },
+    ]) {
+      const result = runManifestCli({
+        root,
+        commit,
+        outputPath,
+        sha256Path,
+        ...overrides,
+      });
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stderr,
+        /\{"ok":false,"error":"runtime-manifest-failed"\}\r?\n$/u,
+      );
+      await assert.rejects(readFile(outputPath), { code: "ENOENT" });
+      await assert.rejects(readFile(sha256Path), { code: "ENOENT" });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("manifest paths are all examined by the non-content-emitting scanner", async () => {
   const { createRuntimeManifest } = (await import(generatorUrl)) as {
@@ -395,10 +505,23 @@ test("manifest paths are all examined by the non-content-emitting scanner", asyn
       gitPath: gitExecutablePath,
     });
     await writeFile(manifestPath, generated.bytes);
-    const scanned = await scanSecrets({ cwd: root, manifestPath });
+    await writeFile(
+      manifestPath.replace(/\.json$/u, ".sha256"),
+      generated.sha256,
+      "ascii",
+    );
+    const scanned = await scanSecrets({
+      cwd: root,
+      manifestPath,
+      expectedManifestSha256: generated.sha256,
+    });
     const manifestPaths = [
       ...generated.manifest.runtimeFiles,
       ...generated.manifest.bootstrapFiles,
+      {
+        path: "scripts/windows/install-secure-local.ps1",
+        sha256: generated.manifest.installerSha256,
+      },
     ];
 
     assert.equal(scanned.filesScanned, manifestPaths.length);

@@ -102,14 +102,16 @@ test("strict Host rejection occurs before invalid strict environment handling", 
   );
 });
 
-test("non-strict proxy preserves upstream Host behavior", async () => {
+test("non-strict production ignores Host but fails closed without APP_PASSWORD", async () => {
   process.env = { NODE_ENV: "production" };
 
-  for (const pathname of ["/api/auth/login", "/api/usage"]) {
-    const response = await proxy(proxyRequest(pathname, "attacker.example"));
-    assert.equal(response.status, 200, pathname);
-    assert.equal(response.headers.get("x-middleware-next"), "1", pathname);
-  }
+  const publicResponse = await proxy(proxyRequest("/api/auth/login", "attacker.example"));
+  assert.equal(publicResponse.status, 200);
+  assert.equal(publicResponse.headers.get("x-middleware-next"), "1");
+
+  const protectedResponse = await proxy(proxyRequest("/api/usage", "attacker.example"));
+  assert.equal(protectedResponse.status, 401);
+  assert.deepEqual(await protectedResponse.json(), { error: "Not signed in" });
 });
 
 test("strict login emits a host-only HttpOnly SameSite=Strict cookie usable on loopback HTTP", async () => {

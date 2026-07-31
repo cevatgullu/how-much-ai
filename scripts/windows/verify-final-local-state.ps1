@@ -329,6 +329,85 @@ function Stop-HmaFinalDedicatedEdge {
     return Stop-HmaFinalDedicatedEdgeFallback -StateRoot $StateRoot
 }
 
+function Wait-HmaFinalDedicatedEdgeExit {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$StateRoot,
+        [scriptblock]$ProcessProvider,
+        [scriptblock]$DelayProvider,
+        [ValidateRange(2, 600)][int]$MaximumAttempts = 150
+    )
+
+    try {
+        $state = Get-HmaFinalSafeAbsolutePath -LiteralPath $StateRoot
+        $profileArgument = '--user-data-dir=' + (Join-Path $state 'edge-profile')
+        $stableEmptyScans = 0
+
+        for ($attempt = 0; $attempt -lt $MaximumAttempts; $attempt += 1) {
+            $rows = if ($null -ne $ProcessProvider) {
+                @(& $ProcessProvider)
+            } else {
+                @(
+                    Get-CimInstance `
+                        -ClassName Win32_Process `
+                        -Filter "Name = 'msedge.exe'" `
+                        -ErrorAction Stop
+                )
+            }
+
+            $profileProcessCount = 0
+            foreach ($row in $rows) {
+                $processId = [int](Get-HmaFinalPropertyValue `
+                    -InputObject $row `
+                    -Name 'ProcessId')
+                $commandLine = [string](Get-HmaFinalPropertyValue `
+                    -InputObject $row `
+                    -Name 'CommandLine')
+                if ($processId -le 0 -or
+                    [string]::IsNullOrWhiteSpace($commandLine)) {
+                    throw 'Final local state verification failed.'
+                }
+                $arguments = @(
+                    ConvertFrom-HmaFinalWindowsCommandLine `
+                        -CommandLine $commandLine
+                )
+                $profileMatches = @(
+                    $arguments | Where-Object {
+                        [string]::Equals(
+                            [string]$_,
+                            $profileArgument,
+                            [StringComparison]::OrdinalIgnoreCase
+                        )
+                    }
+                )
+                if ($profileMatches.Count -gt 0) {
+                    $profileProcessCount += 1
+                }
+            }
+
+            if ($profileProcessCount -eq 0) {
+                $stableEmptyScans += 1
+                if ($stableEmptyScans -ge 2) {
+                    return $true
+                }
+            } else {
+                $stableEmptyScans = 0
+            }
+
+            if ($attempt + 1 -lt $MaximumAttempts) {
+                if ($null -ne $DelayProvider) {
+                    $null = & $DelayProvider
+                } else {
+                    Start-Sleep -Milliseconds 200
+                }
+            }
+        }
+        return $false
+    } catch {
+        return $false
+    }
+}
+
 function Get-HmaFinalPortListeners {
     [CmdletBinding()]
     param()
@@ -349,13 +428,22 @@ function Wait-HmaFinalTaskStopped {
     param([Parameter(Mandatory)][string]$TaskName)
 
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    $stableStoppedStates = 0
     do {
         try {
             $task = Get-ScheduledTask `
                 -TaskName $TaskName `
                 -ErrorAction Stop
-            if ([string]$task.State -cne 'Running') {
-                return $true
+            $state = [string]$task.State
+            if ($state -ceq 'Ready' -or $state -ceq 'Disabled') {
+                $stableStoppedStates += 1
+                if ($stableStoppedStates -ge 2) {
+                    return $true
+                }
+            } elseif ($state -ceq 'Running') {
+                $stableStoppedStates = 0
+            } else {
+                return $false
             }
         } catch {
             return $false
@@ -563,6 +651,11 @@ function New-HmaFinalDefaultOperations {
             return [bool](Stop-HmaFinalDedicatedEdge `
                 -StateRoot ([string]$RequestedStateRoot))
         }
+        WaitDedicatedEdgeExit = {
+            param($RequestedStateRoot)
+            return [bool](Wait-HmaFinalDedicatedEdgeExit `
+                -StateRoot ([string]$RequestedStateRoot))
+        }
         StopTask = {
             param($TaskName)
             $null = Stop-ScheduledTask `
@@ -696,16 +789,6 @@ function Invoke-HmaFinalFailSafeShutdown {
         [AllowNull()][object[]]$SecretValues
     )
 
-    $edgeClosed = $false
-    try {
-        $edgeClosed = Invoke-HmaFinalBooleanOperation `
-            -Operations $Operations `
-            -Name 'CloseDedicatedEdge' `
-            -Arguments @($StateRoot)
-    } catch {
-        $edgeClosed = $false
-    }
-
     foreach ($taskName in @('HowMuchAI-Window', 'HowMuchAI-Service')) {
         try {
             $null = Invoke-HmaFinalBooleanOperation `
@@ -728,6 +811,30 @@ function Invoke-HmaFinalFailSafeShutdown {
         } catch {
         }
     }
+
+    $edgeCloseSucceeded = $false
+    try {
+        $edgeCloseSucceeded = Invoke-HmaFinalBooleanOperation `
+            -Operations $Operations `
+            -Name 'CloseDedicatedEdge' `
+            -Arguments @($StateRoot)
+    } catch {
+        $edgeCloseSucceeded = $false
+    }
+
+    $edgeExitStable = $false
+    try {
+        $edgeExitStable = Invoke-HmaFinalBooleanOperation `
+            -Operations $Operations `
+            -Name 'WaitDedicatedEdgeExit' `
+            -Arguments @($StateRoot)
+    } catch {
+        $edgeExitStable = $false
+    }
+    $edgeClosed = (
+        [bool]$edgeCloseSucceeded -and
+        [bool]$edgeExitStable
+    )
 
     $listenerStopped = $false
     if ($null -eq $ValidatedListenerPid) {

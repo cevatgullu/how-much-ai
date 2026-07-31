@@ -44,9 +44,19 @@ for (const key of [
 }
 process.env.VAULT_DATA_DIR = dataDir;
 process.env.VAULT_ENCRYPTION_SECRET = "connect-openai-test-secret";
+process.env.APP_PASSWORD = "connect-openai-test-password";
+process.env.AUTH_SECRET = "connect-openai-test-auth-secret";
 
 const { POST } = await import("../../app/api/connect/manual/route.ts");
+const { createSession, SESSION_COOKIE } = await import("../session.ts");
 const { loadAccounts, saveAccounts } = await import("../vault.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
+
+function authenticatedRequest(input: string, init: RequestInit): Request {
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", sessionCookie);
+  return new Request(input, { ...init, headers });
+}
 
 function jwt(payload: Record<string, unknown>): string {
   const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -78,7 +88,7 @@ test("manual connect saves an OpenAI account with provider, id, and plan from /w
   await saveAccounts("default", []);
   const tokens = { accessToken, refreshToken: "rt-openai", expiresAt: Date.now() + 86_400_000 };
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: "openai", tokens }),
@@ -107,7 +117,7 @@ test("manual connect saves an OpenAI account with provider, id, and plan from /w
 
 test("manual connect rejects an unsupported provider", async () => {
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: "bogus", tokens: { accessToken, refreshToken: "x", expiresAt: 1 } }),

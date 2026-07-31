@@ -90,6 +90,7 @@ interface SyntheticFixture {
   manifest: {
     commit: string;
     nodeSha256: string;
+    installerSha256: string;
     runtimeFiles: FileRecord[];
     bootstrapFiles: FileRecord[];
   };
@@ -119,6 +120,7 @@ const defaultBootstrapContents: Record<string, string> = {
   "SecureLocalIntegrity.psm1": "# synthetic reviewed integrity",
   "SecureLocalRuntime.psm1": "# synthetic reviewed runtime",
   "SecureLocalSecrets.psm1": "# synthetic reviewed secrets",
+  "verify-final-local-state.ps1": "# synthetic reviewed final verifier",
   "oauth-handoff-extension/manifest.json": '{"manifest_version":3}',
   "oauth-handoff-extension/callback.js": '"use strict";',
 };
@@ -130,6 +132,7 @@ const bootstrapHashNames: Record<string, string> = {
   "SecureLocalIntegrity.psm1": "integrity",
   "SecureLocalRuntime.psm1": "runtime",
   "SecureLocalSecrets.psm1": "secrets",
+  "verify-final-local-state.ps1": "finalVerifier",
   "oauth-handoff-extension/manifest.json": "extensionManifest",
   "oauth-handoff-extension/callback.js": "extensionCallback",
 };
@@ -186,6 +189,7 @@ async function createFixture(
   const manifest: SyntheticFixture["manifest"] = {
     commit,
     nodeSha256: sha256(nodeContents),
+    installerSha256: "f".repeat(64),
     runtimeFiles,
     bootstrapFiles,
   };
@@ -265,7 +269,7 @@ test(
       assert.deepEqual(parseSafeRecord(stdout), {
         valid: true,
         propertyCount: 9,
-        bootstrapHashCount: 8,
+        bootstrapHashCount: 9,
       });
       assert.equal(stderr.length, 0);
       assert.equal(stdout.includes(fixture.state), false);

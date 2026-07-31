@@ -42,10 +42,15 @@ const {
 const { toBrowserAccount } = await import("./browser-boundary.ts");
 const { getAccountUsage } = await import("./usage-service.ts");
 const { GET: getVault, PUT: putVault } = await import("../app/api/vault/route.ts");
+const { createSession, SESSION_COOKIE } = await import("./session.ts");
 
 const TEST_SECRET = "vault-test-secret-with-enough-entropy";
+const TEST_PASSWORD = "vault-test-password";
+const TEST_AUTH_SECRET = "vault-test-auth-secret";
 const ENV_KEYS = [
   "APP_PASSWORD",
+  "AUTH_SECRET",
+  "NODE_ENV",
   "VAULT_ENCRYPTION_SECRET",
   "VAULT_DATA_DIR",
   "CONVEX_URL",
@@ -60,12 +65,17 @@ const ENV_KEYS = [
 
 const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 let dataDir = "";
+let sessionCookie = "";
 
 before(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "usage-vault-test-"));
   for (const key of ENV_KEYS) delete process.env[key];
+  process.env.NODE_ENV = "development";
   process.env.VAULT_DATA_DIR = dataDir;
   process.env.VAULT_ENCRYPTION_SECRET = TEST_SECRET;
+  process.env.APP_PASSWORD = TEST_PASSWORD;
+  process.env.AUTH_SECRET = TEST_AUTH_SECRET;
+  sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
 });
 
 after(async () => {
@@ -116,6 +126,12 @@ function proofForSecret(secret: string): string {
 function restoreEnvironmentValue(name: string, previous: string | undefined): void {
   if (previous === undefined) delete process.env[name];
   else process.env[name] = previous;
+}
+
+function authenticatedRequest(input: string, init: RequestInit = {}): Request {
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", sessionCookie);
+  return new Request(input, { ...init, headers });
 }
 
 test("a genuinely missing vault loads as an empty account list", async () => {
@@ -287,6 +303,19 @@ test("historical AES-GCM vault blobs remain readable", async () => {
   assert.deepEqual(await loadAccounts("historical"), [account]);
 });
 
+test("vault decryption rejects a valid ciphertext with a shortened authentication tag", async () => {
+  const account = storedAccount("short-authentication-tag");
+  const [iv, tag, ciphertext] = encryptHistoricalPayload(JSON.stringify([account])).split(":");
+  const shortenedTag = Buffer.from(tag, "base64").subarray(0, 12).toString("base64");
+  await fs.writeFile(
+    vaultFile("short-authentication-tag"),
+    `${iv}:${shortenedTag}:${ciphertext}`,
+    { mode: 0o600 },
+  );
+
+  await assert.rejects(() => loadAccounts("short-authentication-tag"), /vault is corrupt/i);
+});
+
 test("local vault secrets are normalized for new writes while exact raw legacy keys remain readable", async () => {
   const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
   const previousPassword = process.env.APP_PASSWORD;
@@ -425,7 +454,7 @@ test("vault GET and PUT expose only redacted account DTOs", async () => {
   const original = storedAccount("put-original");
   await saveAccounts("default", [original]);
 
-  const getResponse = await getVault(new Request("http://localhost/api/vault"));
+  const getResponse = await getVault(authenticatedRequest("http://localhost/api/vault"));
   assert.equal(getResponse.status, 200);
   const getPayload = (await getResponse.json()) as { accounts: BrowserAccount[]; revision: string };
   assert.deepEqual(getPayload, {
@@ -437,7 +466,7 @@ test("vault GET and PUT expose only redacted account DTOs", async () => {
 
   const revision = getPayload.revision;
   const response = await putVault(
-    new Request("http://localhost/api/vault", {
+    authenticatedRequest("http://localhost/api/vault", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -464,7 +493,7 @@ test("vault metadata and removal mutations preserve server-owned credentials", a
   const revision = vaultRevision([first, second]);
 
   const response = await putVault(
-    new Request("http://localhost/api/vault", {
+    authenticatedRequest("http://localhost/api/vault", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -531,7 +560,7 @@ test("vault removal clears only the removed account's production usage cache", a
     assert.equal(usageCalls, 2);
 
     const response = await putVault(
-      new Request("http://localhost/api/vault", {
+      authenticatedRequest("http://localhost/api/vault", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -570,7 +599,7 @@ test("vault PUT rejects whole-account and malformed mutation bodies without clea
   ];
   for (const [body, expectedStatus] of invalidBodies) {
     const response = await putVault(
-      new Request("http://localhost/api/vault", {
+      authenticatedRequest("http://localhost/api/vault", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body,
@@ -586,7 +615,7 @@ test("vault mutations rebase from a token-free 409 without changing rotated cred
   await saveAccounts("default", [original]);
 
   const withoutRevision = await putVault(
-    new Request("http://localhost/api/vault", {
+    authenticatedRequest("http://localhost/api/vault", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -609,7 +638,7 @@ test("vault mutations rebase from a token-free 409 without changing rotated cred
   await mutateAccounts("default", () => [rotated]);
 
   const staleResponse = await putVault(
-    new Request("http://localhost/api/vault", {
+    authenticatedRequest("http://localhost/api/vault", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -630,7 +659,7 @@ test("vault mutations rebase from a token-free 409 without changing rotated cred
   assert.deepEqual(await loadAccounts("default"), [rotated]);
 
   const retryResponse = await putVault(
-    new Request("http://localhost/api/vault", {
+    authenticatedRequest("http://localhost/api/vault", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -657,7 +686,7 @@ test("vault GET returns empty only for missing storage and reports corrupted sto
     fs.rm(vaultFile("default"), { force: true }),
     fs.rm(`${vaultFile("default")}.last-good`, { force: true }),
   ]);
-  const missingResponse = await getVault(new Request("http://localhost/api/vault"));
+  const missingResponse = await getVault(authenticatedRequest("http://localhost/api/vault"));
   assert.equal(missingResponse.status, 200);
   assert.deepEqual(await missingResponse.json(), { accounts: [], revision: vaultRevision([]) });
 
@@ -665,7 +694,7 @@ test("vault GET returns empty only for missing storage and reports corrupted sto
   const originalConsoleError = console.error;
   console.error = () => {};
   try {
-    const corruptResponse = await getVault(new Request("http://localhost/api/vault"));
+    const corruptResponse = await getVault(authenticatedRequest("http://localhost/api/vault"));
     assert.equal(corruptResponse.status, 500);
     const body = (await corruptResponse.json()) as { error: string; errorId: string; errorCode: string };
     assert.equal(body.error, "Couldn't read saved accounts");
@@ -687,7 +716,7 @@ test("vault route failures return an error id without logging or reflecting exce
   console.error = (...args: unknown[]) => captured.push(args);
 
   try {
-    const response = await getVault(new Request("http://localhost/api/vault"));
+    const response = await getVault(authenticatedRequest("http://localhost/api/vault"));
     assert.equal(response.status, 500);
     const body = (await response.json()) as { error: string; errorId: string; errorCode?: string };
     assert.equal(body.error, "Couldn't read saved accounts");

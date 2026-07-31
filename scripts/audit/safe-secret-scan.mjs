@@ -24,7 +24,7 @@ const RULES = [
   {
     id: "openai-access-token-assignment",
     pattern:
-      /["']?\b(?:access[_-]?token|OPENAI_ACCESS_TOKEN)\b["']?\s*(?::|=(?!=|>))\s*["']?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}["']?(?=$|[\s,;}\]])/giu,
+      /["']?\b(?:access[_-]?token|OPENAI_ACCESS_TOKEN)\b["']?[^\S\r\n\u2028\u2029]*(?::|=(?!=|>))[^\S\r\n\u2028\u2029]*["']?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}["']?(?=$|[\s,;}\]])/giu,
   },
   {
     id: "bearer-value",
@@ -34,14 +34,21 @@ const RULES = [
   {
     id: "refresh-token-assignment",
     pattern:
-      /["']?\brefresh[_-]?token\b["']?\s*(?::|=(?!=|>))\s*(?:"[^"\r\n]{16,}"|'[^'\r\n]{16,}'|([A-Za-z0-9._~+/=-]{16,}))(?=$|[\s,;}\]])/giu,
+      /["']?\brefresh[_-]?token\b["']?[^\S\r\n\u2028\u2029]*(?::|=(?!=|>))[^\S\r\n\u2028\u2029]*(?:"[^"\r\n\u2028\u2029]{16,}"|'[^'\r\n\u2028\u2029]{16,}'|`[^`\r\n\u2028\u2029]{16,}`|([A-Za-z0-9._~+/=-]{16,}))(?=$|[\s,;}\]])/giu,
   },
   {
     id: "strict-local-secret-assignment",
     pattern:
-      /["']?\b(?:APP_PASSWORD|AUTH_SECRET|VAULT_ENCRYPTION_SECRET)\b["']?\s*(?::|=(?!=|>))\s*(?:"[^"\r\n]{12,}"|'[^'\r\n]{12,}'|([A-Za-z0-9._~+/=-]{12,}))(?=$|[\s,;}\]])/gu,
+      /["']?\b(?:APP_PASSWORD|AUTH_SECRET|VAULT_ENCRYPTION_SECRET)\b["']?[^\S\r\n\u2028\u2029]*(?::|=(?!=|>))[^\S\r\n\u2028\u2029]*(?:"[^"\r\n\u2028\u2029]{12,}"|'[^'\r\n\u2028\u2029]{12,}'|`[^`\r\n\u2028\u2029]{12,}`|([A-Za-z0-9._~+/=-]{12,}))(?=$|[\s,;}\]])/gu,
   },
 ];
+
+const SOURCE_ROOT_EXCLUDED_ENTRIES = new Set([
+  ".git",
+  ".next",
+  "audit",
+  "node_modules",
+]);
 
 const JAVASCRIPT_SOURCE_EXTENSIONS = new Set([
   ".cjs",
@@ -90,183 +97,211 @@ const REVIEWED_SOURCE_FIXTURES = new Map([
   [
     "private-key|lib/safe-secret-scan.test.ts",
     {
-      fileSha256: "5a27b21b1c327fbe638c78cb839e895c6b264b59b79c2ceb8b66e303213e3c34",
+      fileSha256: "6500014d1c3d5b3bdfc18d0f8bb9685987dc7350030c96ea74a6c0c4d958109f",
       matchCount: 1,
     },
   ],
   [
     "provider-token|lib/anthropic-refresh-safety.test.ts",
     {
-      fileSha256: "36c9d14af8db85c1338fcfc7642163abae7bfba9b6758d180a2a179a86ca9759",
+      fileSha256: "66e9292392935ec77f159bf67fa10ba6c83c9d7caf9ccd5026ad179f12dec56e",
       matchCount: 1,
     },
   ],
   [
     "provider-token|lib/credentials.test.ts",
     {
-      fileSha256: "4a121828769b389b319ae3e508cef1a48d64edd5c26e4354d5d3c22fec0717a6",
+      fileSha256: "d952be4702140f053abfb4339aa5f387108cf7c363ca1c6ce9ca8b7e1b551e2a",
       matchCount: 4,
     },
   ],
   [
     "provider-token|lib/manual-connect.test.ts",
     {
-      fileSha256: "a5108107d5901d336dec04a72028a65be59b9b590c22c497c70a25b76a8708e7",
+      fileSha256: "2684cca79dadf40e0c8c33389d4253f759445b58c9ee281dde0de1b84a918c59",
       matchCount: 8,
     },
   ],
   [
     "provider-token|lib/oauth-connect.test.ts",
     {
-      fileSha256: "2c51e62d915119e1b69139eb62f1a1b584effe3f6f274148d6fc5dca76debfdf",
+      fileSha256: "797948f7dc4b8c7c1d2ebc9a46d9a93d291f0f596e3379d9315a0e0ca191ae35",
       matchCount: 1,
     },
   ],
   [
     "provider-token|lib/providers/anthropic-adapter.test.ts",
     {
-      fileSha256: "fcf1ec4eddf7a89696fe4a0650e8ee2560423803e5ac2a1f6c7e67cca8066d0f",
+      fileSha256: "0dc6a5d2a45a783f0df1b3624b2d791c6423a2afe26a7ae1f75ba21b9b44831c",
       matchCount: 1,
     },
   ],
   [
     "provider-token|lib/server-error-diagnostics.test.ts",
     {
-      fileSha256: "1f1f15e3e86b5b38e21b60c18b79dc9dd8da960db23863fd28ee36069159bea8",
+      fileSha256: "999169615a9942ccd061a6adbfd5706ebe38742da6896637efb6872340880a63",
       matchCount: 1,
     },
   ],
   [
     "refresh-token-assignment|lib/browser-boundary.test.ts",
     {
-      fileSha256: "5c71ca645b7fa5bc35f4693e9c24c49604e5b177b69bc415f2b2bac58e6e3d1f",
+      fileSha256: "9973ce556aabe0999ba9884ad7cdf511e6bddbb0418fa9abc1871c422bc004fc",
       matchCount: 3,
     },
   ],
   [
     "refresh-token-assignment|lib/local-credentials.test.ts",
     {
-      fileSha256: "ea42bb4a36db8152019051e6e06935ec88da63df23df7078eac189b0969a4573",
+      fileSha256: "9db37060dbb16ee354ff51d5fdc5bbed6c30db286ef5285d09c05a238990eb02",
       matchCount: 2,
     },
   ],
   [
     "refresh-token-assignment|lib/manual-connect.test.ts",
     {
-      fileSha256: "a5108107d5901d336dec04a72028a65be59b9b590c22c497c70a25b76a8708e7",
+      fileSha256: "2684cca79dadf40e0c8c33389d4253f759445b58c9ee281dde0de1b84a918c59",
       matchCount: 2,
     },
   ],
   [
     "refresh-token-assignment|lib/oauth-connect.test.ts",
     {
-      fileSha256: "2c51e62d915119e1b69139eb62f1a1b584effe3f6f274148d6fc5dca76debfdf",
+      fileSha256: "797948f7dc4b8c7c1d2ebc9a46d9a93d291f0f596e3379d9315a0e0ca191ae35",
       matchCount: 1,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/oauth-secure-handoff.test.ts",
+    {
+      fileSha256: "e74c236faf1625950feb43a51665566c7ff81ab3d33a78e2265434bd5789b451",
+      matchCount: 2,
     },
   ],
   [
     "refresh-token-assignment|lib/usage-token-endurance.test.ts",
     {
-      fileSha256: "79a30d97dd67d3a1a93780b3e2e080be25a6bab17494dea4107e9d124bd4dc30",
-      matchCount: 13,
+      fileSha256: "8f45804749c7c77bf094be73c2eb94b79b88406f2a8c888c191b8bb81c6346e0",
+      matchCount: 14,
     },
   ],
   [
     "refresh-token-assignment|lib/vault-client.test.ts",
     {
-      fileSha256: "9e06b3698c8b8cb1cf6de693b6535443a28bafe51fba677772d00cea1f6fbb3a",
+      fileSha256: "dcf9a26c976c10d022c8ef08fe11e76fb29b9ca665baf831364ef14898abbc07",
       matchCount: 1,
     },
   ],
   [
     "refresh-token-assignment|lib/vault.test.ts",
     {
-      fileSha256: "b5294d74ad6f52f14353eee59d5a753508806b843c49c2de9ccd8a682ef34825",
+      fileSha256: "ad3cb23c133005550d3aadcd07d94104016f6b889cf696fb69a2e16d4368990f",
       matchCount: 3,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/safe-secret-scan.test.ts",
+    {
+      fileSha256: "6500014d1c3d5b3bdfc18d0f8bb9685987dc7350030c96ea74a6c0c4d958109f",
+      matchCount: 1,
     },
   ],
   [
     "strict-local-secret-assignment|lib/bootstrap-ui.test.ts",
     {
-      fileSha256: "16193d9e07cfa611a97e7abd48f0a4d3ba9f097d208b846a9ef6d72e72ab8af2",
+      fileSha256: "105e11c0f7371f2d82079e874c8926c145898ef0311a3fae89bbcf68b46b935b",
+      matchCount: 3,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/manual-connect.test.ts",
+    {
+      fileSha256: "2684cca79dadf40e0c8c33389d4253f759445b58c9ee281dde0de1b84a918c59",
       matchCount: 2,
     },
   ],
   [
     "strict-local-secret-assignment|lib/oauth-connect.test.ts",
     {
-      fileSha256: "2c51e62d915119e1b69139eb62f1a1b584effe3f6f274148d6fc5dca76debfdf",
-      matchCount: 2,
+      fileSha256: "797948f7dc4b8c7c1d2ebc9a46d9a93d291f0f596e3379d9315a0e0ca191ae35",
+      matchCount: 5,
     },
   ],
   [
     "strict-local-secret-assignment|lib/providers/connect-openai.test.ts",
     {
-      fileSha256: "195348e7b6d650ca80d7a81ceb4641db2c8f2942970ff6936c4d2e00c207c60d",
-      matchCount: 1,
+      fileSha256: "167a9a6702fa4978281548543dd990900fb44cb6946123916b01c65db6b06e75",
+      matchCount: 3,
     },
   ],
   [
     "strict-local-secret-assignment|lib/providers/usage-service-openai.test.ts",
     {
-      fileSha256: "de0a281c4a749666a988dba9ef90cd4c1dbf76f3cca20ba29e60704f8aa246b4",
+      fileSha256: "8e37ce823d1e31ab32a7dd087a2e4300f8fd875f425e1d829ec7ba4e42a5ce4a",
       matchCount: 1,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/request-route-guards.test.ts",
+    {
+      fileSha256: "59792023f1afce76df6b8bcaac595e1bf4150a7246b2d57c992816a7e3ea8460",
+      matchCount: 2,
     },
   ],
   [
     "strict-local-secret-assignment|lib/safe-secret-scan.test.ts",
     {
-      fileSha256: "5a27b21b1c327fbe638c78cb839e895c6b264b59b79c2ceb8b66e303213e3c34",
-      matchCount: 4,
+      fileSha256: "6500014d1c3d5b3bdfc18d0f8bb9685987dc7350030c96ea74a6c0c4d958109f",
+      matchCount: 5,
     },
   ],
   [
     "strict-local-secret-assignment|lib/sanitized-validation.test.ts",
     {
-      fileSha256: "a6923e4ae1fe2518a358cf1e57e7293ea61ad08d0895e9e592e76e9764bdf963",
+      fileSha256: "d7bee17c607d055e602405b42ad640dbb934045be1139f0f6b407d56d2dac8f9",
       matchCount: 2,
     },
   ],
   [
     "strict-local-secret-assignment|lib/session.test.ts",
     {
-      fileSha256: "ba91d458030e428cd307dd7ac8c2e3c914d398b0650e75dbeda7a67692561006",
+      fileSha256: "ff6272ae3872f2fe34bd0894400fdfc396b7b838254790b2ae8a0d360b5c119f",
       matchCount: 3,
     },
   ],
   [
     "strict-local-secret-assignment|lib/usage-file-coordination.test.ts",
     {
-      fileSha256: "99a60d11a0553d73e28e59ae1816ff3503819fdc559b271d57a869024be00210",
+      fileSha256: "db38868ac4c2ad00108f0528d3ada73f21a6d315a75bc6a1ac656e804c542039",
       matchCount: 1,
     },
   ],
   [
     "strict-local-secret-assignment|lib/usage-redis-coordination.test.ts",
     {
-      fileSha256: "99c1acd202336457ecb599018b322570a5f46b0d77237d3f6a938451629fbace",
+      fileSha256: "447188dd38143ee15ccc76c664d21d6ac6ac348bcc496e444a1c7b7093cb6c63",
       matchCount: 1,
     },
   ],
   [
     "strict-local-secret-assignment|lib/usage-token-endurance.test.ts",
     {
-      fileSha256: "79a30d97dd67d3a1a93780b3e2e080be25a6bab17494dea4107e9d124bd4dc30",
+      fileSha256: "8f45804749c7c77bf094be73c2eb94b79b88406f2a8c888c191b8bb81c6346e0",
       matchCount: 1,
     },
   ],
   [
     "strict-local-secret-assignment|lib/vault-recovery.test.ts",
     {
-      fileSha256: "b6c077139439dc39da0b103e1702044e377f8c73a23ee47f86f0b7a46806e7d0",
-      matchCount: 3,
+      fileSha256: "6f4d77f21187665a5d9953767a060715a1302cb7eaf4ed69bcbf1961e5ff3ec8",
+      matchCount: 7,
     },
   ],
   [
     "strict-local-secret-assignment|lib/vault.test.ts",
     {
-      fileSha256: "b5294d74ad6f52f14353eee59d5a753508806b843c49c2de9ccd8a682ef34825",
-      matchCount: 4,
+      fileSha256: "ad3cb23c133005550d3aadcd07d94104016f6b889cf696fb69a2e16d4368990f",
+      matchCount: 8,
     },
   ],
 ]);
@@ -327,8 +362,39 @@ async function assertOrdinaryFile(root, absolutePath) {
   }
 }
 
+async function readStableOrdinaryFile(root, absolutePath) {
+  const before = await lstat(absolutePath, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw new Error("non-ordinary-file");
+  }
+  const resolved = await realpath(absolutePath);
+  const resolvedRoot = await realpath(root);
+  if (
+    resolved.toLowerCase() !== resolvedRoot.toLowerCase() &&
+    !isInside(resolvedRoot, resolved)
+  ) {
+    throw new Error("path-escape");
+  }
+  const bytes = await readFile(absolutePath);
+  const after = await lstat(absolutePath, { bigint: true });
+  if (
+    !after.isFile() ||
+    after.isSymbolicLink() ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs
+  ) {
+    throw new Error("file-race");
+  }
+  return bytes;
+}
+
 async function enumerateRoot(cwd, requestedRoot, rootIndex) {
   const absoluteRoot = path.resolve(cwd, requestedRoot);
+  const isSourceRoot =
+    absoluteRoot.toLowerCase() === path.resolve(cwd).toLowerCase();
   const relativeRoot = path.relative(cwd, absoluteRoot);
   const external =
     relativeRoot === ".." ||
@@ -365,6 +431,13 @@ async function enumerateRoot(cwd, requestedRoot, rootIndex) {
       if (entry.isSymbolicLink()) {
         throw new Error("symbolic-entry");
       }
+      if (
+        isSourceRoot &&
+        directory.toLowerCase() === absoluteRoot.toLowerCase() &&
+        SOURCE_ROOT_EXCLUDED_ENTRIES.has(entry.name.toLowerCase())
+      ) {
+        continue;
+      }
       if (entry.isDirectory()) {
         pending.push(absolute);
       } else if (entry.isFile()) {
@@ -386,45 +459,91 @@ async function enumerateRoot(cwd, requestedRoot, rootIndex) {
   return files;
 }
 
-function extractManifestPath(entry) {
-  if (typeof entry === "string") {
-    return entry;
-  }
+function extractManifestEntry(entry) {
   if (
     entry &&
     typeof entry === "object" &&
-    typeof entry.path === "string"
+    !Array.isArray(entry) &&
+    Object.keys(entry).sort().join(",") === "path,sha256,size" &&
+    typeof entry.path === "string" &&
+    Number.isSafeInteger(entry.size) &&
+    entry.size >= 0 &&
+    typeof entry.sha256 === "string" &&
+    /^[a-f0-9]{64}$/u.test(entry.sha256)
   ) {
-    return entry.path;
+    return {
+      path: normalizeRelative(entry.path),
+      size: entry.size,
+      sha256: entry.sha256,
+    };
   }
   throw new Error("invalid-manifest-entry");
 }
 
-async function filesFromManifest(cwd, manifestPath) {
-  const raw = await readFile(manifestPath, "utf8");
-  const manifest = JSON.parse(raw);
+async function filesFromManifest(
+  cwd,
+  manifestPath,
+  expectedManifestSha256,
+) {
+  if (!/^[a-f0-9]{64}$/u.test(expectedManifestSha256 ?? "")) {
+    throw new Error("invalid-manifest-hash");
+  }
+  const bytes = await readStableOrdinaryFile(cwd, manifestPath);
+  const digestPath = manifestPath.toLowerCase().endsWith(".json")
+    ? `${manifestPath.slice(0, -5)}.sha256`
+    : `${manifestPath}.sha256`;
+  const digestBytes = await readStableOrdinaryFile(cwd, digestPath);
+  const publishedDigest = digestBytes.toString("ascii");
+  if (
+    publishedDigest !== expectedManifestSha256 ||
+    sha256(bytes) !== expectedManifestSha256
+  ) {
+    throw new Error("manifest-hash-mismatch");
+  }
+  const manifest = JSON.parse(bytes.toString("utf8"));
   if (
     !manifest ||
     typeof manifest !== "object" ||
+    Array.isArray(manifest) ||
+    Object.keys(manifest).sort().join(",") !==
+      "bootstrapFiles,commit,installerSha256,nodeSha256,runtimeFiles" ||
+    typeof manifest.commit !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(manifest.commit) ||
+    typeof manifest.nodeSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(manifest.nodeSha256) ||
+    typeof manifest.installerSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(manifest.installerSha256) ||
     !Array.isArray(manifest.runtimeFiles) ||
     !Array.isArray(manifest.bootstrapFiles)
   ) {
     throw new Error("invalid-manifest");
   }
-  const names = [
-    ...manifest.runtimeFiles.map(extractManifestPath),
-    ...manifest.bootstrapFiles.map(extractManifestPath),
-  ].map(normalizeRelative);
-  if (new Set(names.map((name) => name.toLowerCase())).size !== names.length) {
+  const entries = [
+    ...manifest.runtimeFiles.map(extractManifestEntry),
+    ...manifest.bootstrapFiles.map(extractManifestEntry),
+    {
+      path: "scripts/windows/install-secure-local.ps1",
+      size: undefined,
+      sha256: manifest.installerSha256,
+    },
+  ];
+  if (
+    new Set(entries.map((entry) => entry.path.toLowerCase())).size !==
+    entries.length
+  ) {
     throw new Error("duplicate-manifest-path");
   }
-  return names.map((name) => path.resolve(cwd, ...name.split("/")));
+  return entries.map((entry) => ({
+    ...entry,
+    absolutePath: path.resolve(cwd, ...entry.path.split("/")),
+  }));
 }
 
 function parseArguments(argv) {
   const roots = [];
   let jsonPath;
   let manifestPath;
+  let expectedManifestSha256;
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -437,6 +556,11 @@ function parseArguments(argv) {
       jsonPath = value;
     } else if (flag === "--manifest" && manifestPath === undefined) {
       manifestPath = value;
+    } else if (
+      flag === "--expected-manifest-sha256" &&
+      expectedManifestSha256 === undefined
+    ) {
+      expectedManifestSha256 = value;
     } else {
       throw new Error("invalid-arguments");
     }
@@ -444,13 +568,17 @@ function parseArguments(argv) {
   if (
     jsonPath === undefined ||
     (manifestPath === undefined && roots.length === 0) ||
-    (manifestPath !== undefined && roots.length > 0)
+    (manifestPath !== undefined && roots.length > 0) ||
+    (manifestPath !== undefined &&
+      !/^[a-f0-9]{64}$/u.test(expectedManifestSha256 ?? "")) ||
+    (manifestPath === undefined && expectedManifestSha256 !== undefined)
   ) {
     throw new Error("invalid-arguments");
   }
   return {
     jsonPath: path.resolve(jsonPath),
     manifestPath: manifestPath ? path.resolve(manifestPath) : undefined,
+    expectedManifestSha256,
     roots,
   };
 }
@@ -633,18 +761,30 @@ export async function scanSecrets({
   cwd = process.cwd(),
   roots = [],
   manifestPath,
+  expectedManifestSha256,
 }) {
   const root = await realpath(cwd);
   let files;
   if (manifestPath) {
-    files = (await filesFromManifest(root, manifestPath)).map(
-      (absolutePath) => ({
-        absolutePath,
-        relative: normalizeRelative(path.relative(root, absolutePath)),
+    files = (
+      await filesFromManifest(
+        root,
+        manifestPath,
+        expectedManifestSha256,
+      )
+    ).map(
+      (entry) => ({
+        absolutePath: entry.absolutePath,
+        relative: entry.path,
         boundary: root,
+        expectedSize: entry.size,
+        expectedSha256: entry.sha256,
       }),
     );
   } else {
+    if (expectedManifestSha256 !== undefined) {
+      throw new Error("invalid-manifest-hash");
+    }
     const groups = await Promise.all(
       roots.map((requestedRoot, index) =>
         enumerateRoot(root, requestedRoot, index),
@@ -666,7 +806,13 @@ export async function scanSecrets({
     }
     folded.add(key);
     physicalFiles.add(physicalKey);
-    normalizedFiles.push({ absolutePath: file.absolutePath, relative });
+    normalizedFiles.push({
+      absolutePath: file.absolutePath,
+      relative,
+      boundary: file.boundary,
+      expectedSize: file.expectedSize,
+      expectedSha256: file.expectedSha256,
+    });
   }
   normalizedFiles.sort((left, right) =>
     left.relative.localeCompare(right.relative, "en"),
@@ -676,8 +822,19 @@ export async function scanSecrets({
   let suppressedSourceFixtureCount = 0;
   let binaryFilesExamined = 0;
   for (const file of normalizedFiles) {
-    const bytes = await readFile(file.absolutePath);
+    const bytes = await readStableOrdinaryFile(
+      file.boundary,
+      file.absolutePath,
+    );
     const fileSha256 = sha256(bytes);
+    if (
+      file.expectedSha256 !== undefined &&
+      (fileSha256 !== file.expectedSha256 ||
+        (file.expectedSize !== undefined &&
+          bytes.byteLength !== file.expectedSize))
+    ) {
+      throw new Error("manifest-file-mismatch");
+    }
     if (!isTextCapable(file.relative, bytes)) {
       binaryFilesExamined += 1;
     }
@@ -744,6 +901,7 @@ async function main() {
       cwd: process.cwd(),
       roots: parsed.roots,
       manifestPath: parsed.manifestPath,
+      expectedManifestSha256: parsed.expectedManifestSha256,
     });
     await mkdir(path.dirname(outputPath), { recursive: true });
     await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, {

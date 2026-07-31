@@ -16,7 +16,78 @@ import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSanitizedBuildEnvironment } from "./run-sanitized-validation.mjs";
+
+const SERVICE_BASE_ENVIRONMENT_NAMES = [
+  "APPDATA",
+  "COMSPEC",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOCALAPPDATA",
+  "NUMBER_OF_PROCESSORS",
+  "OS",
+  "PATHEXT",
+  "PROCESSOR_ARCHITECTURE",
+  "PROCESSOR_IDENTIFIER",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "WINDIR",
+];
+
+const SANITIZED_BUILD_ENVIRONMENT_NAMES = [
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+  "PATH",
+  "TEMP",
+  "TMP",
+  "LOCALAPPDATA",
+  "APPDATA",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+  "PROCESSOR_IDENTIFIER",
+  "OS",
+];
+
+function createSanitizedBuildEnvironment(source = process.env) {
+  const sourceEntries = caseInsensitiveEnvironment(source);
+  const result = {};
+  for (const name of SANITIZED_BUILD_ENVIRONMENT_NAMES) {
+    if (
+      process.platform === "win32" &&
+      (name === "COMSPEC" || name === "PATH")
+    ) {
+      continue;
+    }
+    const value = sourceEntries.get(name);
+    if (value !== undefined) {
+      result[
+        name === "SYSTEMROOT"
+          ? "SystemRoot"
+          : name === "COMSPEC"
+            ? "ComSpec"
+            : name
+      ] = value;
+    }
+  }
+  return {
+    ...result,
+    NEXT_TELEMETRY_DISABLED: "1",
+    NODE_ENV: "production",
+    NPM_CONFIG_AUDIT: "false",
+    NPM_CONFIG_FUND: "false",
+  };
+}
+
+function compareOrdinal(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -68,13 +139,16 @@ function validateManifest(manifest) {
   }
   const keys = Object.keys(manifest).sort();
   if (
-    keys.length !== 4 ||
+    keys.length !== 5 ||
     keys[0] !== "bootstrapFiles" ||
     keys[1] !== "commit" ||
-    keys[2] !== "nodeSha256" ||
-    keys[3] !== "runtimeFiles" ||
+    keys[2] !== "installerSha256" ||
+    keys[3] !== "nodeSha256" ||
+    keys[4] !== "runtimeFiles" ||
     typeof manifest.commit !== "string" ||
     !/^[a-f0-9]{40}$/u.test(manifest.commit) ||
+    typeof manifest.installerSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(manifest.installerSha256) ||
     typeof manifest.nodeSha256 !== "string" ||
     !/^[a-f0-9]{64}$/u.test(manifest.nodeSha256) ||
     !Array.isArray(manifest.runtimeFiles) ||
@@ -94,10 +168,10 @@ function validateManifest(manifest) {
     folded.add(key);
   }
   const sorted = [...runtimeFiles].sort((left, right) =>
-    left.path.localeCompare(right.path, "en"),
+    compareOrdinal(left.path, right.path),
   );
   const sortedBootstrap = [...bootstrapFiles].sort((left, right) =>
-    left.path.localeCompare(right.path, "en"),
+    compareOrdinal(left.path, right.path),
   );
   if (runtimeFiles.some((entry, index) => entry.path !== sorted[index].path)) {
     throw new Error("unsorted-paths");
@@ -111,6 +185,7 @@ function validateManifest(manifest) {
   }
   return {
     commit: manifest.commit,
+    installerSha256: manifest.installerSha256,
     nodeSha256: manifest.nodeSha256,
     runtimeFiles,
   };
@@ -232,7 +307,7 @@ async function enumerateStage(stageRoot) {
   while (pending.length > 0) {
     const current = pending.pop();
     const entries = await readdir(current.absolute, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
+    entries.sort((left, right) => compareOrdinal(left.name, right.name));
     for (const entry of entries) {
       const absolute = path.join(current.absolute, entry.name);
       const relative = normalizeRelative(
@@ -267,7 +342,7 @@ async function enumerateStage(stageRoot) {
       }
     }
   }
-  snapshot.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  snapshot.sort((left, right) => compareOrdinal(left.path, right.path));
   return snapshot;
 }
 
@@ -290,7 +365,7 @@ function expectedStageSnapshot(runtimeFiles) {
       ...entry,
       type: "file",
     })),
-  ].sort((left, right) => left.path.localeCompare(right.path, "en"));
+  ].sort((left, right) => compareOrdinal(left.path, right.path));
 }
 
 function sameSnapshot(actual, expected) {
@@ -306,18 +381,42 @@ function sameSnapshot(actual, expected) {
   );
 }
 
+function caseInsensitiveEnvironment(source) {
+  const folded = new Map();
+  for (const [name, value] of Object.entries(source ?? {})) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const key = name.toUpperCase();
+    if (folded.has(key) && folded.get(key) !== value) {
+      throw new Error("ambiguous-environment");
+    }
+    folded.set(key, value);
+  }
+  return folded;
+}
+
 function createSyntheticServiceEnvironment(vaultRoot, profileRoot) {
+  const source = caseInsensitiveEnvironment(process.env);
+  const environment = {};
+  for (const name of SERVICE_BASE_ENVIRONMENT_NAMES) {
+    const value = source.get(name);
+    if (typeof value === "string" && value.length > 0) {
+      environment[name] = value;
+    }
+  }
   return {
-    ...createSanitizedBuildEnvironment(process.env),
+    ...environment,
     APPDATA: path.join(profileRoot, "appdata"),
     APP_PASSWORD: randomBytes(32).toString("base64url"),
     AUTH_SECRET: randomBytes(32).toString("base64url"),
     ENABLE_LOCAL_CONNECT: "1",
-    HOME: profileRoot,
     HMC_LISTEN_HOST: "127.0.0.1",
     HMC_LISTEN_PORT: "37645",
     HMC_STRICT_LOCAL_MODE: "1",
     LOCALAPPDATA: path.join(profileRoot, "localappdata"),
+    NEXT_TELEMETRY_DISABLED: "1",
+    NODE_ENV: "production",
     PORT: "37645",
     TEMP: path.join(profileRoot, "temp"),
     TMP: path.join(profileRoot, "temp"),
@@ -401,10 +500,8 @@ function getRuntimePortListeners() {
     throw new Error("missing-system-root");
   }
   const netstat = path.join(systemRoot, "System32", "netstat.exe");
-  const result = spawnSync(
-    netstat,
-    ["-ano", "-p", "TCP"],
-    {
+  const outputs = ["TCP", "TCPv6"].map((protocol) => {
+    const result = spawnSync(netstat, ["-ano", "-p", protocol], {
       env: {
         ...createSanitizedBuildEnvironment(process.env),
         SystemRoot: systemRoot,
@@ -415,13 +512,14 @@ function getRuntimePortListeners() {
       shell: false,
       timeout: 10_000,
       maxBuffer: 64 * 1024,
-    },
-  );
-  if (result.error || result.signal || result.status !== 0) {
-    throw new Error("listener-probe-failed");
-  }
+    });
+    if (result.error || result.signal || result.status !== 0) {
+      throw new Error("listener-probe-failed");
+    }
+    return result.stdout;
+  });
   const listeners = [];
-  for (const line of result.stdout.split(/\r?\n/u)) {
+  for (const line of outputs.join("\n").split(/\r?\n/u)) {
     const columns = line.trim().split(/\s+/u);
     if (columns[0] !== "TCP") {
       continue;
@@ -523,6 +621,48 @@ export async function waitForOwnedReadiness({
   throw new Error("service-not-ready");
 }
 
+export async function observeOwnedRuntimeStability({
+  child,
+  listenerProbe = async () => getRuntimePortListeners(),
+  readiness = requestReadiness,
+  pause = async () =>
+    await new Promise((resolve) => setTimeout(resolve, 500)),
+  observations = 10,
+}) {
+  if (
+    !child ||
+    !Number.isSafeInteger(child.pid) ||
+    child.pid <= 0 ||
+    !Number.isSafeInteger(observations) ||
+    observations < 1 ||
+    observations > 100
+  ) {
+    throw new Error("service-child-invalid");
+  }
+  for (let observation = 0; observation < observations; observation += 1) {
+    await pause();
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("service-exited");
+    }
+    const before = normalizeRuntimeListeners(await listenerProbe());
+    if (!isExclusiveOwnedLoopbackListener(before, child.pid)) {
+      throw new Error("service-listener-owner-mismatch");
+    }
+    const ready = await readiness();
+    const after = normalizeRuntimeListeners(await listenerProbe());
+    if (!isExclusiveOwnedLoopbackListener(after, child.pid)) {
+      throw new Error("service-listener-owner-mismatch");
+    }
+    if (
+      !ready ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    ) {
+      throw new Error("service-readiness-lost");
+    }
+  }
+}
+
 async function waitForExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return true;
@@ -585,6 +725,7 @@ async function defaultRunCycle({ stageRoot, environment, nodePath }) {
       child,
       deadline: Date.now() + 60_000,
     });
+    await observeOwnedRuntimeStability({ child });
   } finally {
     await stopRuntimeChildAndAssertPortFree({ child });
   }
@@ -627,31 +768,43 @@ async function internalProof({
       throw new Error("initial-stage-mismatch");
     }
 
-    for (let cycle = 1; cycle <= 2; cycle += 1) {
-      const environment = createSyntheticServiceEnvironment(
-        vaultRoot,
-        profileRoot,
-      );
-      try {
-        await runCycle({
-          stageRoot,
-          cycle,
-          environment,
-          nodePath: path.resolve(nodePath),
-        });
-      } finally {
-        for (const name of [
-          "APP_PASSWORD",
-          "AUTH_SECRET",
-          "VAULT_ENCRYPTION_SECRET",
-        ]) {
-          environment[name] = "";
-          delete environment[name];
+    const serviceEnvironment = createSyntheticServiceEnvironment(
+      vaultRoot,
+      profileRoot,
+    );
+    try {
+      for (let cycle = 1; cycle <= 2; cycle += 1) {
+        const environment = { ...serviceEnvironment };
+        try {
+          await runCycle({
+            stageRoot,
+            cycle,
+            environment,
+            nodePath: path.resolve(nodePath),
+          });
+        } finally {
+          for (const name of [
+            "APP_PASSWORD",
+            "AUTH_SECRET",
+            "VAULT_ENCRYPTION_SECRET",
+          ]) {
+            environment[name] = "";
+            delete environment[name];
+          }
+        }
+        const current = await enumerateStage(stageRoot);
+        if (!sameSnapshot(current, initial)) {
+          throw new Error("runtime-mutated");
         }
       }
-      const current = await enumerateStage(stageRoot);
-      if (!sameSnapshot(current, initial)) {
-        throw new Error("runtime-mutated");
+    } finally {
+      for (const name of [
+        "APP_PASSWORD",
+        "AUTH_SECRET",
+        "VAULT_ENCRYPTION_SECRET",
+      ]) {
+        serviceEnvironment[name] = "";
+        delete serviceEnvironment[name];
       }
     }
     return { ok: true, cycles: 2, files: validated.runtimeFiles.length };
@@ -677,37 +830,72 @@ export async function proveRuntimeImmutability(options) {
 
 function parseArguments(argv) {
   if (
-    argv.length !== 4 ||
+    argv.length !== 6 ||
     argv[0] !== "--root" ||
-    argv[2] !== "--manifest"
+    argv[2] !== "--manifest" ||
+    argv[4] !== "--expected-manifest-sha256" ||
+    !/^[a-f0-9]{64}$/u.test(argv[5])
   ) {
     throw new Error("invalid-arguments");
   }
   return {
     root: path.resolve(argv[1]),
     manifestPath: path.resolve(argv[3]),
+    expectedManifestSha256: argv[5],
   };
 }
 
-async function readVerifiedManifest(manifestPath) {
-  const bytes = await readFile(manifestPath);
+async function readVerifiedManifest(
+  manifestPath,
+  expectedManifestSha256,
+) {
+  if (!/^[a-f0-9]{64}$/u.test(expectedManifestSha256 ?? "")) {
+    throw new Error("manifest-hash-mismatch");
+  }
+  const manifestFile = await hashStableFile(manifestPath);
   const expectedPath = manifestPath.toLowerCase().endsWith(".json")
     ? `${manifestPath.slice(0, -5)}.sha256`
     : `${manifestPath}.sha256`;
-  const expected = (await readFile(expectedPath, "ascii")).trim();
-  if (!/^[a-f0-9]{64}$/u.test(expected) || sha256(bytes) !== expected) {
+  const digestFile = await hashStableFile(expectedPath);
+  const publishedDigest = digestFile.bytes.toString("ascii");
+  if (
+    publishedDigest !== expectedManifestSha256 ||
+    manifestFile.sha256 !== expectedManifestSha256
+  ) {
     throw new Error("manifest-hash-mismatch");
   }
-  return JSON.parse(bytes.toString("utf8"));
+  return JSON.parse(manifestFile.bytes.toString("utf8"));
+}
+
+export async function proveRuntimeImmutabilityFromManifest(options) {
+  try {
+    const manifest = await readVerifiedManifest(
+      path.resolve(options.manifestPath),
+      options.expectedManifestSha256,
+    );
+    return await internalProof({
+      ...options,
+      manifest,
+    });
+  } catch (error) {
+    if (typeof options?.onSanitizedFailure === "function") {
+      const code =
+        error instanceof Error && /^[a-z0-9-]+$/u.test(error.message)
+          ? error.message
+          : "unknown";
+      options.onSanitizedFailure(code);
+    }
+    throw new Error("runtime-immutability-failed");
+  }
 }
 
 async function main() {
   try {
     const parsed = parseArguments(process.argv.slice(2));
-    const manifest = await readVerifiedManifest(parsed.manifestPath);
-    const result = await proveRuntimeImmutability({
+    const result = await proveRuntimeImmutabilityFromManifest({
       root: parsed.root,
-      manifest,
+      manifestPath: parsed.manifestPath,
+      expectedManifestSha256: parsed.expectedManifestSha256,
       nodePath: process.execPath,
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);

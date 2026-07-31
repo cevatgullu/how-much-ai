@@ -4,6 +4,14 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[a-fA-F0-9]{64}$')]
     [string]$ExpectedManifestSha256,
+    [Parameter(Mandatory)][string]$NodePath,
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[a-fA-F0-9]{64}$')]
+    [string]$ExpectedNodeSha256,
+    [Parameter(Mandatory)][string]$Ps51Path,
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[a-fA-F0-9]{64}$')]
+    [string]$ExpectedPs51Sha256,
     [string]$StateRoot = (Join-Path $env:LOCALAPPDATA 'HowMuchAI'),
     [ValidateSet(37645)][int]$Port = 37645
 )
@@ -17,6 +25,9 @@ $registeredTaskNames = @('HowMuchAI-Service', 'HowMuchAI-Window')
 $bundle = $null
 $manifestBytes = $null
 $installBytes = $null
+$nodeLock = $null
+$ps51Lock = $null
+$sourceEntryLocks = New-Object 'Collections.Generic.List[IO.FileStream]'
 $bootstrapHashFiles = [ordered]@{
     start = 'start-secure-local.ps1'
     open = 'open-secure-local.ps1'
@@ -24,6 +35,7 @@ $bootstrapHashFiles = [ordered]@{
     integrity = 'SecureLocalIntegrity.psm1'
     runtime = 'SecureLocalRuntime.psm1'
     secrets = 'SecureLocalSecrets.psm1'
+    finalVerifier = 'verify-final-local-state.ps1'
     extensionManifest = 'oauth-handoff-extension/manifest.json'
     extensionCallback = 'oauth-handoff-extension/callback.js'
 }
@@ -166,6 +178,224 @@ function Get-HmaSha256 {
             -ErrorAction Stop).Hash.ToLowerInvariant()
 }
 
+function Get-HmaBytesSha256 {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace(
+            '-',
+            ''
+        ).ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-HmaLockedStreamSha256 {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][IO.FileStream]$Stream)
+
+    $originalPosition = $Stream.Position
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $Stream.Position = 0
+        return ([BitConverter]::ToString(
+                $sha256.ComputeHash($Stream)
+            )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $Stream.Position = $originalPosition
+        $sha256.Dispose()
+    }
+}
+
+function Assert-HmaTrustedAclDescriptor {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Security)
+
+    if (-not $Security.AreAccessRulesCanonical) {
+        throw 'A trusted executable ACL is invalid.'
+    }
+    $trustedInstallerSid = (
+        'S-1-5-80-956008885-3418522649-1831038044-' +
+        '1853292631-2271478464'
+    )
+    $safeWriters = @{
+        'S-1-5-18' = $true
+        'S-1-5-32-544' = $true
+        $trustedInstallerSid = $true
+    }
+    $owner = $Security.GetOwner(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+    if (-not $safeWriters.ContainsKey($owner)) {
+        throw 'A trusted executable ACL is invalid.'
+    }
+
+    $dangerousRights = [Int64](
+        [Security.AccessControl.FileSystemRights]::WriteData -bor
+        [Security.AccessControl.FileSystemRights]::CreateFiles -bor
+        [Security.AccessControl.FileSystemRights]::AppendData -bor
+        [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    )
+    $dangerousRights = $dangerousRights -bor 268435456 -bor 1073741824
+    $rules = $Security.GetAccessRules(
+        $true,
+        $true,
+        [Security.Principal.SecurityIdentifier]
+    )
+    foreach ($rule in $rules) {
+        if ($rule.AccessControlType -ne
+            [Security.AccessControl.AccessControlType]::Allow) {
+            continue
+        }
+        $rights = ([Int64]$rule.FileSystemRights) -band 4294967295
+        if (($rights -band $dangerousRights) -eq 0) {
+            continue
+        }
+        $sid = $rule.IdentityReference.Value
+        $creatorOwnerOnly = (
+            $sid -ceq 'S-1-3-0' -and
+            ($rule.PropagationFlags -band
+                [Security.AccessControl.PropagationFlags]::InheritOnly)
+        )
+        if (-not $safeWriters.ContainsKey($sid) -and
+            -not $creatorOwnerOnly) {
+            throw 'A trusted executable ACL is invalid.'
+        }
+    }
+}
+
+function Assert-HmaTrustedExecutableAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string]$TrustedRoot
+    )
+
+    $trustedFile = Get-HmaVerifiedExistingPath -LiteralPath $FilePath -File
+    $trustedRootPath = Get-HmaVerifiedExistingPath `
+        -LiteralPath $TrustedRoot `
+        -Directory
+    if (-not $trustedFile.StartsWith(
+            $trustedRootPath + '\',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'A trusted executable ACL is invalid.'
+    }
+    $sections = (
+        [Security.AccessControl.AccessControlSections]::Access -bor
+        [Security.AccessControl.AccessControlSections]::Owner
+    )
+    Assert-HmaTrustedAclDescriptor -Security (
+        [IO.File]::GetAccessControl($trustedFile, $sections)
+    )
+
+    $current = [IO.Path]::GetDirectoryName($trustedFile)
+    while ($true) {
+        $current = Get-HmaVerifiedExistingPath `
+            -LiteralPath $current `
+            -Directory
+        Assert-HmaTrustedAclDescriptor -Security (
+            [IO.Directory]::GetAccessControl($current, $sections)
+        )
+        if (Test-HmaOrdinalEqual `
+                -Left $current `
+                -Right $trustedRootPath `
+                -IgnoreCase) {
+            break
+        }
+        if (-not $current.StartsWith(
+                $trustedRootPath + '\',
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'A trusted executable ACL is invalid.'
+        }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Enter-HmaSourceEntryLease {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)]$Entries
+    )
+
+    $streams = New-Object 'Collections.Generic.List[IO.FileStream]'
+    try {
+        foreach ($entry in @($Entries)) {
+            $sourcePath = Join-Path $Source (
+                [string]$entry.ManifestPath
+            ).Replace('/', [IO.Path]::DirectorySeparatorChar)
+            $verified = Get-HmaVerifiedExistingPath `
+                -LiteralPath $sourcePath `
+                -File
+            $stream = [IO.File]::Open(
+                $verified,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::Read,
+                [IO.FileShare]::Read
+            )
+            [void]$streams.Add($stream)
+            if ($stream.Length -ne [long]$entry.Size -or
+                -not (Test-HmaOrdinalEqual `
+                    -Left (Get-HmaLockedStreamSha256 -Stream $stream) `
+                    -Right ([string]$entry.Sha256) `
+                    -IgnoreCase)) {
+                throw 'A source file lease is invalid.'
+            }
+        }
+        return $streams
+    } catch {
+        foreach ($stream in $streams) {
+            $stream.Dispose()
+        }
+        throw 'A source file lease is invalid.'
+    }
+}
+
+function Exit-HmaSourceEntryLease {
+    [CmdletBinding()]
+    param([AllowNull()]$Streams)
+
+    foreach ($stream in @($Streams)) {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Assert-HmaSourceEntryLease {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Entries,
+        [Parameter(Mandatory)]$Streams
+    )
+
+    if (@($Entries).Count -ne @($Streams).Count) {
+        throw 'A source file lease changed.'
+    }
+    for ($index = 0; $index -lt @($Entries).Count; $index += 1) {
+        $entry = @($Entries)[$index]
+        $stream = @($Streams)[$index]
+        if ($stream.Length -ne [long]$entry.Size -or
+            -not (Test-HmaOrdinalEqual `
+                -Left (Get-HmaLockedStreamSha256 -Stream $stream) `
+                -Right ([string]$entry.Sha256) `
+                -IgnoreCase)) {
+            throw 'A source file lease changed.'
+        }
+    }
+}
+
 function Test-HmaExactStringSet {
     [CmdletBinding()]
     param(
@@ -280,7 +510,8 @@ function Get-HmaValidatedManifestEntries {
                 $manifestPath -cin @('package.json', 'package-lock.json', 'next.config.ts') -or
                 $manifestPath -cmatch '^(?:public|node_modules|\.next)/'
             )
-            if (-not $runtimeAllowed) {
+            if (-not $runtimeAllowed -or
+                (Test-HmaExcludedNonRuntimeArtifact -RelativePath $manifestPath)) {
                 throw 'The runtime manifest path is invalid.'
             }
         }
@@ -296,6 +527,27 @@ function Get-HmaValidatedManifestEntries {
             })
     }
     return $validated.ToArray()
+}
+
+function Test-HmaExcludedNonRuntimeArtifact {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RelativePath)
+
+    if ($RelativePath.StartsWith('.next/', [StringComparison]::OrdinalIgnoreCase) -and
+        $RelativePath.EndsWith('.map', [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    foreach ($excluded in @(
+            'node_modules/convex/dist/cli.bundle.cjs',
+            'node_modules/convex/dist/cli.bundle.cjs.map',
+            'node_modules/convex/src/cli/lib/formatEnvValueForDotfile.test.ts',
+            'node_modules/next/dist/docs/01-app/02-guides/environment-variables.md'
+        )) {
+        if ($RelativePath.Equals($excluded, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Get-HmaNoFollowTree {
@@ -367,7 +619,9 @@ function Assert-HmaSourceEntries {
             foreach ($item in @(Get-HmaNoFollowTree -Root $candidate)) {
                 if (-not $item.IsDirectory) {
                     $relative = $rootName + '/' + $item.Relative
-                    if ($relative -cnotmatch '^\.next/cache(?:/|$)') {
+                    if ($relative -cnotmatch '^\.next/cache(?:/|$)' -and
+                        -not (Test-HmaExcludedNonRuntimeArtifact `
+                            -RelativePath $relative)) {
                         [void]$actualRuntime.Add($relative)
                     }
                 }
@@ -397,13 +651,25 @@ function Assert-HmaSourceEntries {
         throw 'The source bootstrap file set is invalid.'
     }
 
-    $forbiddenEnvironmentFiles = @(
-        Get-ChildItem -LiteralPath $Source -Force -File -ErrorAction Stop |
+    $environmentEntries = @(
+        Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop |
             Where-Object { $_.Name.StartsWith('.env', [StringComparison]::OrdinalIgnoreCase) }
     )
-    if ($forbiddenEnvironmentFiles.Count -gt 0 -or
+    $exampleEntries = @($environmentEntries | Where-Object {
+            $_.Name -ceq '.env.example'
+        })
+    $forbiddenEnvironmentEntries = @($environmentEntries | Where-Object {
+            $_.Name -cne '.env.example'
+        })
+    if ($forbiddenEnvironmentEntries.Count -gt 0 -or
+        $exampleEntries.Count -gt 1 -or
         [IO.File]::Exists((Join-Path $Source '.data\vault.key'))) {
         throw 'A forbidden source file is present.'
+    }
+    if ($exampleEntries.Count -eq 1) {
+        $null = Get-HmaVerifiedExistingPath `
+            -LiteralPath ([string]$exampleEntries[0].FullName) `
+            -File
     }
 }
 
@@ -463,16 +729,23 @@ function Assert-HmaInstalledEntries {
 function Copy-HmaManifestEntries {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Source,
         [Parameter(Mandatory)][string]$Destination,
-        [Parameter(Mandatory)]$Entries
+        [Parameter(Mandatory)]$Entries,
+        [Parameter(Mandatory)]$Streams
     )
 
-    foreach ($entry in @($Entries)) {
-        $sourcePath = Join-Path $Source ([string]$entry.ManifestPath).Replace(
-            '/',
-            [IO.Path]::DirectorySeparatorChar
-        )
+    $entryList = @($Entries)
+    $streamList = @($Streams)
+    if ($entryList.Count -ne $streamList.Count) {
+        throw 'A source file lease is invalid.'
+    }
+    for ($index = 0; $index -lt $entryList.Count; $index += 1) {
+        $entry = $entryList[$index]
+        $sourceStream = $streamList[$index]
+        if ($sourceStream -isnot [IO.FileStream] -or
+            -not $sourceStream.CanRead) {
+            throw 'A source file lease is invalid.'
+        }
         $destinationPath = Join-Path $Destination ([string]$entry.InstalledPath).Replace(
             '/',
             [IO.Path]::DirectorySeparatorChar
@@ -494,10 +767,24 @@ function Copy-HmaManifestEntries {
         } elseif ([IO.Directory]::Exists($destinationPath)) {
             throw 'An installed path conflicts with the reviewed file.'
         } else {
-            Copy-Item `
-                -LiteralPath $sourcePath `
-                -Destination $destinationPath `
-                -ErrorAction Stop
+            $destinationStream = $null
+            $originalPosition = $sourceStream.Position
+            try {
+                $destinationStream = [IO.File]::Open(
+                    $destinationPath,
+                    [IO.FileMode]::CreateNew,
+                    [IO.FileAccess]::Write,
+                    [IO.FileShare]::None
+                )
+                $sourceStream.Position = 0
+                $sourceStream.CopyTo($destinationStream)
+                $destinationStream.Flush($true)
+            } finally {
+                $sourceStream.Position = $originalPosition
+                if ($null -ne $destinationStream) {
+                    $destinationStream.Dispose()
+                }
+            }
         }
     }
 }
@@ -572,6 +859,52 @@ function Get-HmaBootstrapHash {
     return [string]$matches[0].Sha256
 }
 
+function Import-HmaReviewedSourceModule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)]$Entries,
+        [Parameter(Mandatory)][string]$FileName
+    )
+
+    $matches = @($Entries | Where-Object {
+            [string]$_.InstalledPath -ceq $FileName
+        })
+    if ($matches.Count -ne 1) {
+        throw 'A required bootstrap file is missing.'
+    }
+    $entry = $matches[0]
+    $sourcePath = Join-Path $Source ([string]$entry.ManifestPath).Replace(
+        '/',
+        [IO.Path]::DirectorySeparatorChar
+    )
+    $verified = Get-HmaVerifiedExistingPath -LiteralPath $sourcePath -File
+    $bytes = [IO.File]::ReadAllBytes($verified)
+    try {
+        if ([long]$bytes.Length -ne [long]$entry.Size -or
+            -not (Test-HmaOrdinalEqual `
+                -Left (Get-HmaBytesSha256 -Bytes $bytes) `
+                -Right ([string]$entry.Sha256) `
+                -IgnoreCase)) {
+            throw 'A reviewed source module is invalid.'
+        }
+        $utf8 = New-Object Text.UTF8Encoding($false, $true)
+        $moduleText = $utf8.GetString($bytes)
+        $moduleScript = [ScriptBlock]::Create($moduleText)
+        $moduleName = 'HmaReviewedSource_' + [Guid]::NewGuid().ToString('N')
+        $reviewedModule = New-Module `
+            -Name $moduleName `
+            -ScriptBlock $moduleScript `
+            -ErrorAction Stop
+        Import-Module `
+            -ModuleInfo $reviewedModule `
+            -Force `
+            -ErrorAction Stop
+    } finally {
+        [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+}
+
 function Get-HmaTaskVerificationRecord {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$TaskName)
@@ -604,28 +937,63 @@ try {
         throw 'The source and state paths overlap.'
     }
 
-    $nodeCommand = Get-Command node.exe -ErrorAction Stop
-    $nodePath = Get-HmaVerifiedExistingPath -LiteralPath $nodeCommand.Source -File
-    $powerShellPath = Get-HmaVerifiedExistingPath `
-        -LiteralPath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
-        -File
-
-    $headOutput = @(& git -C $source rev-parse HEAD)
-    if ($LASTEXITCODE -ne 0 -or $headOutput.Count -ne 1) {
-        throw 'The source revision is invalid.'
+    $nodePath = Get-HmaVerifiedExistingPath -LiteralPath $NodePath -File
+    $powerShellPath = Get-HmaVerifiedExistingPath -LiteralPath $Ps51Path -File
+    $programFilesRoot = [IO.Path]::Combine(
+        [IO.Path]::GetPathRoot([Environment]::SystemDirectory),
+        'Program Files'
+    )
+    $windowsRoot = [IO.Directory]::GetParent(
+        [Environment]::SystemDirectory
+    ).FullName
+    $expectedNodePath = [IO.Path]::Combine(
+        $programFilesRoot,
+        'nodejs',
+        'node.exe'
+    )
+    $expectedPowerShellPath = [IO.Path]::Combine(
+        [Environment]::SystemDirectory,
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe'
+    )
+    if (-not (Test-HmaOrdinalEqual `
+            -Left $nodePath `
+            -Right $expectedNodePath `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left $powerShellPath `
+            -Right $expectedPowerShellPath `
+            -IgnoreCase)) {
+        throw 'A retained executable path is invalid.'
     }
-    $head = ([string]$headOutput[0]).Trim()
-    if ($head -cnotmatch '^[a-fA-F0-9]{40}$') {
-        throw 'The source revision is invalid.'
-    }
-    $null = & git -C $source merge-base --is-ancestor $upstreamBase $head
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The required upstream revision is absent.'
-    }
-    $status = @(& git -C $source status --porcelain --untracked-files=all)
-    if ($LASTEXITCODE -ne 0 -or
-        @($status | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -ne 0) {
-        throw 'The source tree is not clean.'
+    Assert-HmaTrustedExecutableAcl `
+        -FilePath $nodePath `
+        -TrustedRoot $programFilesRoot
+    Assert-HmaTrustedExecutableAcl `
+        -FilePath $powerShellPath `
+        -TrustedRoot $windowsRoot
+    $nodeLock = [IO.File]::Open(
+        $nodePath,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    $ps51Lock = [IO.File]::Open(
+        $powerShellPath,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    if (-not (Test-HmaOrdinalEqual `
+            -Left (Get-HmaLockedStreamSha256 -Stream $nodeLock) `
+            -Right $ExpectedNodeSha256 `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left (Get-HmaLockedStreamSha256 -Stream $ps51Lock) `
+            -Right $ExpectedPs51Sha256 `
+            -IgnoreCase)) {
+        throw 'A retained executable changed.'
     }
 
     $auditRoot = Join-Path $source 'audit\final'
@@ -633,9 +1001,10 @@ try {
         -LiteralPath (Join-Path $auditRoot 'final-commit.txt') `
         -File
     $reviewedCommit = [IO.File]::ReadAllText($commitPath).Trim()
-    if (-not (Test-HmaOrdinalEqual -Left $reviewedCommit -Right $head)) {
+    if ($reviewedCommit -cnotmatch '^[a-fA-F0-9]{40}$') {
         throw 'The reviewed commit is invalid.'
     }
+    $head = $reviewedCommit
 
     $manifestHashPath = Get-HmaVerifiedExistingPath `
         -LiteralPath (Join-Path $auditRoot 'runtime-manifest.sha256') `
@@ -657,10 +1026,14 @@ try {
             -IgnoreCase)) {
         throw 'The reviewed manifest is invalid.'
     }
-
     $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
     try {
-        if ($manifestBytes.Length -le 0 -or $manifestBytes.Length -gt 67108864) {
+        if ($manifestBytes.Length -le 0 -or
+            $manifestBytes.Length -gt 67108864 -or
+            -not (Test-HmaOrdinalEqual `
+                -Left (Get-HmaBytesSha256 -Bytes $manifestBytes) `
+                -Right $ExpectedManifestSha256 `
+                -IgnoreCase)) {
             throw 'The reviewed manifest is invalid.'
         }
         $utf8 = New-Object Text.UTF8Encoding($false, $true)
@@ -671,14 +1044,21 @@ try {
     }
     Assert-HmaExactProperties `
         -InputObject $manifest `
-        -Expected @('commit', 'nodeSha256', 'runtimeFiles', 'bootstrapFiles')
+        -Expected @(
+            'commit',
+            'nodeSha256',
+            'installerSha256',
+            'runtimeFiles',
+            'bootstrapFiles'
+        )
     if ($manifest.commit -isnot [string] -or
         -not (Test-HmaOrdinalEqual -Left ([string]$manifest.commit) -Right $head)) {
         throw 'The reviewed manifest revision is invalid.'
     }
     Assert-HmaSha256 -Value $manifest.nodeSha256
+    Assert-HmaSha256 -Value $manifest.installerSha256
     if (-not (Test-HmaOrdinalEqual `
-            -Left (Get-HmaSha256 -LiteralPath $nodePath) `
+            -Left (Get-HmaLockedStreamSha256 -Stream $nodeLock) `
             -Right ([string]$manifest.nodeSha256) `
             -IgnoreCase)) {
         throw 'The Node executable is invalid.'
@@ -696,6 +1076,10 @@ try {
                 }))) {
         throw 'The bootstrap manifest file set is invalid.'
     }
+    $allSourceEntries = @($runtimeEntries) + @($bootstrapEntries)
+    $sourceEntryLocks = Enter-HmaSourceEntryLease `
+        -Source $source `
+        -Entries $allSourceEntries
     Assert-HmaSourceEntries `
         -Source $source `
         -RuntimeEntries $runtimeEntries `
@@ -724,10 +1108,14 @@ try {
     $installText = ConvertTo-Json -InputObject $install -Depth 8 -Compress
     $installBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($installText)
 
-    $sourceIntegrityModule = Join-Path $source 'scripts\windows\SecureLocalIntegrity.psm1'
-    $sourceSecretsModule = Join-Path $source 'scripts\windows\SecureLocalSecrets.psm1'
-    Import-Module $sourceIntegrityModule -Force -ErrorAction Stop
-    Import-Module $sourceSecretsModule -Force -ErrorAction Stop
+    Import-HmaReviewedSourceModule `
+        -Source $source `
+        -Entries $bootstrapEntries `
+        -FileName 'SecureLocalIntegrity.psm1'
+    Import-HmaReviewedSourceModule `
+        -Source $source `
+        -Entries $bootstrapEntries `
+        -FileName 'SecureLocalSecrets.psm1'
     $secretsPath = Join-Path $state 'secrets.dpapi'
     if ([IO.Directory]::Exists($state)) {
         $existingConfig = Assert-HmaStartupIntegrity -StateRoot $state
@@ -788,14 +1176,28 @@ try {
             [void][IO.Directory]::CreateDirectory($directory)
         }
     }
+    $allLockedStreams = @($sourceEntryLocks)
+    if ($allLockedStreams.Count -ne $allSourceEntries.Count) {
+        throw 'A source file lease is invalid.'
+    }
+    $runtimeLockedStreams = New-Object 'Collections.Generic.List[IO.FileStream]'
+    for ($index = 0; $index -lt $runtimeEntries.Count; $index += 1) {
+        [void]$runtimeLockedStreams.Add($allLockedStreams[$index])
+    }
+    $bootstrapLockedStreams = New-Object 'Collections.Generic.List[IO.FileStream]'
+    for ($index = 0; $index -lt $bootstrapEntries.Count; $index += 1) {
+        [void]$bootstrapLockedStreams.Add(
+            $allLockedStreams[$runtimeEntries.Count + $index]
+        )
+    }
     Copy-HmaManifestEntries `
-        -Source $source `
         -Destination $appRoot `
-        -Entries $runtimeEntries
+        -Entries $runtimeEntries `
+        -Streams $runtimeLockedStreams
     Copy-HmaManifestEntries `
-        -Source $source `
         -Destination $bootstrapRoot `
-        -Entries $bootstrapEntries
+        -Entries $bootstrapEntries `
+        -Streams $bootstrapLockedStreams
     Set-HmaPrivateAcl -LiteralPath $state
     Assert-HmaInstalledEntries -Root $appRoot -Entries $runtimeEntries
     Assert-HmaInstalledEntries -Root $bootstrapRoot -Entries $bootstrapEntries
@@ -955,6 +1357,19 @@ try {
             throw 'A registered task did not round-trip exactly.'
         }
     }
+    Assert-HmaSourceEntryLease `
+        -Entries $allSourceEntries `
+        -Streams $sourceEntryLocks
+    if (-not (Test-HmaOrdinalEqual `
+            -Left (Get-HmaLockedStreamSha256 -Stream $nodeLock) `
+            -Right $ExpectedNodeSha256 `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left (Get-HmaLockedStreamSha256 -Stream $ps51Lock) `
+            -Right $ExpectedPs51Sha256 `
+            -IgnoreCase)) {
+        throw 'A retained executable changed.'
+    }
 } catch {
     if ($registrationAttempted) {
         foreach ($taskName in $registeredTaskNames) {
@@ -969,6 +1384,13 @@ try {
     }
     throw 'Secure local installation failed.'
 } finally {
+    Exit-HmaSourceEntryLease -Streams $sourceEntryLocks
+    if ($null -ne $ps51Lock) {
+        $ps51Lock.Dispose()
+    }
+    if ($null -ne $nodeLock) {
+        $nodeLock.Dispose()
+    }
     if ($null -ne $manifestBytes) {
         [Array]::Clear($manifestBytes, 0, $manifestBytes.Length)
     }

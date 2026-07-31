@@ -14,6 +14,10 @@ import { devNull } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+function compareOrdinal(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export const EXPECTED_BOOTSTRAP_PATHS = Object.freeze([
   "scripts/windows/connect-claude-secure.ps1",
   "scripts/windows/oauth-handoff-extension/callback.js",
@@ -37,10 +41,14 @@ const REQUIRED_RUNTIME_DIRECTORIES = Object.freeze([
   ".next",
 ]);
 const INSTALLER_PATH = "scripts/windows/install-secure-local.ps1";
+const EXCLUDED_NON_RUNTIME_FILES = new Set([
+  "node_modules/convex/dist/cli.bundle.cjs",
+  "node_modules/convex/dist/cli.bundle.cjs.map",
+  "node_modules/convex/src/cli/lib/formatenvvaluefordotfile.test.ts",
+  "node_modules/next/dist/docs/01-app/02-guides/environment-variables.md",
+]);
 const EXPECTED_WINDOWS_SOURCE_PATHS = Object.freeze(
-  [...EXPECTED_BOOTSTRAP_PATHS, INSTALLER_PATH].sort((left, right) =>
-    left.localeCompare(right, "en"),
-  ),
+  [...EXPECTED_BOOTSTRAP_PATHS, INSTALLER_PATH].sort(compareOrdinal),
 );
 const DERIVED_RUNTIME_PREFIXES = Object.freeze([".next/", "node_modules/"]);
 const IGNORED_GENERATED_PREFIXES = Object.freeze([
@@ -105,6 +113,14 @@ export function assertUniqueNormalizedPaths(paths) {
   } catch {
     throw new Error("runtime-manifest-failed");
   }
+}
+
+export function isExcludedNonRuntimeArtifact(relativePath) {
+  const normalized = normalizeManifestPath(relativePath).toLocaleLowerCase("en-US");
+  return (
+    (normalized.startsWith(".next/") && normalized.endsWith(".map")) ||
+    EXCLUDED_NON_RUNTIME_FILES.has(normalized)
+  );
 }
 
 function assertNoAmbientGitRepositoryOverrides(environment = process.env) {
@@ -185,7 +201,12 @@ function assertNoLocalGitAccelerators(gitPath, root) {
   }
 }
 
-async function assertExactReviewedHead(gitPath, root, commit) {
+async function assertExactReviewedHead(
+  gitPath,
+  root,
+  commit,
+  upstreamBase,
+) {
   const topLevel = runGit(gitPath, root, [
     "rev-parse",
     "--path-format=absolute",
@@ -203,6 +224,14 @@ async function assertExactReviewedHead(gitPath, root, commit) {
   ).trim();
   if (head !== commit) {
     throw new Error("source-not-exact-head");
+  }
+  if (upstreamBase !== undefined) {
+    runGit(gitPath, root, [
+      "merge-base",
+      "--is-ancestor",
+      upstreamBase,
+      commit,
+    ]);
   }
   assertNoLocalGitAccelerators(gitPath, root);
 
@@ -432,14 +461,19 @@ async function hashStableFile(
   return result;
 }
 
-async function enumerateDirectory(root, directoryPath, prefix, { excludeCache = false } = {}) {
+async function enumerateDirectory(
+  root,
+  directoryPath,
+  prefix,
+  { excludeCache = false, excludeNonRuntimeArtifacts = false } = {},
+) {
   await assertOrdinaryDirectory(directoryPath);
   const results = [];
   const pending = [{ absolute: directoryPath, relative: prefix }];
   while (pending.length > 0) {
     const current = pending.pop();
     const entries = await readdir(current.absolute, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
+    entries.sort((left, right) => compareOrdinal(left.name, right.name));
     for (const entry of entries) {
       const relative = normalizeManifestPath(`${current.relative}/${entry.name}`);
       const absolute = path.join(current.absolute, entry.name);
@@ -465,13 +499,19 @@ async function enumerateDirectory(root, directoryPath, prefix, { excludeCache = 
         }
         pending.push({ absolute, relative });
       } else if (info.isFile()) {
+        if (
+          excludeNonRuntimeArtifacts &&
+          isExcludedNonRuntimeArtifact(relative)
+        ) {
+          continue;
+        }
         results.push({ absolute, relative });
       } else {
         throw new Error("unsupported-entry");
       }
     }
   }
-  results.sort((left, right) => left.relative.localeCompare(right.relative, "en"));
+  results.sort((left, right) => compareOrdinal(left.relative, right.relative));
   return results;
 }
 
@@ -486,10 +526,12 @@ async function snapshotInstallablePaths(root) {
     results.push(
       ...(await enumerateDirectory(root, path.join(root, relative), relative, {
         excludeCache: relative === ".next",
+        excludeNonRuntimeArtifacts:
+          relative === ".next" || relative === "node_modules",
       })),
     );
   }
-  results.sort((left, right) => left.relative.localeCompare(right.relative, "en"));
+  results.sort((left, right) => compareOrdinal(left.relative, right.relative));
   assertUniqueNormalizedPaths(results.map((entry) => entry.relative));
   return results;
 }
@@ -511,6 +553,12 @@ async function assertExactBootstrapTree(root) {
 }
 
 async function assertNodeExecutable(nodePath) {
+  if (
+    path.resolve(nodePath).toLowerCase() !==
+    path.resolve(process.execPath).toLowerCase()
+  ) {
+    throw new Error("unexpected-node-executable");
+  }
   const before = await assertStableOrdinaryExecutable(nodePath, "node");
   const bytes = await readFile(nodePath);
   const after = await lstat(nodePath, { bigint: true });
@@ -548,13 +596,30 @@ async function assertStableOrdinaryExecutable(executablePath, kind) {
   return after;
 }
 
-async function assertGitExecutable(gitPath, expectedSnapshot) {
+async function assertGitExecutable(
+  gitPath,
+  expectedSnapshot,
+  expectedSha256,
+) {
+  const expectedWindowsGitPath =
+    process.platform === "win32"
+      ? path.join(
+          path.parse(process.execPath).root,
+          "Program Files",
+          "Git",
+          "mingw64",
+          "bin",
+          "git.exe",
+        )
+      : undefined;
   if (
     process.platform === "win32" &&
     (typeof gitPath !== "string" ||
-      path.basename(gitPath).toLowerCase() !== "git.exe")
+      path.basename(gitPath).toLowerCase() !== "git.exe" ||
+      path.resolve(gitPath).toLowerCase() !==
+        path.resolve(expectedWindowsGitPath).toLowerCase())
   ) {
-    throw new Error("invalid-git-name");
+    throw new Error("invalid-git-location");
   }
   const current = await assertStableOrdinaryExecutable(gitPath, "git");
   if (
@@ -563,7 +628,25 @@ async function assertGitExecutable(gitPath, expectedSnapshot) {
   ) {
     throw new Error("git-file-changed");
   }
-  return current;
+  if (
+    expectedSha256 !== undefined &&
+    (typeof expectedSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(expectedSha256))
+  ) {
+    throw new Error("invalid-git-hash");
+  }
+  if (expectedSha256 === undefined) {
+    return current;
+  }
+  const bytes = await readFile(gitPath);
+  const after = await assertStableOrdinaryExecutable(gitPath, "git");
+  if (
+    !sameSecurityFileSnapshot(current, after) ||
+    sha256(bytes) !== expectedSha256
+  ) {
+    throw new Error("git-hash-mismatch");
+  }
+  return after;
 }
 
 async function internalCreateRuntimeManifest({
@@ -571,15 +654,33 @@ async function internalCreateRuntimeManifest({
   commit,
   nodePath,
   gitPath,
+  expectedGitSha256,
+  upstreamBase,
 }) {
   if (typeof commit !== "string" || !/^[a-f0-9]{40}$/u.test(commit)) {
     throw new Error("invalid-commit");
   }
+  if (
+    upstreamBase !== undefined &&
+    (typeof upstreamBase !== "string" ||
+      !/^[a-f0-9]{40}$/u.test(upstreamBase))
+  ) {
+    throw new Error("invalid-upstream-base");
+  }
   const requestedRoot = path.resolve(root);
   await assertOrdinaryDirectory(requestedRoot);
   const canonicalRoot = await realpath(requestedRoot);
-  const gitSnapshot = await assertGitExecutable(gitPath);
-  await assertExactReviewedHead(gitPath, canonicalRoot, commit);
+  const gitSnapshot = await assertGitExecutable(
+    gitPath,
+    undefined,
+    expectedGitSha256,
+  );
+  await assertExactReviewedHead(
+    gitPath,
+    canonicalRoot,
+    commit,
+    upstreamBase,
+  );
   const reviewedCommitPaths = getReviewedCommitPaths(
     gitPath,
     canonicalRoot,
@@ -624,14 +725,14 @@ async function internalCreateRuntimeManifest({
   if (!installerEntry) {
     throw new Error("missing-reviewed-installer");
   }
-  await hashStableFile(
+  const installerFile = await hashStableFile(
     canonicalRoot,
     installerEntry.absolute,
     installerEntry.relative,
     expectedReviewedFiles.get(installerEntry.relative),
   );
-  runtimeFiles.sort((left, right) => left.path.localeCompare(right.path, "en"));
-  bootstrapFiles.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  runtimeFiles.sort((left, right) => compareOrdinal(left.path, right.path));
+  bootstrapFiles.sort((left, right) => compareOrdinal(left.path, right.path));
 
   const runtimeSnapshotAfter = await snapshotInstallablePaths(canonicalRoot);
   const windowsSnapshotAfter = await assertExactBootstrapTree(canonicalRoot);
@@ -649,12 +750,22 @@ async function internalCreateRuntimeManifest({
   ) {
     throw new Error("file-set-race");
   }
-  await assertExactReviewedHead(gitPath, canonicalRoot, commit);
-  await assertGitExecutable(gitPath, gitSnapshot);
+  await assertExactReviewedHead(
+    gitPath,
+    canonicalRoot,
+    commit,
+    upstreamBase,
+  );
+  await assertGitExecutable(
+    gitPath,
+    gitSnapshot,
+    expectedGitSha256,
+  );
 
   const manifest = {
     commit,
     nodeSha256: await assertNodeExecutable(nodePath),
+    installerSha256: installerFile.sha256,
     runtimeFiles,
     bootstrapFiles,
   };
@@ -676,6 +787,8 @@ function parseArguments(argv) {
     "--commit",
     "--node",
     "--git",
+    "--expected-git-sha256",
+    "--upstream-base",
     "--output",
     "--sha256-output",
   ]);
@@ -696,6 +809,8 @@ function parseArguments(argv) {
     commit: values.get("--commit"),
     nodePath: path.resolve(values.get("--node")),
     gitPath: values.get("--git"),
+    expectedGitSha256: values.get("--expected-git-sha256"),
+    upstreamBase: values.get("--upstream-base"),
     outputPath: path.resolve(values.get("--output")),
     sha256Path: path.resolve(values.get("--sha256-output")),
   };
@@ -759,7 +874,7 @@ async function publishManifestPair({
 
   try {
     await writeFile(outputStage, manifestBytes, { flag: "wx" });
-    await writeFile(sha256Stage, `${manifestSha256}\n`, {
+    await writeFile(sha256Stage, manifestSha256, {
       encoding: "ascii",
       flag: "wx",
     });
@@ -791,6 +906,8 @@ async function main() {
       commit: parsed.commit,
       nodePath: parsed.nodePath,
       gitPath: parsed.gitPath,
+      expectedGitSha256: parsed.expectedGitSha256,
+      upstreamBase: parsed.upstreamBase,
     });
     await publishManifestPair({
       outputPath: parsed.outputPath,
@@ -803,6 +920,7 @@ async function main() {
         ok: true,
         runtimeFiles: generated.manifest.runtimeFiles.length,
         bootstrapFiles: generated.manifest.bootstrapFiles.length,
+        manifestSha256: generated.sha256,
       })}\n`,
     );
   } catch {

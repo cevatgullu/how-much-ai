@@ -166,6 +166,7 @@ function Get-HmaExpectedIntegrityHash {
                 'integrity',
                 'runtime',
                 'secrets',
+                'finalVerifier',
                 'extensionManifest',
                 'extensionCallback'
             )

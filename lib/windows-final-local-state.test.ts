@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -26,17 +27,19 @@ const vaultSecretCanary = `VAULT-VALUE-CANARY-${"c".repeat(32)}`;
 const processMetadataCanary = "PROCESS-METADATA-CANARY";
 const listenerPidCanary = "424242";
 const reviewedVerifierHash =
-  "a3dcfd5d0dfa093fc82130bbdafed9f9254882d0ce5f74edc6558cd4e0ee776a";
-const reviewedManifestSha256 =
-  "9435a7a1564e5deb1075e83629172fe7682cd2ab651e6d6422d81dc5b8ee688a";
+  "a1efd2b0df5731064807010b867838ad82e41dce56690024bd9b3c6e84a4886e";
 const reviewedManifest =
   `{"commit":"${"d".repeat(40)}","nodeSha256":"${"e".repeat(64)}",` +
+  `"installerSha256":"${"f".repeat(64)}",` +
   '"runtimeFiles":[],"bootstrapFiles":[' +
   `{"path":"scripts/windows/SecureLocalIntegrity.psm1","size":1,"sha256":"${integrityHash}"},` +
   `{"path":"scripts/windows/SecureLocalRuntime.psm1","size":1,"sha256":"${runtimeHash}"},` +
   `{"path":"scripts/windows/SecureLocalSecrets.psm1","size":1,"sha256":"${secretsHash}"},` +
-  `{"path":"scripts/windows/verify-final-local-state.ps1","size":34590,"sha256":"${reviewedVerifierHash}"}` +
+  `{"path":"scripts/windows/verify-final-local-state.ps1","size":38291,"sha256":"${reviewedVerifierHash}"}` +
   "]}";
+const reviewedManifestSha256 = createHash("sha256")
+  .update(reviewedManifest)
+  .digest("hex");
 
 function psLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
@@ -107,6 +110,8 @@ const syntheticHarness = [
   "$script:fallback = $false",
   "$script:listenerWaitCalls = 0",
   "$script:targetSelected = $false",
+  "$script:edgeRunning = $false",
+  "$script:edgeStableCheckCalls = 0",
   `$script:appSecret = ${psLiteral(appSecretCanary)}`,
   `$script:authSecret = ${psLiteral(authSecretCanary)}`,
   `$script:vaultSecret = ${psLiteral(vaultSecretCanary)}`,
@@ -183,6 +188,7 @@ const syntheticHarness = [
   "      param($StateRoot)",
   "      Add-TestEvent 'close-edge'",
   "      if ($script:failure -ceq 'cleanup') { throw 'edge cleanup failure' }",
+  "      $script:edgeRunning = $false",
   "      return $true",
   "    }",
   "    StopTask = {",
@@ -191,7 +197,21 @@ const syntheticHarness = [
   "      if ($script:failure -ceq 'cleanup' -and [string]$TaskName -ceq 'HowMuchAI-Window') { throw 'task cleanup failure' }",
   "      return $true",
   "    }",
-  "    WaitTaskStopped = { param($TaskName) Add-TestEvent ('wait-task-' + [string]$TaskName); return $true }",
+  "    WaitTaskStopped = {",
+  "      param($TaskName)",
+  "      Add-TestEvent ('wait-task-' + [string]$TaskName)",
+  "      if ($script:failure -ceq 'edge-relaunch' -and [string]$TaskName -ceq 'HowMuchAI-Window') {",
+  "        $script:edgeRunning = $true",
+  "        Add-TestEvent 'launch-edge'",
+  "      }",
+  "      return $true",
+  "    }",
+  "    WaitDedicatedEdgeExit = {",
+  "      param($StateRoot)",
+  "      Add-TestEvent 'wait-edge-exit'",
+  "      $script:edgeStableCheckCalls += 1",
+  "      return (-not $script:edgeRunning)",
+  "    }",
   "    WaitListenerExit = {",
   "      param($ListenerPid)",
   "      Add-TestEvent 'wait-listener'",
@@ -231,6 +251,8 @@ const syntheticHarness = [
   "  $script:fallback = $Fallback",
   "  $script:listenerWaitCalls = 0",
   "  $script:targetSelected = $false",
+  "  $script:edgeRunning = $false",
+  "  $script:edgeStableCheckCalls = 0",
   "  $failed = $false",
   "  $sanitized = $false",
   "  $summary = $null",
@@ -245,7 +267,7 @@ const syntheticHarness = [
   "  $firstScan = $script:events.IndexOf('acl-scan')",
   "  $lastTaskWait = [Math]::Max($script:events.IndexOf('wait-task-HowMuchAI-Window'), $script:events.IndexOf('wait-task-HowMuchAI-Service'))",
   "  $lastListenerWait = [Math]::Max($script:events.LastIndexOf('wait-listener'), [Math]::Max($script:events.LastIndexOf('wait-exact-listener'), $script:events.LastIndexOf('wait-port-listeners')))",
-  "  $lastShutdown = [Math]::Max($lastTaskWait, $lastListenerWait)",
+  "  $lastShutdown = [Math]::Max($script:events.LastIndexOf('wait-edge-exit'), [Math]::Max($lastTaskWait, $lastListenerWait))",
   "  return [pscustomobject]@{",
   "    failed = $failed",
   "    sanitized = $sanitized",
@@ -462,6 +484,134 @@ test(
       ...records[0],
       waitListenerCount: 2,
       terminateCount: 1,
+    });
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "shutdown waits for the Window task before closing and stably checking its Edge profile",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      ...syntheticHarness,
+      "$script:events.Clear()",
+      "$script:failure = 'edge-relaunch'",
+      "$script:edgeRunning = $false",
+      "$script:edgeStableCheckCalls = 0",
+      `$shutdown = Invoke-HmaFinalFailSafeShutdown -StateRoot ${psLiteral(stateCanary)} -Operations (New-TestOperations) -ValidatedListenerPid $null -ServicePlan $null -SecretValues $null`,
+      "$windowWait = $script:events.IndexOf('wait-task-HowMuchAI-Window')",
+      "$edgeLaunch = $script:events.IndexOf('launch-edge')",
+      "$edgeClose = $script:events.IndexOf('close-edge')",
+      "$edgeStableCheck = $script:events.IndexOf('wait-edge-exit')",
+      "[pscustomobject]@{",
+      "  edgeClosed = [bool]$shutdown.edgeClosed",
+      "  edgeStillRunning = [bool]$script:edgeRunning",
+      "  closeAfterWindowStopped = ($edgeClose -gt $windowWait -and $windowWait -ge 0)",
+      "  closeAfterRelaunch = ($edgeClose -gt $edgeLaunch -and $edgeLaunch -ge 0)",
+      "  stableCheckAfterClose = ($edgeStableCheck -gt $edgeClose -and $edgeClose -ge 0)",
+      "  stableCheckCount = [int]$script:edgeStableCheckCalls",
+      "  terminateCount = @($script:events | Where-Object { $_ -ceq 'terminate-listener' }).Count",
+      "} | ConvertTo-Json -Compress",
+    ]);
+
+    assert.deepEqual(parseSafeJson(stdout), {
+      edgeClosed: true,
+      edgeStillRunning: false,
+      closeAfterWindowStopped: true,
+      closeAfterRelaunch: true,
+      stableCheckAfterClose: true,
+      stableCheckCount: 1,
+      terminateCount: 0,
+    });
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "task shutdown rejects queued or unknown state and requires two stable stopped polls",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      "$script:states = @()",
+      "$script:stateIndex = 0",
+      "$script:taskPolls = 0",
+      "$script:taskDelays = 0",
+      "function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName) $script:taskPolls += 1; $index = [Math]::Min($script:stateIndex, $script:states.Count - 1); $state = [string]$script:states[$index]; $script:stateIndex += 1; [pscustomobject]@{ State = $state } }",
+      "function Start-Sleep { [CmdletBinding()] param([int]$Milliseconds) $script:taskDelays += 1 }",
+      "function Invoke-TaskStateScenario { param([string[]]$States) $script:states = @($States); $script:stateIndex = 0; $script:taskPolls = 0; $script:taskDelays = 0; $result = Wait-HmaFinalTaskStopped -TaskName 'HowMuchAI-Window'; [pscustomobject]@{ result = [bool]$result; polls = [int]$script:taskPolls; delays = [int]$script:taskDelays } }",
+      "$records = @(",
+      "  (Invoke-TaskStateScenario -States @('Ready','Ready')),",
+      "  (Invoke-TaskStateScenario -States @('Disabled','Disabled')),",
+      "  (Invoke-TaskStateScenario -States @('Ready','Running','Ready','Ready')),",
+      "  (Invoke-TaskStateScenario -States @('Queued')),",
+      "  (Invoke-TaskStateScenario -States @('Unknown'))",
+      ")",
+      "$records | ConvertTo-Json -Compress",
+    ]);
+
+    assert.deepEqual(parseSafeJson(stdout), [
+      { result: true, polls: 2, delays: 1 },
+      { result: true, polls: 2, delays: 1 },
+      { result: true, polls: 4, delays: 3 },
+      { result: false, polls: 1, delays: 0 },
+      { result: false, polls: 1, delays: 0 },
+    ]);
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "dedicated Edge exit requires two profile-free scans and treats unvalidated references as live",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      "$script:scanCount = 0",
+      "$script:delayCount = 0",
+      `$profileArgument = '--user-data-dir=' + (Join-Path ${psLiteral(stateCanary)} 'edge-profile')`,
+      "$provider = {",
+      "  $script:scanCount += 1",
+      "  if ($script:scanCount -eq 2) {",
+      "    return @([pscustomobject]@{",
+      "      ProcessId = 7331",
+      "      ExecutablePath = 'C:\\Untrusted\\msedge.exe'",
+      "      CommandLine = ('\"C:\\Untrusted\\msedge.exe\" \"' + $profileArgument + '\" \"' + $profileArgument + '\"')",
+      "    })",
+      "  }",
+      "  if ($script:scanCount -eq 3) {",
+      "    return @([pscustomobject]@{",
+      "      ProcessId = 7332",
+      "      ExecutablePath = 'C:\\Untrusted\\msedge.exe'",
+      "      CommandLine = '\"C:\\Untrusted\\msedge.exe\" --user-data-dir=C:\\OtherProfile'",
+      "    })",
+      "  }",
+      "  return @()",
+      "}",
+      "$delay = { $script:delayCount += 1 }",
+      `$stable = Wait-HmaFinalDedicatedEdgeExit -StateRoot ${psLiteral(stateCanary)} -ProcessProvider $provider -DelayProvider $delay -MaximumAttempts 4`,
+      "[pscustomobject]@{",
+      "  stable = [bool]$stable",
+      "  scanCount = [int]$script:scanCount",
+      "  delayCount = [int]$script:delayCount",
+      "} | ConvertTo-Json -Compress",
+    ]);
+
+    assert.deepEqual(parseSafeJson(stdout), {
+      stable: true,
+      scanCount: 4,
+      delayCount: 3,
     });
     assert.equal(stderr.length, 0);
     assertNoSensitiveOutput(stdout, stderr);

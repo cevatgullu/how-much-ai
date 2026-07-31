@@ -39,13 +39,15 @@ cd how-much-ai
 npm ci
 ```
 
-Run the zero-configuration local edition:
+Create the local configuration and set `APP_PASSWORD` to an independent strong
+value before starting:
 
 ```bash
+cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Do not expose this default to an untrusted network: without `APP_PASSWORD`, every dashboard and API route is intentionally open.
+Open [http://localhost:3000](http://localhost:3000). The development command binds explicitly to `127.0.0.1`, but the dashboard and APIs still require the password session. Development and production both fail closed when `APP_PASSWORD` is missing.
 
 ## 3. Configure secrets
 
@@ -72,7 +74,7 @@ VAULT_ENCRYPTION_SECRET=<an independent random value>
 TRUST_PROXY_IP_HEADERS=0
 ```
 
-- `APP_PASSWORD` enables the password gate.
+- `APP_PASSWORD` is required for ordinary development and self-hosting login.
 - `AUTH_SECRET` signs the 30-day session cookie. Keeping it independent allows password changes without immediately invalidating every session.
 - `VAULT_ENCRYPTION_SECRET` separates credential encryption from the login password. It is mandatory for Redis and strongly recommended for any networked install.
 
@@ -350,7 +352,7 @@ Then restart the application and verify:
 
 ### The app opens without a login
 
-`APP_PASSWORD` is blank or missing. That is the intended local default. Set it in the runtime environment and restart the already-built server.
+No supported environment enters unauthenticated open mode. Set `APP_PASSWORD` in the runtime environment, restart, and verify that login is required. Development and production both fail closed when it is blank or missing.
 
 If this is an upgrade from a hosted-mode build, remove any stale `AUTH_MODE` variable. Unsupported legacy auth modes deliberately fail closed; this edition requires `APP_PASSWORD` for network access.
 

@@ -99,6 +99,7 @@ const bootstrapHashNames: Record<string, string> = {
   "SecureLocalIntegrity.psm1": "integrity",
   "SecureLocalRuntime.psm1": "runtime",
   "SecureLocalSecrets.psm1": "secrets",
+  "verify-final-local-state.ps1": "finalVerifier",
   "oauth-handoff-extension/manifest.json": "extensionManifest",
   "oauth-handoff-extension/callback.js": "extensionCallback",
 };
@@ -162,6 +163,7 @@ async function createFixture(): Promise<ConnectorFixture> {
     "SecureLocalIntegrity.psm1": await readFile(integrityModulePath),
     "SecureLocalRuntime.psm1": await readFile(runtimeModulePath),
     "SecureLocalSecrets.psm1": syntheticSecrets,
+    "verify-final-local-state.ps1": "# synthetic reviewed final verifier",
     "oauth-handoff-extension/manifest.json": '{"manifest_version":3}',
     "oauth-handoff-extension/callback.js": '"use strict";',
   });
@@ -174,6 +176,7 @@ async function createFixture(): Promise<ConnectorFixture> {
   const manifest = {
     commit,
     nodeSha256: sha256("synthetic reviewed node"),
+    installerSha256: "f".repeat(64),
     runtimeFiles,
     bootstrapFiles: bootstrapFiles.map((entry) => ({
       ...entry,

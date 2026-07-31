@@ -25,7 +25,8 @@ const moduleHooks = registerHooks({
 });
 
 const originalEnv = { ...process.env };
-delete process.env.APP_PASSWORD;
+process.env.APP_PASSWORD = "request-route-guards-test-password";
+process.env.AUTH_SECRET = "request-route-guards-test-auth-secret";
 delete process.env.VERCEL;
 process.env.CONVEX_URL = "https://request-guard-test.convex.cloud";
 process.env.VAULT_ACCESS_SECRET = "request-guard-secret";
@@ -44,6 +45,8 @@ const { POST: subscribePost, DELETE: subscribeDelete } = await import("../app/ap
 const { POST: recoverPost } = await import("../app/api/vault/recover/route.ts");
 const { pairingBackendAvailable, pairingRateBucket, PAIRING_RATE_BUCKET_COUNT } =
   await import("./pairings-store.ts");
+const { createSession, SESSION_COOKIE } = await import("./session.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
 
 after(() => {
   process.env = originalEnv;
@@ -53,7 +56,7 @@ after(() => {
 function jsonPrimitive(pathname: string, body = "null"): Request {
   return new Request(`http://localhost${pathname}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Cookie: sessionCookie },
     body,
   });
 }
@@ -103,7 +106,11 @@ test("browser state mutations reject cross-origin requests before route-specific
     const response = await handler(
       new Request(`http://localhost${pathname}`, {
         method,
-        headers: { "Content-Type": "application/json", Origin: "https://attacker.example" },
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://attacker.example",
+          Cookie: sessionCookie,
+        },
         body: "{}",
       }),
     );
@@ -123,7 +130,7 @@ test("browser JSON mutations reject text/plain no-CORS bodies", async () => {
     const response = await handler(
       new Request(`http://localhost${pathname}`, {
         method,
-        headers: { "Content-Type": "text/plain", "Sec-Fetch-Site": "same-origin" },
+        headers: { "Content-Type": "text/plain", "Sec-Fetch-Site": "same-origin", Cookie: sessionCookie },
         body: "{}",
       }),
     );

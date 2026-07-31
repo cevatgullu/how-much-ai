@@ -222,6 +222,7 @@ type Scenario =
   | "post-start-mismatch"
   | "post-status-mismatch"
   | "status-http-error"
+  | "additional-listener"
   | "integrity-tamper";
 
 interface ScenarioResult {
@@ -292,7 +293,11 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
       "  if (($script:scenario -ceq 'pre-start-mismatch' -and $script:listenerChecks -eq 1) -or",
       "      ($script:scenario -ceq 'post-start-mismatch' -and $script:listenerChecks -eq 2) -or",
       "      ($script:scenario -ceq 'post-status-mismatch' -and $script:listenerChecks -eq 4)) { return @() }",
-      "  [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 42 }",
+      "  $exact = [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 42 }",
+      "  $unknown = [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 37645; State = 'Listen'; OwningProcess = 84 }",
+      "  $rows = if ($script:scenario -ceq 'additional-listener') { @($exact, $unknown) } else { @($exact) }",
+      "  if ($PSBoundParameters.ContainsKey('LocalAddress')) { return @($rows | Where-Object { [string]$_.LocalAddress -ceq $LocalAddress }) }",
+      "  return @($rows)",
       "}",
       "function Get-CimInstance {",
       "  [CmdletBinding()] param([string]$ClassName,[string]$Filter)",
@@ -459,6 +464,34 @@ test(
         listenerChecks: 2,
         passwordPosts: 1,
         edgeStarts: 0,
+        oauthChildren: 0,
+      },
+    );
+  },
+);
+
+test(
+  "connector rejects an additional non-loopback listener before sending a password",
+  windowsOnly,
+  async () => {
+    const result = await runScenario("additional-listener");
+    assert.deepEqual(
+      {
+        failed: result.failed,
+        sanitized: result.sanitized,
+        listenerChecks: result.listenerChecks,
+        passwordPosts: result.passwordPosts,
+        edgeStarts: result.edgeStarts,
+        stopped: result.stopped,
+        oauthChildren: result.oauthChildren,
+      },
+      {
+        failed: true,
+        sanitized: true,
+        listenerChecks: 1,
+        passwordPosts: 0,
+        edgeStarts: 0,
+        stopped: 0,
         oauthChildren: 0,
       },
     );

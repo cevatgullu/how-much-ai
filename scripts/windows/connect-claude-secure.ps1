@@ -228,17 +228,18 @@ function Get-HmaVerifiedServiceListenerPid {
 
     $listeners = @(
         Get-NetTCPConnection `
-            -LocalAddress '127.0.0.1' `
-            -LocalPort 37645 `
             -State Listen `
             -ErrorAction Stop
     )
-    $listeners = @($listeners | Where-Object {
-            [string]$_.LocalAddress -ceq '127.0.0.1' -and
-            [int]$_.LocalPort -eq 37645 -and
-            [string]$_.State -ceq 'Listen'
-        })
-    if ($listeners.Count -ne 1) {
+    $listeners = @(
+        $listeners | Where-Object {
+            [int]$_.LocalPort -eq 37645
+        }
+    )
+    if ($listeners.Count -ne 1 -or
+        [string]$listeners[0].LocalAddress -cne '127.0.0.1' -or
+        [int]$listeners[0].LocalPort -ne 37645 -or
+        [string]$listeners[0].State -cne 'Listen') {
         throw 'The listener is invalid.'
     }
     $listenerPid = [int]$listeners[0].OwningProcess

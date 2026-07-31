@@ -246,3 +246,316 @@ test("an explicitly requested external state root is scanned under an opaque log
     await rm(external, { recursive: true, force: true });
   }
 });
+
+test("private-key material is examined even when its extension is not on a text allowlist", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-key-"));
+  const artifact = path.join(fixture, "result.json");
+  const rawPath = path.join(fixture, "identity.pem");
+
+  try {
+    await writeFile(
+      rawPath,
+      "-----BEGIN PRIVATE KEY-----\nsynthetic-only\n-----END PRIVATE KEY-----\n",
+      "utf8",
+    );
+    const result = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      "identity.pem",
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+      findings: Array<{ ruleId: string }>;
+    };
+
+    assert.equal(result.code, 1);
+    assert.equal(report.findingCount, 1);
+    assert.equal(report.findings[0]?.ruleId, "private-key");
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("UTF-16 files and unquoted secret assignments cannot bypass the scan", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-utf16-"));
+  const artifact = path.join(fixture, "result.json");
+  const password = "A".repeat(32);
+  const refreshToken = "R".repeat(32);
+  const rawPath = path.join(fixture, "opaque.bin");
+  const utf16 = Buffer.concat([
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from(
+      `APP_PASSWORD=${password}\r\nrefresh_token=${refreshToken}\r\n`,
+      "utf16le",
+    ),
+  ]);
+
+  try {
+    await writeFile(rawPath, utf16);
+    const result = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      "opaque.bin",
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+      findings: Array<{ ruleId: string }>;
+    };
+    const combined = `${result.stdout}\n${result.stderr}\n${JSON.stringify(report)}`;
+
+    assert.equal(result.code, 1);
+    assert.equal(report.findingCount, 2);
+    assert.deepEqual(
+      report.findings.map((finding) => finding.ruleId).sort(),
+      ["refresh-token-assignment", "strict-local-secret-assignment"],
+    );
+    assert.equal(combined.includes(password), false);
+    assert.equal(combined.includes(refreshToken), false);
+    assert.equal(combined.includes(rawPath), false);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("unquoted secrets embedded in TypeScript string literals are detected", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-ts-literal-"));
+  const artifact = path.join(fixture, "result.json");
+  const password = "SuperSecretPassword";
+
+  try {
+    await writeFile(
+      path.join(fixture, "string-fixture.ts"),
+      `const fixture = "APP_PASSWORD=${password} ;";\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(fixture, "template-fixture.ts"),
+      `const fixture = \`\nAPP_PASSWORD=${password}\n\`;\n`,
+      "utf8",
+    );
+    const result = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      ".",
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+      findings: Array<{ ruleId: string }>;
+    };
+    const combined = `${result.stdout}\n${result.stderr}\n${JSON.stringify(report)}`;
+
+    assert.equal(result.code, 1);
+    assert.equal(report.findingCount, 2);
+    assert.deepEqual(
+      report.findings.map((finding) => finding.ruleId),
+      ["strict-local-secret-assignment", "strict-local-secret-assignment"],
+    );
+    assert.equal(combined.includes(password), false);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("shell and PowerShell assignments are never treated as member references", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-shell-"));
+  const artifact = path.join(fixture, "result.json");
+  const password = "SuperSecretPassword";
+
+  try {
+    await writeFile(
+      path.join(fixture, "fixture.sh"),
+      `APP_PASSWORD=${password}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(fixture, "fixture.ps1"),
+      `$env:APP_PASSWORD=${password}\r\n`,
+      "utf8",
+    );
+    const result = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      ".",
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+      findings: Array<{ ruleId: string }>;
+    };
+    const combined = `${result.stdout}\n${result.stderr}\n${JSON.stringify(report)}`;
+
+    assert.equal(result.code, 1);
+    assert.equal(report.findingCount, 2);
+    assert.deepEqual(
+      report.findings.map((finding) => finding.ruleId),
+      ["strict-local-secret-assignment", "strict-local-secret-assignment"],
+    );
+    assert.equal(combined.includes(password), false);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("real JavaScript and TypeScript member references remain clean", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-members-"));
+  const artifact = path.join(fixture, "result.json");
+
+  try {
+    await writeFile(
+      path.join(fixture, "fixture.ts"),
+      [
+        "const config = { APP_PASSWORD: productionPassword };",
+        "process.env.AUTH_SECRET = configuration.authSecret;",
+      ].join("\n"),
+      "utf8",
+    );
+    const result = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      "fixture.ts",
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+    };
+
+    assert.equal(result.code, 0);
+    assert.equal(report.findingCount, 0);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("BOM-less UTF-16 secrets remain detectable after a long non-ASCII prefix", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-utf16-prefix-"));
+  const artifact = path.join(fixture, "result.json");
+  const password = "SuperSecretPassword";
+  const text = `${"一".repeat(5_000)}\nAPP_PASSWORD=${password}\n`;
+  const littleEndian = Buffer.from(text, "utf16le");
+  const bigEndian = Buffer.from(littleEndian);
+  for (let index = 0; index < bigEndian.length; index += 2) {
+    [bigEndian[index], bigEndian[index + 1]] = [
+      bigEndian[index + 1],
+      bigEndian[index],
+    ];
+  }
+
+  try {
+    await writeFile(path.join(fixture, "little-endian.bin"), littleEndian);
+    await writeFile(path.join(fixture, "big-endian.bin"), bigEndian);
+    const result = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      ".",
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+      findings: Array<{ ruleId: string }>;
+    };
+    const combined = `${result.stdout}\n${result.stderr}\n${JSON.stringify(report)}`;
+
+    assert.equal(result.code, 1);
+    assert.equal(report.findingCount, 2);
+    assert.deepEqual(
+      report.findings.map((finding) => finding.ruleId),
+      ["strict-local-secret-assignment", "strict-local-secret-assignment"],
+    );
+    assert.equal(combined.includes(password), false);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("a plaintext OpenAI JWT access token is detected in a vault-shaped JSON file", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-openai-"));
+  const artifact = path.join(fixture, "result.json");
+  const jwt = [
+    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiJzeW50aGV0aWMtb25seSJ9",
+    "c3ludGhldGljLXNpZ25hdHVyZS1vbmx5",
+  ].join(".");
+  const rawPath = path.join(fixture, "vault.json");
+
+  try {
+    await writeFile(rawPath, JSON.stringify({ accessToken: jwt }), "utf8");
+    const result = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      "vault.json",
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+      findings: Array<{ ruleId: string }>;
+    };
+    const combined = `${result.stdout}\n${result.stderr}\n${JSON.stringify(report)}`;
+
+    assert.equal(result.code, 1);
+    assert.equal(report.findingCount, 1);
+    assert.equal(
+      report.findings[0]?.ruleId,
+      "openai-access-token-assignment",
+    );
+    assert.equal(combined.includes(jwt), false);
+    assert.equal(combined.includes(rawPath), false);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("reviewed source suppressions are invalidated by any fixture-file change", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-secret-reviewed-"));
+  const artifact = path.join(fixture, "result.json");
+  const relative = "lib/vault.test.ts";
+  const rawPath = path.join(fixture, ...relative.split("/"));
+  const reviewedBytes = await readFile(path.resolve(relative));
+  const novelSecret = "novel-production-shaped-secret-987654321";
+
+  try {
+    await mkdir(path.dirname(rawPath), { recursive: true });
+    await writeFile(rawPath, reviewedBytes);
+    const cleanResult = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      relative,
+    ]);
+    assert.equal(cleanResult.code, 0);
+
+    await writeFile(
+      rawPath,
+      Buffer.concat([
+        reviewedBytes,
+        Buffer.from(`\nprocess.env.AUTH_SECRET = "${novelSecret}";\n`, "utf8"),
+      ]),
+    );
+    const changedResult = await runScanner(fixture, [
+      "--json",
+      artifact,
+      "--root",
+      relative,
+    ]);
+    const report = JSON.parse(await readFile(artifact, "utf8")) as {
+      findingCount: number;
+      findings: Array<{ ruleId: string }>;
+    };
+    const combined = `${changedResult.stdout}\n${changedResult.stderr}\n${JSON.stringify(report)}`;
+
+    assert.equal(changedResult.code, 1);
+    assert.equal(report.findingCount > 0, true);
+    assert.equal(
+      report.findings.some(
+        (finding) => finding.ruleId === "strict-local-secret-assignment",
+      ),
+      true,
+    );
+    assert.equal(combined.includes(novelSecret), false);
+    assert.equal(combined.includes(rawPath), false);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});

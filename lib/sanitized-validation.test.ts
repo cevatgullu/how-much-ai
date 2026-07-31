@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -142,3 +144,195 @@ test("case-fold duplicate environment keys fail closed", async () => {
     /ambiguous-environment/u,
   );
 });
+
+test("validation rejects ignored Next env files and project npm configuration", async () => {
+  const { assertSafeProjectConfiguration } = (await import(moduleUrl)) as {
+    assertSafeProjectConfiguration: (projectRoot: string) => void;
+  };
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-validation-root-"));
+
+  try {
+    const envPath = path.join(fixture, ".env.production.local");
+    await writeFile(envPath, "NEXT_PUBLIC_CANARY=must-not-load\n", "utf8");
+    assert.throws(
+      () => assertSafeProjectConfiguration(fixture),
+      /forbidden-project-configuration/u,
+    );
+    await rm(envPath);
+
+    await writeFile(
+      path.join(fixture, ".npmrc"),
+      "node-options=--require=attacker-preload.js\n",
+      "utf8",
+    );
+    assert.throws(
+      () => assertSafeProjectConfiguration(fixture),
+      /forbidden-project-configuration/u,
+    );
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test(
+  "actual npm configuration is isolated from a hostile source profile",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const {
+      createIsolatedNpmEnvironment,
+      verifyNpmConfiguration,
+    } = (await import(moduleUrl)) as {
+      createIsolatedNpmEnvironment: (
+        sourceEnvironment: NodeJS.ProcessEnv,
+      ) => {
+        env: Record<string, string>;
+        root: string;
+        expected: {
+          userConfig: string;
+          globalConfig: string;
+          cache: string;
+        };
+        cleanup: () => void;
+      };
+      verifyNpmConfiguration: (
+        npmPath: string,
+        env: Record<string, string>,
+        expected: {
+          userConfig: string;
+          globalConfig: string;
+          cache: string;
+        },
+        projectRoot: string,
+      ) => void;
+    };
+    const attackerProfile = await mkdtemp(
+      path.join(os.tmpdir(), "hma-hostile-profile-"),
+    );
+    await writeFile(
+      path.join(attackerProfile, ".npmrc"),
+      [
+        "node-options=--require=attacker-preload.js",
+        "script-shell=C:\\attacker\\shell.cmd",
+        "proxy=http://attacker.invalid",
+      ].join("\n"),
+      "utf8",
+    );
+    const npmPath = path.join(path.dirname(process.execPath), "npm.cmd");
+    const isolated = createIsolatedNpmEnvironment({
+      ...process.env,
+      USERPROFILE: attackerProfile,
+      APPDATA: path.join(attackerProfile, "AppData", "Roaming"),
+      LOCALAPPDATA: path.join(attackerProfile, "AppData", "Local"),
+      NODE_OPTIONS: "--require=attacker-preload.js",
+      NPM_CONFIG_SCRIPT_SHELL: "C:\\attacker\\shell.cmd",
+    });
+
+    try {
+      assert.notEqual(
+        isolated.env.USERPROFILE.toLowerCase(),
+        attackerProfile.toLowerCase(),
+      );
+      assert.equal(
+        Object.values(isolated.env).some((value) =>
+          value.includes("attacker-preload"),
+        ),
+        false,
+      );
+      verifyNpmConfiguration(
+        npmPath,
+        isolated.env,
+        isolated.expected,
+        process.cwd(),
+      );
+    } finally {
+      isolated.cleanup();
+      await rm(attackerProfile, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "validation stops before a later command can consume project configuration created by an earlier command",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const { runSanitizedValidation } = (await import(moduleUrl)) as {
+      runSanitizedValidation: (options: {
+        npmPath: string;
+        projectRoot: string;
+      }) => void;
+    };
+    const fixture = await mkdtemp(
+      path.join(os.tmpdir(), "hma-validation-sequence-"),
+    );
+    const packageJson = {
+      private: true,
+      scripts: {
+        test:
+          "node -e \"require('node:fs').writeFileSync('.env.production.local','NEXT_PUBLIC_CANARY=must-not-load\\\\n')\"",
+        typecheck: "node -e \"process.exit(0)\"",
+        build: "node -e \"process.exit(0)\"",
+      },
+    };
+    await writeFile(
+      path.join(fixture, "package.json"),
+      `${JSON.stringify(packageJson)}\n`,
+      "utf8",
+    );
+
+    try {
+      assert.throws(
+        () =>
+          runSanitizedValidation({
+            npmPath: path.join(path.dirname(process.execPath), "npm.cmd"),
+            projectRoot: fixture,
+          }),
+        /forbidden-project-configuration/u,
+      );
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "validation rechecks the isolated npm configuration after every command",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const { runSanitizedValidation } = (await import(moduleUrl)) as {
+      runSanitizedValidation: (options: {
+        npmPath: string;
+        projectRoot: string;
+      }) => void;
+    };
+    const fixture = await mkdtemp(
+      path.join(os.tmpdir(), "hma-validation-npm-sequence-"),
+    );
+    const packageJson = {
+      private: true,
+      scripts: {
+        test:
+          "node -e \"require('node:fs').writeFileSync(process.env.NPM_CONFIG_USERCONFIG,'script-shell=C:\\\\\\\\unreviewed\\\\\\\\shell.cmd\\\\n')\"",
+        typecheck: "node -e \"process.exit(0)\"",
+        build: "node -e \"process.exit(0)\"",
+      },
+    };
+    await writeFile(
+      path.join(fixture, "package.json"),
+      `${JSON.stringify(packageJson)}\n`,
+      "utf8",
+    );
+
+    try {
+      assert.throws(
+        () =>
+          runSanitizedValidation({
+            npmPath: path.join(path.dirname(process.execPath), "npm.cmd"),
+            projectRoot: fixture,
+          }),
+        /unsafe-npm-configuration/u,
+      );
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  },
+);

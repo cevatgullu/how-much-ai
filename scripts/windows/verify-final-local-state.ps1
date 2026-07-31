@@ -329,18 +329,15 @@ function Stop-HmaFinalDedicatedEdge {
     return Stop-HmaFinalDedicatedEdgeFallback -StateRoot $StateRoot
 }
 
-function Get-HmaFinalExactListeners {
+function Get-HmaFinalPortListeners {
     [CmdletBinding()]
     param()
 
     return @(
         Get-NetTCPConnection `
-            -LocalAddress '127.0.0.1' `
-            -LocalPort 37645 `
             -State Listen `
-            -ErrorAction SilentlyContinue |
+            -ErrorAction Stop |
             Where-Object {
-                [string]$_.LocalAddress -ceq '127.0.0.1' -and
                 [int]$_.LocalPort -eq 37645 -and
                 [string]$_.State -ceq 'Listen'
             }
@@ -378,7 +375,7 @@ function Wait-HmaFinalListenerExit {
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         $ownedListeners = @(
-            Get-HmaFinalExactListeners | Where-Object {
+            Get-HmaFinalPortListeners | Where-Object {
                 [int]$_.OwningProcess -eq $ListenerPid
             }
         )
@@ -386,6 +383,20 @@ function Wait-HmaFinalListenerExit {
             -Id $ListenerPid `
             -ErrorAction SilentlyContinue
         if ($ownedListeners.Count -eq 0 -and $null -eq $process) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Wait-HmaFinalPortListenersExit {
+    [CmdletBinding()]
+    param()
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        if (@(Get-HmaFinalPortListeners).Count -eq 0) {
             return $true
         }
         Start-Sleep -Milliseconds 250
@@ -433,10 +444,13 @@ function Stop-HmaFinalValidatedListener {
     )
 
     try {
-        $listeners = @(
-            Get-HmaFinalExactListeners | Where-Object {
+        $portListeners = @(
+            Get-HmaFinalPortListeners | Where-Object {
                 [int]$_.OwningProcess -eq $ListenerPid
             }
+        )
+        $listeners = @(
+            Get-HmaFinalExactListenerRows -Rows $portListeners
         )
         $processes = @(
             Get-CimInstance `
@@ -444,7 +458,8 @@ function Stop-HmaFinalValidatedListener {
                 -Filter ('ProcessId = ' + [string]$ListenerPid) `
                 -ErrorAction Stop
         )
-        if ($listeners.Count -ne 1 -or
+        if ($portListeners.Count -ne 1 -or
+            $listeners.Count -ne 1 -or
             $processes.Count -ne 1 -or
             -not (Test-HmaLiveServiceProcess `
                 -Process $processes[0] `
@@ -525,7 +540,7 @@ function New-HmaFinalDefaultOperations {
                 -Bundle $Bundle
         }
         GetListeners = {
-            return @(Get-HmaFinalExactListeners)
+            return @(Get-HmaFinalPortListeners)
         }
         GetProcesses = {
             param($ListenerPid)
@@ -564,6 +579,9 @@ function New-HmaFinalDefaultOperations {
             param($ListenerPid)
             return [bool](Wait-HmaFinalListenerExit `
                 -ListenerPid ([int]$ListenerPid))
+        }
+        WaitPortListenersExit = {
+            return [bool](Wait-HmaFinalPortListenersExit)
         }
         TerminateValidatedListener = {
             param($ListenerPid, $Plan, $Values)
@@ -711,9 +729,16 @@ function Invoke-HmaFinalFailSafeShutdown {
         }
     }
 
-    $listenerStopped = $true
-    if ($null -ne $ValidatedListenerPid) {
-        $listenerStopped = $false
+    $listenerStopped = $false
+    if ($null -eq $ValidatedListenerPid) {
+        try {
+            $listenerStopped = Invoke-HmaFinalBooleanOperation `
+                -Operations $Operations `
+                -Name 'WaitPortListenersExit'
+        } catch {
+            $listenerStopped = $false
+        }
+    } else {
         try {
             $listenerStopped = Invoke-HmaFinalBooleanOperation `
                 -Operations $Operations `
@@ -743,6 +768,18 @@ function Invoke-HmaFinalFailSafeShutdown {
                 $listenerStopped = $false
             }
         }
+        $portListenersStopped = $false
+        try {
+            $portListenersStopped = Invoke-HmaFinalBooleanOperation `
+                -Operations $Operations `
+                -Name 'WaitPortListenersExit'
+        } catch {
+            $portListenersStopped = $false
+        }
+        $listenerStopped = (
+            [bool]$listenerStopped -and
+            [bool]$portListenersStopped
+        )
     }
 
     return [pscustomobject]@{
@@ -873,11 +910,15 @@ function Invoke-HmaFinalLocalStateCore {
         $listenerOperation = Get-HmaFinalOperation `
             -Operations $Operations `
             -Name 'GetListeners'
-        $listenerRows = @(
-            Get-HmaFinalExactListenerRows -Rows @(& $listenerOperation)
-        )
-        $listenerCount = $listenerRows.Count
+        $portListenerRows = @(& $listenerOperation)
+        $listenerCount = $portListenerRows.Count
         if ($listenerCount -ne 1) {
+            throw 'Final local state verification failed.'
+        }
+        $listenerRows = @(
+            Get-HmaFinalExactListenerRows -Rows $portListenerRows
+        )
+        if ($listenerRows.Count -ne 1) {
             throw 'Final local state verification failed.'
         }
         $listenerPid = [int](

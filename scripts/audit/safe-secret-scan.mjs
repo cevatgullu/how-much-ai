@@ -22,6 +22,11 @@ const RULES = [
       /\bsk-(?:(?:ant-(?:api|oat|ort)\d{2}|proj|svcacct)-)?[A-Za-z0-9_-]{24,}\b/gu,
   },
   {
+    id: "openai-access-token-assignment",
+    pattern:
+      /["']?\b(?:access[_-]?token|OPENAI_ACCESS_TOKEN)\b["']?\s*(?::|=(?!=|>))\s*["']?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}["']?(?=$|[\s,;}\]])/giu,
+  },
+  {
     id: "bearer-value",
     pattern:
       /\b(?:authorization|proxy-authorization)\b\s*[:=]\s*["']?Bearer\s+[A-Za-z0-9._~+/=-]{20,}/giu,
@@ -29,14 +34,23 @@ const RULES = [
   {
     id: "refresh-token-assignment",
     pattern:
-      /\brefresh[_-]?token\b\s*[:=]\s*["'][A-Za-z0-9._~+/=-]{16,}["']/giu,
+      /["']?\brefresh[_-]?token\b["']?\s*(?::|=(?!=|>))\s*(?:"[^"\r\n]{16,}"|'[^'\r\n]{16,}'|([A-Za-z0-9._~+/=-]{16,}))(?=$|[\s,;}\]])/giu,
   },
   {
     id: "strict-local-secret-assignment",
     pattern:
-      /\b(?:APP_PASSWORD|AUTH_SECRET|VAULT_ENCRYPTION_SECRET)\b\s*[:=]\s*["'][^"'\r\n]{12,}["']/gu,
+      /["']?\b(?:APP_PASSWORD|AUTH_SECRET|VAULT_ENCRYPTION_SECRET)\b["']?\s*(?::|=(?!=|>))\s*(?:"[^"\r\n]{12,}"|'[^'\r\n]{12,}'|([A-Za-z0-9._~+/=-]{12,}))(?=$|[\s,;}\]])/gu,
   },
 ];
+
+const JAVASCRIPT_SOURCE_EXTENSIONS = new Set([
+  ".cjs",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".ts",
+  ".tsx",
+]);
 
 const TEXT_EXTENSIONS = new Set([
   "",
@@ -68,56 +82,208 @@ const TEXT_EXTENSIONS = new Set([
   ".yml",
 ]);
 
-// These exact source-only tests intentionally contain synthetic credential
-// shapes. The exception is keyed by both rule and normalized filename and is
-// disabled in manifest mode, where every installable byte is scanned without
-// source/test exclusions.
+// These reviewed source-only tests intentionally contain synthetic credential
+// shapes. Suppression requires the exact rule, normalized path, complete file
+// hash, and match count. Any byte-level fixture change disables suppression for
+// that rule. Manifest mode never uses source exceptions.
 const REVIEWED_SOURCE_FIXTURES = new Map([
   [
-    "provider-token",
-    new Set([
-      "lib/anthropic-refresh-safety.test.ts",
-      "lib/credentials.test.ts",
-      "lib/manual-connect.test.ts",
-      "lib/oauth-connect.test.ts",
-      "lib/providers/anthropic-adapter.test.ts",
-      "lib/server-error-diagnostics.test.ts",
-    ]),
+    "private-key|lib/safe-secret-scan.test.ts",
+    {
+      fileSha256: "5a27b21b1c327fbe638c78cb839e895c6b264b59b79c2ceb8b66e303213e3c34",
+      matchCount: 1,
+    },
   ],
   [
-    "refresh-token-assignment",
-    new Set([
-      "lib/browser-boundary.test.ts",
-      "lib/local-credentials.test.ts",
-      "lib/manual-connect.test.ts",
-      "lib/oauth-connect.test.ts",
-      "lib/usage-token-endurance.test.ts",
-      "lib/vault-client.test.ts",
-      "lib/vault.test.ts",
-    ]),
+    "provider-token|lib/anthropic-refresh-safety.test.ts",
+    {
+      fileSha256: "36c9d14af8db85c1338fcfc7642163abae7bfba9b6758d180a2a179a86ca9759",
+      matchCount: 1,
+    },
   ],
   [
-    "strict-local-secret-assignment",
-    new Set([
-      "lib/bootstrap-ui.test.ts",
-      "lib/oauth-connect.test.ts",
-      "lib/providers/connect-openai.test.ts",
-      "lib/providers/usage-service-openai.test.ts",
-      "lib/safe-secret-scan.test.ts",
-      "lib/sanitized-validation.test.ts",
-      "lib/session.test.ts",
-      "lib/usage-file-coordination.test.ts",
-      "lib/usage-redis-coordination.test.ts",
-      "lib/usage-token-endurance.test.ts",
-      "lib/vault-recovery.test.ts",
-      "lib/vault.test.ts",
-    ]),
+    "provider-token|lib/credentials.test.ts",
+    {
+      fileSha256: "4a121828769b389b319ae3e508cef1a48d64edd5c26e4354d5d3c22fec0717a6",
+      matchCount: 4,
+    },
+  ],
+  [
+    "provider-token|lib/manual-connect.test.ts",
+    {
+      fileSha256: "a5108107d5901d336dec04a72028a65be59b9b590c22c497c70a25b76a8708e7",
+      matchCount: 8,
+    },
+  ],
+  [
+    "provider-token|lib/oauth-connect.test.ts",
+    {
+      fileSha256: "2c51e62d915119e1b69139eb62f1a1b584effe3f6f274148d6fc5dca76debfdf",
+      matchCount: 1,
+    },
+  ],
+  [
+    "provider-token|lib/providers/anthropic-adapter.test.ts",
+    {
+      fileSha256: "fcf1ec4eddf7a89696fe4a0650e8ee2560423803e5ac2a1f6c7e67cca8066d0f",
+      matchCount: 1,
+    },
+  ],
+  [
+    "provider-token|lib/server-error-diagnostics.test.ts",
+    {
+      fileSha256: "1f1f15e3e86b5b38e21b60c18b79dc9dd8da960db23863fd28ee36069159bea8",
+      matchCount: 1,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/browser-boundary.test.ts",
+    {
+      fileSha256: "5c71ca645b7fa5bc35f4693e9c24c49604e5b177b69bc415f2b2bac58e6e3d1f",
+      matchCount: 3,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/local-credentials.test.ts",
+    {
+      fileSha256: "ea42bb4a36db8152019051e6e06935ec88da63df23df7078eac189b0969a4573",
+      matchCount: 2,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/manual-connect.test.ts",
+    {
+      fileSha256: "a5108107d5901d336dec04a72028a65be59b9b590c22c497c70a25b76a8708e7",
+      matchCount: 2,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/oauth-connect.test.ts",
+    {
+      fileSha256: "2c51e62d915119e1b69139eb62f1a1b584effe3f6f274148d6fc5dca76debfdf",
+      matchCount: 1,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/usage-token-endurance.test.ts",
+    {
+      fileSha256: "79a30d97dd67d3a1a93780b3e2e080be25a6bab17494dea4107e9d124bd4dc30",
+      matchCount: 13,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/vault-client.test.ts",
+    {
+      fileSha256: "9e06b3698c8b8cb1cf6de693b6535443a28bafe51fba677772d00cea1f6fbb3a",
+      matchCount: 1,
+    },
+  ],
+  [
+    "refresh-token-assignment|lib/vault.test.ts",
+    {
+      fileSha256: "b5294d74ad6f52f14353eee59d5a753508806b843c49c2de9ccd8a682ef34825",
+      matchCount: 3,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/bootstrap-ui.test.ts",
+    {
+      fileSha256: "16193d9e07cfa611a97e7abd48f0a4d3ba9f097d208b846a9ef6d72e72ab8af2",
+      matchCount: 2,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/oauth-connect.test.ts",
+    {
+      fileSha256: "2c51e62d915119e1b69139eb62f1a1b584effe3f6f274148d6fc5dca76debfdf",
+      matchCount: 2,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/providers/connect-openai.test.ts",
+    {
+      fileSha256: "195348e7b6d650ca80d7a81ceb4641db2c8f2942970ff6936c4d2e00c207c60d",
+      matchCount: 1,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/providers/usage-service-openai.test.ts",
+    {
+      fileSha256: "de0a281c4a749666a988dba9ef90cd4c1dbf76f3cca20ba29e60704f8aa246b4",
+      matchCount: 1,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/safe-secret-scan.test.ts",
+    {
+      fileSha256: "5a27b21b1c327fbe638c78cb839e895c6b264b59b79c2ceb8b66e303213e3c34",
+      matchCount: 4,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/sanitized-validation.test.ts",
+    {
+      fileSha256: "a6923e4ae1fe2518a358cf1e57e7293ea61ad08d0895e9e592e76e9764bdf963",
+      matchCount: 2,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/session.test.ts",
+    {
+      fileSha256: "ba91d458030e428cd307dd7ac8c2e3c914d398b0650e75dbeda7a67692561006",
+      matchCount: 3,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/usage-file-coordination.test.ts",
+    {
+      fileSha256: "99a60d11a0553d73e28e59ae1816ff3503819fdc559b271d57a869024be00210",
+      matchCount: 1,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/usage-redis-coordination.test.ts",
+    {
+      fileSha256: "99c1acd202336457ecb599018b322570a5f46b0d77237d3f6a938451629fbace",
+      matchCount: 1,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/usage-token-endurance.test.ts",
+    {
+      fileSha256: "79a30d97dd67d3a1a93780b3e2e080be25a6bab17494dea4107e9d124bd4dc30",
+      matchCount: 1,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/vault-recovery.test.ts",
+    {
+      fileSha256: "b6c077139439dc39da0b103e1702044e377f8c73a23ee47f86f0b7a46806e7d0",
+      matchCount: 3,
+    },
+  ],
+  [
+    "strict-local-secret-assignment|lib/vault.test.ts",
+    {
+      fileSha256: "b5294d74ad6f52f14353eee59d5a753508806b843c49c2de9ccd8a682ef34825",
+      matchCount: 4,
+    },
   ],
 ]);
 
-function isReviewedSyntheticSourceFixture(ruleId, relativePath) {
-  const paths = REVIEWED_SOURCE_FIXTURES.get(ruleId);
-  return paths?.has(relativePath) ?? false;
+function isReviewedSyntheticSourceFixture({
+  ruleId,
+  relativePath,
+  fileSha256,
+  matchCount,
+}) {
+  const reviewed = REVIEWED_SOURCE_FIXTURES.get(
+    `${ruleId}|${relativePath}`,
+  );
+  return (
+    reviewed?.fileSha256 === fileSha256 &&
+    reviewed?.matchCount === matchCount
+  );
 }
 
 function sha256(value) {
@@ -290,11 +456,177 @@ function parseArguments(argv) {
 }
 
 function isTextCapable(relativePath, bytes) {
-  if (bytes.includes(0)) {
-    return false;
+  if (detectUtf16Encoding(bytes)) {
+    return true;
   }
   const extension = path.extname(relativePath).toLowerCase();
-  return TEXT_EXTENSIONS.has(extension);
+  if (TEXT_EXTENSIONS.has(extension)) {
+    return !bytes.includes(0);
+  }
+  const sample = bytes.subarray(0, Math.min(bytes.byteLength, 8192));
+  if (sample.byteLength === 0) {
+    return true;
+  }
+  let disallowedControls = 0;
+  for (const byte of sample) {
+    if (byte === 0) {
+      return false;
+    }
+    if (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) {
+      disallowedControls += 1;
+    }
+  }
+  return disallowedControls / sample.byteLength < 0.01;
+}
+
+function detectUtf16Encoding(bytes) {
+  if (bytes.byteLength >= 2) {
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+      return "utf-16le";
+    }
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+      return "utf-16be";
+    }
+  }
+  const sampleLength = Math.min(bytes.byteLength - (bytes.byteLength % 2), 8192);
+  if (sampleLength < 8) {
+    return undefined;
+  }
+  let evenNulls = 0;
+  let oddNulls = 0;
+  const pairs = sampleLength / 2;
+  for (let index = 0; index < sampleLength; index += 2) {
+    if (bytes[index] === 0) {
+      evenNulls += 1;
+    }
+    if (bytes[index + 1] === 0) {
+      oddNulls += 1;
+    }
+  }
+  if (oddNulls / pairs > 0.6 && evenNulls / pairs < 0.1) {
+    return "utf-16le";
+  }
+  if (evenNulls / pairs > 0.6 && oddNulls / pairs < 0.1) {
+    return "utf-16be";
+  }
+  return undefined;
+}
+
+function decodeCandidatesForScan(bytes) {
+  const candidates = new Set([bytes.toString("latin1")]);
+  const utf16Encoding = detectUtf16Encoding(bytes);
+  if (utf16Encoding) {
+    candidates.add(
+      new TextDecoder(utf16Encoding, { fatal: false }).decode(bytes),
+    );
+  }
+  // Latin-1 preserves every ASCII byte verbatim, so credentials embedded in
+  // an otherwise binary or extensionless file are still examined.
+  // If a file contains nulls, scan both UTF-16 byte orders as well. A BOM-less
+  // file can otherwise make a prefix look like the opposite byte order.
+  if (bytes.includes(0)) {
+    candidates.add(new TextDecoder("utf-16le", { fatal: false }).decode(bytes));
+    candidates.add(new TextDecoder("utf-16be", { fatal: false }).decode(bytes));
+  }
+  return [...candidates];
+}
+
+function isJavaScriptCodeOffset(text, offset) {
+  const contexts = [{ type: "code" }];
+  for (let index = 0; index < offset; index += 1) {
+    const context = contexts.at(-1);
+    const character = text[index];
+    const next = text[index + 1];
+    if (context.type === "single-quote" || context.type === "double-quote") {
+      if (character === "\\") {
+        index += 1;
+      } else if (
+        (context.type === "single-quote" && character === "'") ||
+        (context.type === "double-quote" && character === '"')
+      ) {
+        contexts.pop();
+      }
+      continue;
+    }
+    if (context.type === "line-comment") {
+      if (character === "\r" || character === "\n") {
+        contexts.pop();
+      }
+      continue;
+    }
+    if (context.type === "block-comment") {
+      if (character === "*" && next === "/") {
+        contexts.pop();
+        index += 1;
+      }
+      continue;
+    }
+    if (context.type === "template") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === "`") {
+        contexts.pop();
+      } else if (character === "$" && next === "{") {
+        contexts.push({ type: "code", templateDepth: 1 });
+        index += 1;
+      }
+      continue;
+    }
+    if (character === "'") {
+      contexts.push({ type: "single-quote" });
+    } else if (character === '"') {
+      contexts.push({ type: "double-quote" });
+    } else if (character === "`") {
+      contexts.push({ type: "template" });
+    } else if (character === "/" && next === "/") {
+      contexts.push({ type: "line-comment" });
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      contexts.push({ type: "block-comment" });
+      index += 1;
+    } else if (context.templateDepth !== undefined) {
+      if (character === "{") {
+        context.templateDepth += 1;
+      } else if (character === "}") {
+        context.templateDepth -= 1;
+        if (context.templateDepth === 0) {
+          contexts.pop();
+        }
+      }
+    }
+  }
+  return contexts.at(-1)?.type === "code";
+}
+
+function isUnquotedSourceMemberReference(
+  ruleId,
+  relativePath,
+  text,
+  match,
+) {
+  if (
+    ruleId !== "refresh-token-assignment" &&
+    ruleId !== "strict-local-secret-assignment"
+  ) {
+    return false;
+  }
+  const unquotedValue = match[1];
+  if (
+    typeof unquotedValue !== "string" ||
+    !JAVASCRIPT_SOURCE_EXTENSIONS.has(
+      path.extname(relativePath).toLowerCase(),
+    )
+  ) {
+    return false;
+  }
+  const relativeValueIndex = match[0].lastIndexOf(unquotedValue);
+  return (
+    relativeValueIndex >= 0 &&
+    isJavaScriptCodeOffset(text, match.index + relativeValueIndex) &&
+    /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/u.test(
+      unquotedValue,
+    )
+  );
 }
 
 export async function scanSecrets({
@@ -345,26 +677,36 @@ export async function scanSecrets({
   let binaryFilesExamined = 0;
   for (const file of normalizedFiles) {
     const bytes = await readFile(file.absolutePath);
+    const fileSha256 = sha256(bytes);
     if (!isTextCapable(file.relative, bytes)) {
       binaryFilesExamined += 1;
-      continue;
     }
-    const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    const texts = decodeCandidatesForScan(bytes);
     for (const rule of RULES) {
-      rule.pattern.lastIndex = 0;
-      const matches = [...text.matchAll(rule.pattern)];
-      const unsuppressed = matches.filter((match) => {
-        const suppress =
-          !manifestPath &&
-          isReviewedSyntheticSourceFixture(
-            rule.id,
-            file.relative,
-          );
-        if (suppress) {
-          suppressedSourceFixtureCount += 1;
-        }
-        return !suppress;
+      const matches = texts.flatMap((text) => {
+        rule.pattern.lastIndex = 0;
+        return [...text.matchAll(rule.pattern)].filter(
+          (match) =>
+            !isUnquotedSourceMemberReference(
+              rule.id,
+              file.relative,
+              text,
+              match,
+            ),
+        );
       });
+      const suppress =
+        !manifestPath &&
+        isReviewedSyntheticSourceFixture({
+          ruleId: rule.id,
+          relativePath: file.relative,
+          fileSha256,
+          matchCount: matches.length,
+        });
+      if (suppress) {
+        suppressedSourceFixtureCount += matches.length;
+      }
+      const unsuppressed = suppress ? [] : matches;
       if (unsuppressed.length > 0) {
         findings.push({
           ruleId: rule.id,

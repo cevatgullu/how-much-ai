@@ -61,8 +61,17 @@ const moduleHooks = registerHooks({
   },
 });
 
-const { NotificationsPanel } = await import("../components/NotificationsPanel.tsx");
-const { localAccountLabel, processLocalDashboardSnapshot } = await import(
+const {
+  NotificationsPanel,
+  readHostedPushStatus,
+  resolveLocalPermissionRequest,
+} = await import("../components/NotificationsPanel.tsx");
+const {
+  createLocalNotificationTaskQueue,
+  localAccountLabel,
+  processCurrentLocalDashboardSnapshot,
+  processLocalDashboardSnapshot,
+} = await import(
   "../components/Dashboard.tsx"
 );
 
@@ -224,11 +233,140 @@ test("notification failures stay generic and four Claude accounts keep ordinals 
   }), "worker_error");
 });
 
+test("ready local notifications serialize by arrival and survive a rejecting task", async () => {
+  const activeAccounts = [1, 2, 3, 4].map((ordinal) => account(`claude-${ordinal}`));
+  const queue = createLocalNotificationTaskQueue();
+  const labels: string[] = [];
+  let concurrency = 0;
+  let maxConcurrency = 0;
+  const arrivalOrder = [3, 0, 1, 2];
+
+  const results = arrivalOrder.map((index) => {
+    const current = activeAccounts[index];
+    return queue.enqueue(async () => {
+      const status = await processCurrentLocalDashboardSnapshot({
+        strictLocal: true,
+        response: readyResponse(),
+        accountId: current.id,
+        getActiveAccounts: () => activeAccounts,
+        loadLocalSettings: () => ({
+          autoRefresh: true,
+          localNotifications: { remainingWarnings: true, resetNotifications: true },
+        }),
+        process: async (input: { accountLabel: string }) => {
+          concurrency += 1;
+          maxConcurrency = Math.max(maxConcurrency, concurrency);
+          labels.push(input.accountLabel);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          concurrency -= 1;
+          return { status: "idle", delivered: 0 };
+        },
+      });
+      if (index === 1) throw new Error("private notification failure");
+      return status;
+    });
+  });
+
+  assert.deepEqual(await Promise.all(results), [
+    "idle",
+    "idle",
+    "worker_error",
+    "idle",
+  ]);
+  assert.deepEqual(labels, ["Claude 4", "Claude 1", "Claude 2", "Claude 3"]);
+  assert.equal(maxConcurrency, 1);
+});
+
+test("queued execution skips removed targets and hosted mode never reads local settings", async () => {
+  const removed = account("claude-removed");
+  let accountReads = 0;
+  let settingsReads = 0;
+  let processCalls = 0;
+  const common = {
+    response: readyResponse(),
+    accountId: removed.id,
+    getActiveAccounts: () => {
+      accountReads += 1;
+      return [] as BrowserAccount[];
+    },
+    loadLocalSettings: () => {
+      settingsReads += 1;
+      return {
+        autoRefresh: true,
+        localNotifications: { remainingWarnings: true, resetNotifications: true },
+      };
+    },
+    process: async () => {
+      processCalls += 1;
+      return { status: "idle" as const, delivered: 0 };
+    },
+  };
+
+  assert.equal(await processCurrentLocalDashboardSnapshot({ ...common, strictLocal: false }), null);
+  assert.deepEqual([accountReads, settingsReads, processCalls], [0, 0, 0]);
+  assert.equal(await processCurrentLocalDashboardSnapshot({ ...common, strictLocal: true }), null);
+  assert.deepEqual([accountReads, settingsReads, processCalls], [1, 0, 0]);
+});
+
+test("permission request status follows actual permission and contains request failures", async () => {
+  const result = (ok: boolean, reason?: "denied" | "unsupported" | "worker" | "timeout") =>
+    ok ? { ok: true as const } : { ok: false as const, reason: reason!, message: "private detail" };
+
+  assert.equal(await resolveLocalPermissionRequest(
+    async () => result(true),
+    () => "granted",
+  ), "granted");
+  assert.equal(await resolveLocalPermissionRequest(
+    async () => result(true),
+    () => "denied",
+  ), "denied");
+  assert.equal(await resolveLocalPermissionRequest(
+    async () => result(false, "denied"),
+    () => "default",
+  ), "default");
+  assert.equal(await resolveLocalPermissionRequest(
+    async () => result(false, "worker"),
+    () => "default",
+  ), "worker_error");
+  assert.equal(await resolveLocalPermissionRequest(
+    async () => result(false, "timeout"),
+    () => "default",
+  ), "worker_error");
+  assert.equal(await resolveLocalPermissionRequest(
+    async () => { throw new Error("private import failure"); },
+    () => "default",
+  ), "worker_error");
+  assert.equal(await resolveLocalPermissionRequest(
+    async () => result(true),
+    () => "unsupported",
+  ), "unsupported");
+});
+
+test("hosted push status contains a rejecting client loader generically", async () => {
+  assert.deepEqual(await readHostedPushStatus(
+    async () => { throw new Error("private module path"); },
+    () => "default",
+  ), {
+    state: "error",
+    message: "Couldn't check this browser's push subscription.",
+  });
+
+  let subscriptions = 0;
+  assert.deepEqual(await readHostedPushStatus(async () => ({
+    pushSupported: () => true,
+    currentPushSubscription: async () => {
+      subscriptions += 1;
+      return {} as PushSubscription;
+    },
+  }), () => "denied"), { state: "denied", message: null });
+  assert.equal(subscriptions, 0);
+});
+
 test("manual and automatic refreshes share the nonblocking refreshAccount path", () => {
   const source = readFileSync(path.join(projectRoot, "components", "Dashboard.tsx"), "utf8");
   assert.match(source, /refreshAllAccounts\(ids, refreshAccount\)/);
   assert.match(source, /onRefresh=\{\(\) => void refreshAccount\(account\.id\)\}/);
   assert.match(source, /setInterval\(\(\) => void refreshAll\(\), 60_000\)/);
-  assert.match(source, /void processLocalDashboardSnapshot\(/);
-  assert.doesNotMatch(source, /await processLocalDashboardSnapshot\(/);
+  assert.match(source, /void localNotifyQueueRef\.current\.enqueue\(/);
+  assert.doesNotMatch(source, /await localNotifyQueueRef\.current\.enqueue\(/);
 });

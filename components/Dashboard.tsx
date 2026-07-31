@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { AccountSnapshot, BrowserAccount, UsageResponse, VaultMutation } from "@/lib/types";
 import type { ProviderId } from "@/lib/providers/types";
-import { loadSettings, saveSettings } from "@/lib/storage";
+import { loadSettings, saveSettings, type Settings } from "@/lib/storage";
 import { refreshAllAccounts } from "@/lib/refresh-all";
 import {
   processLocalNotificationSnapshot,
@@ -111,6 +111,67 @@ export async function processLocalDashboardSnapshot({
   }
 }
 
+type LocalNotificationTask = () => Promise<LocalNotifyRuntimeStatus | null>;
+
+export interface LocalNotificationTaskQueue {
+  enqueue(task: LocalNotificationTask): Promise<LocalNotifyRuntimeStatus | null>;
+}
+
+export function createLocalNotificationTaskQueue(): LocalNotificationTaskQueue {
+  let tail: Promise<void> = Promise.resolve();
+  return {
+    enqueue(task) {
+      const result = tail.then(async () => {
+        try {
+          return await task();
+        } catch {
+          return "worker_error";
+        }
+      });
+      tail = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    },
+  };
+}
+
+interface ProcessCurrentLocalDashboardSnapshotOptions {
+  strictLocal: boolean;
+  response: UsageResponse;
+  accountId: string;
+  getActiveAccounts: () => readonly BrowserAccount[];
+  loadLocalSettings?: () => Settings;
+  process?: DashboardLocalNotificationProcessor;
+}
+
+export async function processCurrentLocalDashboardSnapshot({
+  strictLocal,
+  response,
+  accountId,
+  getActiveAccounts,
+  loadLocalSettings = loadSettings,
+  process = processLocalNotificationSnapshot,
+}: ProcessCurrentLocalDashboardSnapshotOptions): Promise<LocalNotifyRuntimeStatus | null> {
+  if (!strictLocal) return null;
+  const activeAccounts = getActiveAccounts();
+  const account = activeAccounts.find((candidate) => candidate.id === accountId);
+  if (!account) return null;
+  try {
+    return await processLocalDashboardSnapshot({
+      strictLocal: true,
+      response,
+      account,
+      activeAccounts,
+      rules: loadLocalSettings().localNotifications,
+      process,
+    });
+  } catch {
+    return "storage_error";
+  }
+}
+
 interface DashboardProps {
   showSignOut: boolean;
   strictLocal: boolean;
@@ -151,6 +212,10 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const vaultReadGeneration = useRef(0);
   const explicitVaultReads = useRef(0);
   const addAccountButtonRef = useRef<HTMLButtonElement>(null);
+  const localNotifyQueueRef = useRef<LocalNotificationTaskQueue | null>(null);
+  if (localNotifyQueueRef.current === null) {
+    localNotifyQueueRef.current = createLocalNotificationTaskQueue();
+  }
   // Per-account in-flight lock: refresh tokens are single-use, so two concurrent refreshes
   // of the same account would double-spend the token.
   const inFlight = useRef<Set<string>>(new Set());
@@ -398,15 +463,25 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             cooldownUntil: data.cooldownUntil,
           },
         }));
-        void processLocalDashboardSnapshot({
-          strictLocal,
-          response: data,
-          account: cur,
-          activeAccounts: accountsRef.current,
-          rules: loadSettings().localNotifications,
-        }).then((status) => {
-          if (status !== null) setLocalNotifyStatus(status);
-        });
+        if (
+          strictLocal &&
+          data.status === "ready" &&
+          !data.stale &&
+          localNotifyQueueRef.current !== null
+        ) {
+          void localNotifyQueueRef.current.enqueue(
+            () => processCurrentLocalDashboardSnapshot({
+              strictLocal: true,
+              response: data,
+              accountId: id,
+              getActiveAccounts: () => accountsRef.current,
+            }),
+          )
+            .then((status) => {
+              if (status !== null) setLocalNotifyStatus(status);
+            })
+            .catch(() => setLocalNotifyStatus("worker_error"));
+        }
         return !data.stale;
       } catch {
         if (accountsRef.current.some((a) => a.id === id)) {

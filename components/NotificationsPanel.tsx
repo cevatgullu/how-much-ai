@@ -6,6 +6,7 @@ import type { LocalNotifyRuntimeStatus } from "@/lib/local-notify-coordinator";
 import {
   localNotificationPermission,
   requestLocalNotificationPermission,
+  type LocalDeliveryResult,
 } from "@/lib/local-notify-delivery";
 import { loadSettings, saveSettings, type Settings } from "@/lib/storage";
 import { ModalShell } from "./ModalShell";
@@ -27,6 +28,63 @@ const DEFAULT_CONFIG: NotifyConfig = {
 };
 
 type PushState = "loading" | "on" | "off" | "denied" | "unsupported" | "error";
+
+type HostedPushClient = Pick<
+  typeof import("@/lib/notify-client"),
+  "pushSupported" | "currentPushSubscription"
+>;
+
+interface HostedPushStatus {
+  state: Exclude<PushState, "loading">;
+  message: string | null;
+}
+
+export async function readHostedPushStatus(
+  loadClient: () => Promise<HostedPushClient> = async () => await import("@/lib/notify-client"),
+  readPermission: () => NotificationPermission = () => Notification.permission,
+): Promise<HostedPushStatus> {
+  try {
+    const hosted = await loadClient();
+    if (!hosted.pushSupported()) return { state: "unsupported", message: null };
+    if (readPermission() === "denied") return { state: "denied", message: null };
+    const subscription = await hosted.currentPushSubscription();
+    return { state: subscription ? "on" : "off", message: null };
+  } catch {
+    return {
+      state: "error",
+      message: "Couldn't check this browser's push subscription.",
+    };
+  }
+}
+
+export type LocalPermissionRequestStatus =
+  | NotificationPermission
+  | "unsupported"
+  | "worker_error";
+
+export async function resolveLocalPermissionRequest(
+  requestPermission: () => Promise<LocalDeliveryResult> = requestLocalNotificationPermission,
+  readPermission: () => NotificationPermission | "unsupported" = localNotificationPermission,
+): Promise<LocalPermissionRequestStatus> {
+  let result: LocalDeliveryResult;
+  try {
+    result = await requestPermission();
+  } catch {
+    result = { ok: false, reason: "worker", message: "Local notification delivery failed." };
+  }
+
+  let actual: NotificationPermission | "unsupported";
+  try {
+    actual = readPermission();
+  } catch {
+    return "worker_error";
+  }
+  if (actual !== "default") return actual;
+  if (!result.ok && (result.reason === "worker" || result.reason === "timeout")) {
+    return "worker_error";
+  }
+  return "default";
+}
 
 interface ThresholdValidation {
   warnThreshold: number | null;
@@ -124,12 +182,14 @@ function LocalNotificationsPanel({
     () => localNotificationPermission(),
   );
   const [permissionBusy, setPermissionBusy] = useState(false);
+  const [permissionRequestFailed, setPermissionRequestFailed] = useState(false);
   const [storageError, setStorageError] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setSettings(loadSettings());
     setPermission(localNotificationPermission());
+    setPermissionRequestFailed(false);
     setStorageError(false);
   }, [open]);
 
@@ -148,8 +208,13 @@ function LocalNotificationsPanel({
     if (permissionBusy || permission !== "default") return;
     setPermissionBusy(true);
     try {
-      await requestLocalNotificationPermission();
-      setPermission(localNotificationPermission());
+      const status = await resolveLocalPermissionRequest();
+      if (status === "worker_error") {
+        setPermissionRequestFailed(true);
+      } else {
+        setPermission(status);
+        setPermissionRequestFailed(false);
+      }
     } finally {
       setPermissionBusy(false);
     }
@@ -157,11 +222,11 @@ function LocalNotificationsPanel({
 
   const statusMessage = storageError || localStatus === "storage_error"
     ? "Yerel bildirim ayarları bu cihazda saklanamadı."
-    : permission === "unsupported" || localStatus === "unsupported"
+    : permission === "unsupported"
       ? "Bu tarayıcı yerel bildirimleri desteklemiyor."
-      : permission === "denied" || localStatus === "denied"
+      : permission === "denied"
         ? "Bildirim izni engellendi; tarayıcı ayarlarından izin verin."
-        : localStatus === "worker_error"
+        : permissionRequestFailed || localStatus === "worker_error"
           ? "Yerel bildirim çalışanına ulaşılamadı."
           : localStatus === "lock_unavailable"
             ? "Yerel bildirimler başka bir sekmede işleniyor."
@@ -188,7 +253,9 @@ function LocalNotificationsPanel({
             </span>
             <button
               type="button"
-              onClick={() => void requestPermission()}
+              onClick={() => {
+                void requestPermission().catch(() => setPermissionRequestFailed(true));
+              }}
               disabled={permissionBusy || permission !== "default"}
               className="min-h-11 shrink-0 rounded-lg bg-coral px-3.5 py-1.5 text-sm font-medium text-white enabled:hover:bg-coral-pressed disabled:opacity-45"
             >
@@ -310,24 +377,10 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
     if (generationRef.current !== generation) return;
     setPushState("loading");
     setPushError(null);
-    const hosted = await import("@/lib/notify-client");
-    if (!hosted.pushSupported()) {
-      if (generationRef.current === generation) setPushState("unsupported");
-      return;
-    }
-
-    try {
-      if (Notification.permission === "denied") {
-        if (generationRef.current === generation) setPushState("denied");
-        return;
-      }
-      const subscription = await hosted.currentPushSubscription();
-      if (generationRef.current === generation) setPushState(subscription ? "on" : "off");
-    } catch (error) {
-      if (generationRef.current !== generation) return;
-      setPushState("error");
-      setPushError(messageFrom(error, "Couldn't check this browser's push subscription."));
-    }
+    const status = await readHostedPushStatus();
+    if (generationRef.current !== generation) return;
+    setPushState(status.state);
+    setPushError(status.message);
   }, []);
 
   const loadPanel = useCallback(() => {
@@ -367,7 +420,11 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
       .finally(() => {
         if (generationRef.current === generation) setLoading(false);
       });
-    void refreshPushState(generation);
+    void refreshPushState(generation).catch(() => {
+      if (generationRef.current !== generation) return;
+      setPushState("error");
+      setPushError("Couldn't check this browser's push subscription.");
+    });
   }, [refreshPushState]);
 
   useEffect(() => {
@@ -392,13 +449,14 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
     setBusy(true);
     setPushError(null);
     try {
-      const hosted = await import("@/lib/notify-client");
       if (pushState === "error") {
         await refreshPushState(generation);
       } else if (pushState === "on") {
+        const hosted = await import("@/lib/notify-client");
         await hosted.disablePush();
         if (generationRef.current === generation) setPushState("off");
       } else {
+        const hosted = await import("@/lib/notify-client");
         const result = await hosted.enablePush(settings.vapidPublicKey);
         if (generationRef.current !== generation) return;
         if (result.ok) {
@@ -410,10 +468,11 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
           }
         }
       }
-    } catch (error) {
-      const message = messageFrom(error, "Couldn't update push notifications.");
-      await refreshPushState(generation);
-      if (generationRef.current === generation) setPushError(message);
+    } catch {
+      if (generationRef.current === generation) {
+        setPushState("error");
+        setPushError("Couldn't update push notifications.");
+      }
     } finally {
       if (generationRef.current === generation) setBusy(false);
     }

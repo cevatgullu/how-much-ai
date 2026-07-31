@@ -166,3 +166,21 @@ test("formatResetSchedule distinguishes reset edges, past timestamps, and invali
   assert.equal(formatResetSchedule(null, now, { timeZone: "UTC" }), null);
   assert.equal(formatResetSchedule("not-a-date", now, { timeZone: "UTC" }), null);
 });
+
+test("formatResetSchedule rejects invalid calendar and timezone-less timestamps", () => {
+  const now = Date.parse("2024-02-28T00:00:00.000Z");
+  for (const invalid of [
+    "2026-02-31T20:00:00.000Z",
+    "2025-02-29T00:00:00.000Z",
+    "2026-01-01T00:00:00",
+    "2026-01-01",
+    "not-a-date",
+  ]) {
+    assert.equal(formatResetSchedule(invalid, now, { timeZone: "UTC" }), null, invalid);
+  }
+  assert.deepEqual(formatResetSchedule("2024-02-29T00:00:00.000Z", now, { timeZone: "UTC" }), {
+    exact: "29 Şub 00:00",
+    countdown: "1 gün sonra",
+    state: "future",
+  });
+});

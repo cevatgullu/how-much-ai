@@ -183,6 +183,20 @@ export function loadLocalNotifyDocument(storage: Storage):
   return parseLocalNotifyDocument(raw);
 }
 
+function serializeCanonicalDocument(document: LocalNotifyDocument): string {
+  let serialized = `{"version":${LOCAL_NOTIFY_STATE_VERSION},"records":[`;
+  for (let index = 0; index < document.records.length; index += 1) {
+    const record = document.records[index];
+    if (index > 0) serialized += ",";
+    serialized +=
+      `{"accountHash":"${record.accountHash}","limitKey":"${record.limitKey}",` +
+      `"lastResetAt":${record.lastResetAt === null ? "null" : `"${record.lastResetAt}"`},` +
+      `"nextBoundaryIndex":${record.nextBoundaryIndex},` +
+      `"lastObservedUtilization":${record.lastObservedUtilization}}`;
+  }
+  return serialized + "]}";
+}
+
 export function saveLocalNotifyDocument(
   storage: Storage,
   document: LocalNotifyDocument,
@@ -192,7 +206,7 @@ export function saveLocalNotifyDocument(
     if (!validated.ok) {
       return { ok: false, error: validated.error === "oversized" ? "oversized" : "unavailable" };
     }
-    const serialized = JSON.stringify(validated.document);
+    const serialized = serializeCanonicalDocument(validated.document);
     if (new TextEncoder().encode(serialized).byteLength > MAX_LOCAL_NOTIFY_STATE_BYTES) {
       return { ok: false, error: "oversized" };
     }

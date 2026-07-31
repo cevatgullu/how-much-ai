@@ -72,6 +72,26 @@ function assertCorrupt(raw: string): void {
   });
 }
 
+function withTemporaryInheritedToJSON(
+  prototype: object,
+  toJSON: () => unknown,
+  operation: () => void,
+): void {
+  const original = Object.getOwnPropertyDescriptor(prototype, "toJSON");
+  Object.defineProperty(prototype, "toJSON", {
+    configurable: true,
+    writable: true,
+    value: toJSON,
+  });
+  try {
+    operation();
+  } finally {
+    if (original) Object.defineProperty(prototype, "toJSON", original);
+    else Reflect.deleteProperty(prototype, "toJSON");
+  }
+  assert.deepEqual(Object.getOwnPropertyDescriptor(prototype, "toJSON"), original);
+}
+
 test("missing local state is a valid empty V1 document", () => {
   assert.deepEqual(parseLocalNotifyDocument(null), { ok: true, document: EMPTY_DOCUMENT });
   assertCorrupt("");
@@ -276,6 +296,90 @@ test("saves one canonical field order and deterministic account/key sort", () =>
     },
   });
   assert.deepEqual(storage.reads, [LOCAL_NOTIFY_STATE_STORAGE_KEY]);
+});
+
+test("save ignores an inherited Object.prototype.toJSON credential injector", () => {
+  const injectedCredential = "sk-ant-api03-object-hook-private";
+  const storage = new MemoryStorage();
+  let hookCalls = 0;
+  let result: ReturnType<typeof saveLocalNotifyDocument> | undefined;
+  let serialized = "";
+
+  withTemporaryInheritedToJSON(
+    Object.prototype,
+    () => {
+      hookCalls += 1;
+      return Object.assign(Object.create(null), {
+        version: 1,
+        records: null,
+        accessToken: injectedCredential,
+      });
+    },
+    () => {
+      result = saveLocalNotifyDocument(storage, { version: 1, records: [record()] });
+      serialized = storage.values.get(LOCAL_NOTIFY_STATE_STORAGE_KEY) ?? "";
+    },
+  );
+
+  const expectedDocument = { version: 1, records: [record()] } satisfies LocalNotifyDocument;
+  assert.deepEqual(
+    {
+      result,
+      hookCalls,
+      containsInjectedCredential: serialized.includes(injectedCredential),
+      serialized,
+      parsed: parseLocalNotifyDocument(serialized),
+    },
+    {
+      result: { ok: true },
+      hookCalls: 0,
+      containsInjectedCredential: false,
+      serialized:
+        `{"version":1,"records":[{"accountHash":"${ACCOUNT_HASH}","limitKey":"session",` +
+        `"lastResetAt":"${RESET_AT}","nextBoundaryIndex":2,"lastObservedUtilization":40}]}`,
+      parsed: { ok: true, document: expectedDocument },
+    },
+  );
+});
+
+test("save ignores an inherited Array.prototype.toJSON credential injector", () => {
+  const injectedCredential = "sk-ant-ort01-array-hook-private";
+  const storage = new MemoryStorage();
+  let hookCalls = 0;
+  let result: ReturnType<typeof saveLocalNotifyDocument> | undefined;
+  let serialized = "";
+
+  withTemporaryInheritedToJSON(
+    Array.prototype,
+    () => {
+      hookCalls += 1;
+      return Object.assign(Object.create(null), { refreshToken: injectedCredential });
+    },
+    () => {
+      result = saveLocalNotifyDocument(storage, { version: 1, records: [record()] });
+      serialized = storage.values.get(LOCAL_NOTIFY_STATE_STORAGE_KEY) ?? "";
+    },
+  );
+
+  const expectedDocument = { version: 1, records: [record()] } satisfies LocalNotifyDocument;
+  assert.deepEqual(
+    {
+      result,
+      hookCalls,
+      containsInjectedCredential: serialized.includes(injectedCredential),
+      serialized,
+      parsed: parseLocalNotifyDocument(serialized),
+    },
+    {
+      result: { ok: true },
+      hookCalls: 0,
+      containsInjectedCredential: false,
+      serialized:
+        `{"version":1,"records":[{"accountHash":"${ACCOUNT_HASH}","limitKey":"session",` +
+        `"lastResetAt":"${RESET_AT}","nextBoundaryIndex":2,"lastObservedUtilization":40}]}`,
+      parsed: { ok: true, document: expectedDocument },
+    },
+  );
 });
 
 test("load and save use only the fixed non-identifying storage key", () => {

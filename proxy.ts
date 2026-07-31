@@ -1,22 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, authOpen, verifySession } from "@/lib/session";
 import { strictLocalRequestHostAllowed } from "@/lib/strict-local-mode";
-
-// These endpoints authenticate themselves or must be reachable before a password session exists.
-const PUBLIC_PATHS = [
-  "/login",
-  "/api/auth/login",
-  "/api/cron/check",
-  // Called by the command-line pairing helper, which has no browser cookie. The route requires a
-  // random, single-use, ten-minute pairing code and applies a bounded rate limit.
-  "/api/connect/pair/complete",
-  "/icon.svg",
-  "/sw.js",
-];
-
-function isPublic(pathname: string): boolean {
-  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
-}
+import { isSelfAuthenticatingPublicPath } from "@/lib/self-authenticating-public-paths";
 
 function bounceToLogin(req: NextRequest): NextResponse {
   const { pathname } = req.nextUrl;
@@ -45,7 +30,7 @@ export default async function proxy(req: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
-  if (isPublic(pathname)) return NextResponse.next();
+  if (isSelfAuthenticatingPublicPath(pathname)) return NextResponse.next();
   if (await verifySession(req.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next();
   return bounceToLogin(req);
 }

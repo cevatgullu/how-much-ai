@@ -86,10 +86,14 @@ export function AddAccountModal({
   reconnectAccount,
   onServerConnected,
 }: AddAccountModalProps) {
-  const [mode, setMode] = useState<Mode>("paste");
+  const [mode, setMode] = useState<Mode>(() =>
+    strictLocal ? "local" : "paste",
+  );
   const [showPaste, setShowPaste] = useState(true);
   // Which provider is being connected. Reconnect is locked to the account's own provider.
-  const [provider, setProvider] = useState<ProviderId>("anthropic");
+  const [provider, setProvider] = useState<ProviderId>(
+    () => reconnectAccount?.provider ?? "anthropic",
+  );
 
   // Paste flow.
   const [os, setOs] = useState<OS>("macOS");
@@ -329,7 +333,7 @@ export function AddAccountModal({
     operationController.current?.abort();
     operationController.current = null;
     operationRef.current = null;
-    setMode("paste");
+    setMode(strictLocal ? "local" : "paste");
     setShowPaste(true);
     setProvider(reconnectAccount?.provider ?? "anthropic");
     setPasted("");
@@ -362,21 +366,23 @@ export function AddAccountModal({
           if (!cancelled) setError("Couldn't prepare a secure Claude sign-in. Close this dialog and try again.");
         },
       );
-      void (async () => {
-        // Self-hosted local quick-connect is available only on the machine running the app.
-        try {
-          const res = await fetch("/api/connect/local", { cache: "no-store" });
-          if (cancelled) return;
-          if (res.ok) {
-            setMode("local");
-            return;
-          }
-        } catch {
-          /* fall through */
-        }
-        setMode("pair");
-      })();
     }
+    void (async () => {
+      // Self-hosted local quick-connect is available only on the machine running the app.
+      try {
+        const res = await fetch("/api/connect/local", { cache: "no-store" });
+        if (cancelled) return;
+        if (res.ok) {
+          setMode("local");
+          return;
+        }
+      } catch {
+        /* fall through */
+      }
+      if (!strictLocal) {
+        setMode("pair");
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -633,7 +639,7 @@ export function AddAccountModal({
 
   // OpenAI: paste ~/.codex/auth.json → parse client-side → verify + save server-side.
   const connectOpenAIPaste = useCallback(async () => {
-    if (!pasted.trim() || working || operationRef.current) return;
+    if (strictLocal || !pasted.trim() || working || operationRef.current) return;
     const controller = new AbortController();
     operationController.current = controller;
     operationRef.current = "manual";
@@ -694,7 +700,7 @@ export function AddAccountModal({
       if (operationRef.current === "manual") operationRef.current = null;
       if (!closedRef.current) setWorking(false);
     }
-  }, [finishServerConnect, pasted, reconnectAccount, working]);
+  }, [finishServerConnect, pasted, reconnectAccount, strictLocal, working]);
 
   if (!open) return null;
   const requestBusy = working || localWorking || pairStarting || pairState === "processing";
@@ -1056,7 +1062,8 @@ export function AddAccountModal({
             </div>
           )}
 
-          <div className={mode === "local" ? "border-t border-border/60 pt-4" : ""}>
+          {!strictLocal && (
+            <div className={mode === "local" ? "border-t border-border/60 pt-4" : ""}>
             <p className="text-sm text-ivory">
               {mode === "local" ? "Or paste your ~/.codex/auth.json" : "Paste your ~/.codex/auth.json"}
             </p>
@@ -1089,7 +1096,8 @@ export function AddAccountModal({
                 {error}
               </p>
             )}
-          </div>
+            </div>
+          )}
         </div>
       )}
     </div>

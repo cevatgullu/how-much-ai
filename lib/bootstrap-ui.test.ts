@@ -213,3 +213,30 @@ test("strict dashboard connection UI delegates Claude to the connector and never
   assert.match(ordinaryMarkup, /paste the authorization code/i);
   assert.match(ordinaryMarkup, /<textarea/i);
 });
+
+test("strict OpenAI selection keeps the same-machine action and never renders credential paste", () => {
+  process.env = validStrictEnvironment();
+  const strictOpenAiMarkup = renderToStaticMarkup(
+    createElement(AddAccountModal, {
+      open: true,
+      strictLocal: true,
+      onClose() {},
+      onServerConnected() {},
+      reconnectAccount: {
+        id: "openai-account",
+        email: "account@example.invalid",
+        plan: "ChatGPT Pro",
+        addedAt: 1,
+        credentialKind: "managed",
+        provider: "openai",
+        credentialExpiresAt: 2,
+      },
+    }),
+  );
+
+  assert.match(strictOpenAiMarkup, /read chatgpt login from this machine/i);
+  assert.doesNotMatch(
+    strictOpenAiMarkup,
+    /paste your ~\/\.codex\/auth\.json|<textarea/i,
+  );
+});

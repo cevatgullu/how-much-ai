@@ -443,6 +443,40 @@ Verify both registered tasks in memory with
 `secretFree` and `planValid`; never emit raw actions, XML, SID, command lines,
 environment blocks, or decrypted values.
 
+```powershell
+$state = Join-Path $env:LOCALAPPDATA 'HowMuchAI'
+$config = Get-Content -Raw -LiteralPath (Join-Path $state 'install.json') | ConvertFrom-Json
+$bootstrap = Join-Path $state 'bootstrap'
+$integrityModule = Join-Path $bootstrap 'SecureLocalIntegrity.psm1'
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $integrityModule).Hash -ne $config.bootstrapHashes.integrity) {
+    throw 'Post-install integrity module verification failed.'
+}
+Import-Module $integrityModule -Force -ErrorAction Stop
+$config = Assert-HmaStartupIntegrity -StateRoot $state
+Import-Module (Join-Path $bootstrap 'SecureLocalSecrets.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $bootstrap 'SecureLocalRuntime.psm1') -Force -ErrorAction Stop
+$bundle = Unprotect-HmaSecretBundle -Path (Join-Path $state 'secrets.dpapi')
+$secretValues = @([string]$bundle.appPassword, [string]$bundle.authSecret, [string]$bundle.vaultEncryptionSecret)
+$summaries = foreach ($name in 'HowMuchAI-Service','HowMuchAI-Window') {
+    $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+    $xml = Export-ScheduledTask -TaskName $name
+    $actionText = @($task.Actions | ForEach-Object { "$($_.Execute)`n$($_.Arguments)`n$($_.WorkingDirectory)" }) -join "`n"
+    $containsSecretValue = [bool]($secretValues | Where-Object { $actionText.Contains($_) -or $xml.Contains($_) })
+    $containsSecretName = [bool](($actionText + $xml) -match '(?i)(APP_PASSWORD|AUTH_SECRET|VAULT_ENCRYPTION_SECRET|accessToken|refreshToken)')
+    [pscustomobject]@{
+        task = $name
+        secretFree = (-not $containsSecretValue -and -not $containsSecretName)
+        planValid = (Test-HmaRegisteredTaskPlan -Task $task -Config $config -StateRoot $state)
+    }
+}
+$bundle = $null
+$secretValues = $null
+if ($summaries | Where-Object { -not $_.secretFree -or -not $_.planValid }) {
+    throw 'Scheduled-task verification failed.'
+}
+$summaries | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 'audit\final\tasks.json'
+```
+
 Exercise both Task Scheduler actions twice. Confirm listener recovery,
 successful `HowMuchAI-Window` task results, startup-integrity success on both
 service starts, an unchanged installed runtime, and a clean second Edge

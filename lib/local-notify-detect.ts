@@ -1,3 +1,6 @@
+// @ts-expect-error Node's direct TypeScript test runner needs the source extension.
+import { parseResetTimestamp } from "./format.ts";
+
 export const REMAINING_BOUNDARIES = [50, 40, 30, 20, 15, 10, 5, 0] as const;
 export type RemainingBoundary = (typeof REMAINING_BOUNDARIES)[number];
 
@@ -37,7 +40,7 @@ function crossedBoundaryIndex(remaining: number): number {
 }
 
 function timestampMs(timestamp: string | null): number {
-  return timestamp === null ? Number.NaN : Date.parse(timestamp);
+  return timestamp === null ? Number.NaN : (parseResetTimestamp(timestamp) ?? Number.NaN);
 }
 
 function stateFor(reading: LocalLimitReading, lastResetAt: string | null, nextBoundaryIndex: number): LocalLimitState {

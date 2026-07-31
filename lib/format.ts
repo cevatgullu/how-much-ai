@@ -112,7 +112,7 @@ export function extractBars(usage: UsageData): NormalizedUsageBar[] {
   return [...bars.values()].sort((a, b) => kindRank(a.kind) - kindRank(b.kind) || a.key.localeCompare(b.key));
 }
 
-function parseResetTimestamp(value: string): number | null {
+export function parseResetTimestamp(value: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value);
   if (!match) return null;
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, timeZone] = match;

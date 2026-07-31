@@ -112,6 +112,13 @@ test("invalid, equal, and older timestamps do not reset or regress the stored ti
   }
 });
 
+test("a malformed calendar timestamp cannot normalize into a reset", () => {
+  const initial = event(undefined, at(51, "2026-02-01T10:00:00.000Z"));
+  const malformed = event(initial.nextState, at(50, "2026-02-30T10:00:00.000Z"));
+  assert.deepEqual(malformed.event, { type: "threshold", boundary: 50 });
+  assert.equal(malformed.nextState.lastResetAt, "2026-02-01T10:00:00.000Z");
+});
+
 test("a utilization drop without a reset does not re-arm a crossed boundary", () => {
   const seeded = event(undefined, at(51));
   const crossed = event(seeded.nextState, at(50));

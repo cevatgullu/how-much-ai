@@ -4,11 +4,30 @@ import "./_resolve-ts.mjs";
 import type { ProfileData } from "../types.ts";
 
 const { anthropicProvider, anthropicIdentityFromProfile } = await import("./anthropic.ts");
+const { extractBars } = await import("../format.ts");
 
 test("anthropic provider exposes stable descriptor", () => {
   assert.equal(anthropicProvider.id, "anthropic");
   assert.equal(anthropicProvider.label, "Claude");
   assert.equal(anthropicProvider.supportsOAuth, true);
+});
+
+test("Anthropic connected-app usage has the shared normalized weekly limit", () => {
+  assert.deepEqual(
+    extractBars({ seven_day_oauth_apps: { utilization: 30, resets_at: null } }),
+    [
+      {
+        key: "weekly_oauth_apps",
+        kind: "weekly_oauth_apps",
+        label: "Bağlı uygulamalar haftalık limiti",
+        usedPercent: 30,
+        remainingPercent: 70,
+        resetsAt: null,
+        severity: "normal",
+        isActive: false,
+      },
+    ],
+  );
 });
 
 test("anthropicIdentityFromProfile maps uuid, email, name, and plan label", () => {

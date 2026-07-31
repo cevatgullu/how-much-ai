@@ -1,74 +1,148 @@
 import type { LimitEntry, ProfileData, UsageData } from "./types";
 
-export interface Bar {
+export interface NormalizedUsageBar {
   key: string;
+  kind: string;
   label: string;
-  percent: number;
+  usedPercent: number;
+  remainingPercent: number;
   resetsAt: string | null;
   severity: string;
   isActive: boolean;
 }
 
 const KIND_LABELS: Record<string, string> = {
-  session: "Current session",
-  weekly_all: "Weekly · all models",
-  weekly_oauth_apps: "Weekly · connected apps",
+  session: "5 saatlik limit",
+  weekly_all: "Haftalık limit",
+  weekly_oauth_apps: "Bağlı uygulamalar haftalık limiti",
 };
 
-function prettifyKind(kind: string): string {
-  return kind.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+function normalizeUsed(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function resetAt(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function scopeText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function scopedLimit(scope: LimitEntry["scope"], group: unknown, fallback: string | null = null) {
+  const model = scope?.model;
+  const display = scopeText(model?.display_name);
+  const stable = scopeText(model?.id) ?? display ?? scopeText(scope?.surface) ?? scopeText(group) ?? fallback ?? "diğer";
+  const knownClaudeScope = display?.toLowerCase();
+  const keyScope = knownClaudeScope === "opus" || knownClaudeScope === "sonnet" ? knownClaudeScope : stable.toLowerCase();
+  return { key: `weekly_scoped:${encodeURIComponent(keyScope)}`, label: `${display ?? stable} haftalık limiti` };
 }
 
 function kindRank(kind: string): number {
   if (kind === "session") return 0;
   if (kind === "weekly_all") return 1;
-  return 2;
+  if (kind === "weekly_oauth_apps") return 2;
+  if (kind === "weekly_scoped") return 3;
+  return 4;
 }
 
-// The `limits` array is the richest source (it carries per-model scoped limits and severity).
-// Fall back to the flat buckets for older response shapes.
-export function extractBars(usage: UsageData): Bar[] {
-  if (usage.limits && usage.limits.length > 0) {
-    return [...usage.limits]
-      .sort((a, b) => kindRank(a.kind) - kindRank(b.kind))
-      .map((limit: LimitEntry, i) => {
-        const modelName = limit.scope?.model?.display_name;
-        const label =
-          KIND_LABELS[limit.kind] ??
-          (limit.kind === "weekly_scoped" && modelName
-            ? `Weekly · ${modelName}`
-            : modelName
-              ? `${prettifyKind(limit.kind)} · ${modelName}`
-              : prettifyKind(limit.kind));
-        return {
-          key: `${limit.kind}-${modelName ?? i}`,
-          label,
-          percent: Math.max(0, Math.min(100, limit.percent ?? 0)),
-          resetsAt: limit.resets_at ?? null,
-          severity: limit.severity ?? "normal",
-          isActive: limit.is_active ?? false,
-        };
-      });
+function canonicalRichLimit(limit: LimitEntry): { key: string; kind: string; label: string } | null {
+  if (typeof limit.kind !== "string") return null;
+  if (limit.kind === "weekly_scoped") {
+    const scoped = scopedLimit(limit.scope, limit.group);
+    return { ...scoped, kind: "weekly_scoped" };
+  }
+  if (limit.kind in KIND_LABELS) return { key: limit.kind, kind: limit.kind, label: KIND_LABELS[limit.kind] };
+  return null;
+}
+
+function flatScopedLimit(scope: string) {
+  return scopedLimit(null, null, scope);
+}
+
+// Rich provider rows carry severity and active state. Flat buckets fill only canonical limits
+// missing from those rows, so a provider cannot create duplicate notification identities.
+export function extractBars(usage: UsageData): NormalizedUsageBar[] {
+  const bars = new Map<string, NormalizedUsageBar>();
+  const add = (
+    identity: { key: string; kind: string; label: string } | null,
+    usedValue: unknown,
+    resetsValue: unknown,
+    severity: unknown = "normal",
+    isActive: unknown = false,
+  ) => {
+    const usedPercent = normalizeUsed(usedValue);
+    if (!identity || usedPercent === null || bars.has(identity.key)) return;
+    bars.set(identity.key, {
+      ...identity,
+      usedPercent,
+      remainingPercent: 100 - usedPercent,
+      resetsAt: resetAt(resetsValue),
+      severity: typeof severity === "string" ? severity : "normal",
+      isActive: isActive === true,
+    });
+  };
+
+  for (const candidate of usage.limits ?? []) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const limit = candidate as LimitEntry;
+    add(canonicalRichLimit(limit), limit.percent, limit.resets_at, limit.severity, limit.is_active);
   }
 
-  const bars: Bar[] = [];
-  const push = (key: string, label: string, bucket?: { utilization: number | null; resets_at: string | null } | null) => {
-    if (bucket && bucket.utilization != null) {
-      bars.push({
-        key,
-        label,
-        percent: Math.max(0, Math.min(100, bucket.utilization)),
-        resetsAt: bucket.resets_at,
-        severity: "normal",
-        isActive: false,
-      });
-    }
+  const addFlat = (identity: { key: string; kind: string; label: string }, bucket: unknown) => {
+    if (!bucket || typeof bucket !== "object") return;
+    const source = bucket as { utilization?: unknown; resets_at?: unknown };
+    add(identity, source.utilization, source.resets_at);
   };
-  push("five_hour", "Current session", usage.five_hour);
-  push("seven_day", "Weekly · all models", usage.seven_day);
-  push("seven_day_opus", "Weekly · Opus", usage.seven_day_opus);
-  push("seven_day_sonnet", "Weekly · Sonnet", usage.seven_day_sonnet);
-  return bars;
+  addFlat({ key: "session", kind: "session", label: KIND_LABELS.session }, usage.five_hour);
+  addFlat({ key: "weekly_all", kind: "weekly_all", label: KIND_LABELS.weekly_all }, usage.seven_day);
+  addFlat(
+    { key: "weekly_oauth_apps", kind: "weekly_oauth_apps", label: KIND_LABELS.weekly_oauth_apps },
+    usage.seven_day_oauth_apps,
+  );
+  for (const [scope, bucket] of [
+    ["Opus", usage.seven_day_opus],
+    ["Sonnet", usage.seven_day_sonnet],
+  ] as const) {
+    const scoped = flatScopedLimit(scope);
+    addFlat({ ...scoped, kind: "weekly_scoped" }, bucket);
+  }
+
+  return [...bars.values()].sort((a, b) => kindRank(a.kind) - kindRank(b.kind) || a.key.localeCompare(b.key));
+}
+
+export function formatResetSchedule(
+  resetsAt: string | null,
+  now: number,
+  options: { locale?: string; timeZone?: string } = {},
+): { exact: string; countdown: string | null; state: "future" | "resetting" | "past" } | null {
+  if (!resetsAt) return null;
+  const resetMs = Date.parse(resetsAt);
+  if (Number.isNaN(resetMs)) return null;
+  const exact = new Intl.DateTimeFormat(options.locale ?? "tr-TR", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    ...(options.timeZone ? { timeZone: options.timeZone } : {}),
+  })
+    .format(new Date(resetMs))
+    .replace(",", "")
+    .replace(/\s+/g, " ");
+  const delta = resetMs - now;
+  if (delta > 120_000) {
+    const minutes = Math.ceil(delta / 60_000);
+    const units = [
+      [Math.floor(minutes / 1440), "gün"],
+      [Math.floor((minutes % 1440) / 60), "sa"],
+      [minutes % 60, "dk"],
+    ].filter(([value]) => value > 0).slice(0, 2);
+    return { exact, countdown: `${units.map(([value, label]) => `${value} ${label}`).join(" ")} sonra`, state: "future" };
+  }
+  if (delta >= -120_000) return { exact, countdown: "Sıfırlanıyor…", state: "resetting" };
+  return { exact, countdown: null, state: "past" };
 }
 
 export function planLabel(profile?: ProfileData | null): string {

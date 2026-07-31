@@ -6,6 +6,7 @@ import "./_resolve-ts.mjs";
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/wham-usage.json", import.meta.url), "utf8"));
 const { normalizeOpenAIUsage } = await import("./openai-usage.ts");
 const { openaiProvider, openaiPlanLabel } = await import("./openai.ts");
+const { extractBars } = await import("../format.ts");
 
 function jwt(payload: Record<string, unknown>): string {
   const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -54,6 +55,24 @@ test("normalizeOpenAIUsage maps a 5-hour session window", () => {
   assert.equal(usage.five_hour?.utilization, 40);
   assert.equal(usage.limits?.[0].kind, "session");
   assert.equal(usage.limits?.[0].severity, "normal");
+});
+
+test("OpenAI session usage has the shared normalized five-hour limit", () => {
+  const usage = normalizeOpenAIUsage({
+    rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 18_000, reset_at: 1_800_000_000 } },
+  });
+  assert.deepEqual(extractBars(usage), [
+    {
+      key: "session",
+      kind: "session",
+      label: "5 saatlik limit",
+      usedPercent: 40,
+      remainingPercent: 60,
+      resetsAt: new Date(1_800_000_000_000).toISOString(),
+      severity: "normal",
+      isActive: true,
+    },
+  ]);
 });
 
 test("normalizeOpenAIUsage escalates severity by percent", () => {

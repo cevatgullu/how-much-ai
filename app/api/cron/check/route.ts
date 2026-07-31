@@ -74,7 +74,7 @@ async function checkUser(userId: string, assertLease: () => Promise<void>): Prom
     const who = account.label || account.email;
     const accountStates: StoredNotifyState[] = [];
     for (const bar of extractBars(result.usage)) {
-      const reading: LimitReading = { key: bar.key, label: bar.label, percent: bar.percent, resetsAt: bar.resetsAt };
+      const reading: LimitReading = { key: bar.key, label: bar.label, percent: bar.usedPercent, resetsAt: bar.resetsAt };
       const key = `${account.id}::${bar.key}`;
       const { nextState, events } = diffLimit(stateByKey.get(key), reading, toggles, thresholds);
       const storedState = { key, accountId: account.id, limitKey: bar.key, ...nextState };

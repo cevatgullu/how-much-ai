@@ -29,6 +29,7 @@ const originalDescriptors = new Map(
 );
 
 afterEach(() => {
+  TestMessageChannel.created.length = 0;
   for (const name of replacedGlobals) {
     const descriptor = originalDescriptors.get(name);
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -67,10 +68,12 @@ class TestPort {
 }
 
 class TestMessageChannel {
+  static readonly created: TestMessageChannel[] = [];
   readonly port1 = new TestPort();
   readonly port2 = new TestPort();
 
   constructor() {
+    TestMessageChannel.created.push(this);
     this.port1.peer = this.port2;
     this.port2.peer = this.port1;
   }
@@ -82,6 +85,7 @@ interface BrowserEnvironmentOptions {
   onPostMessage?: (data: unknown, ports: readonly TestPort[]) => void;
   active?: boolean;
   controller?: boolean;
+  ready?: Promise<unknown>;
 }
 
 function installBrowserEnvironment(options: BrowserEnvironmentOptions = {}) {
@@ -111,7 +115,7 @@ function installBrowserEnvironment(options: BrowserEnvironmentOptions = {}) {
       calls.register.push(url);
       return registration;
     },
-    ready: Promise.resolve(registration),
+    ready: (options.ready ?? Promise.resolve(registration)) as Promise<ServiceWorkerRegistration>,
   };
 
   Object.defineProperty(globalThis, "Notification", { configurable: true, value: notification });
@@ -241,6 +245,46 @@ test("delivery rejects malformed payloads locally without echoing private conten
   assert.equal(calls.posted.length, 0);
 });
 
+test("hostile payload traps resolve generically without registration, sending, logging, or reflection", async () => {
+  const sentinel = "SENTINEL-PRIVATE-PAYLOAD";
+  const payloads = [
+    new Proxy(VALID_PAYLOAD, {
+      ownKeys: () => { throw new Error(sentinel); },
+    }),
+    new Proxy(VALID_PAYLOAD, {
+      get: (_target, property, receiver) => {
+        if (property === "body") throw new Error(sentinel);
+        return Reflect.get(_target, property, receiver);
+      },
+    }),
+  ];
+  const logs: unknown[] = [];
+  const originalConsole = { log: console.log, warn: console.warn, error: console.error };
+  console.log = (...values: unknown[]) => { logs.push(values); };
+  console.warn = (...values: unknown[]) => { logs.push(values); };
+  console.error = (...values: unknown[]) => { logs.push(values); };
+
+  try {
+    for (const payload of payloads) {
+      const calls = installBrowserEnvironment();
+      const result = await deliverLocalNotification(payload);
+      assert.deepEqual(result, {
+        ok: false,
+        reason: "worker",
+        message: "Local notification delivery failed.",
+      });
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(sentinel));
+      assert.deepEqual(calls.register, []);
+      assert.equal(calls.posted.length, 0);
+    }
+  } finally {
+    console.log = originalConsole.log;
+    console.warn = originalConsole.warn;
+    console.error = originalConsole.error;
+  }
+  assert.equal(logs.length, 0);
+});
+
 test("delivery ignores malformed, mismatched, and negative acknowledgements without reflecting payload", async () => {
   const hiddenExtraAcknowledgement = {
     type: LOCAL_NOTIFICATION_ACK,
@@ -302,6 +346,50 @@ test("delivery times out after exactly 10 seconds and cleans its timer and port"
   assert.equal(clearCalls, 1);
   assert.equal(sentPort?.peer?.closed, true);
   assert.equal(sentPort?.peer?.listeners.size, 0);
+});
+
+test("the single 10-second deadline bounds pending service-worker readiness and blocks late sending", async () => {
+  let resolveReady: ((registration: unknown) => void) | undefined;
+  const ready = new Promise<unknown>((resolve) => { resolveReady = resolve; });
+  let timeoutMs = -1;
+  let timeoutCallback: (() => void) | undefined;
+  let clearCalls = 0;
+  const calls = installBrowserEnvironment({ ready });
+  Object.defineProperty(globalThis, "setTimeout", {
+    configurable: true,
+    value: (callback: () => void, milliseconds: number) => {
+      timeoutCallback = callback;
+      timeoutMs = milliseconds;
+      return 73;
+    },
+  });
+  Object.defineProperty(globalThis, "clearTimeout", {
+    configurable: true,
+    value: (timer: number) => {
+      assert.equal(timer, 73);
+      clearCalls += 1;
+    },
+  });
+
+  const pending = deliverLocalNotification(VALID_PAYLOAD);
+  await Promise.resolve();
+  assert.equal(timeoutMs, 10_000);
+  timeoutCallback?.();
+  assert.deepEqual(await pending, {
+    ok: false,
+    reason: "timeout",
+    message: "Local notification delivery timed out.",
+  });
+  assert.equal(clearCalls, 1);
+  assert.equal(calls.posted.length, 0);
+  assert.equal(TestMessageChannel.created.length, 0);
+
+  resolveReady?.({ active: { postMessage: () => { throw new Error("late send"); } } });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(calls.posted.length, 0);
+  assert.equal(TestMessageChannel.created.length, 0);
+  assert.equal(clearCalls, 1);
 });
 
 test("delivery fails generically when no active worker can receive the request", async () => {

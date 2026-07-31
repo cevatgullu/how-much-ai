@@ -52,18 +52,30 @@ function hasLocalNotificationSupport(): boolean {
   );
 }
 
-function validPayload(payload: LocalWorkerNotification): boolean {
-  return (
-    payload !== null &&
-    typeof payload === "object" &&
-    payload.title === "How Much AI" &&
-    typeof payload.body === "string" &&
-    payload.body.length >= 1 &&
-    payload.body.length <= 240 &&
-    !BODY_CONTROL_PATTERN.test(payload.body) &&
-    typeof payload.tag === "string" &&
-    TAG_PATTERN.test(payload.tag)
-  );
+function validatedPayload(payload: LocalWorkerNotification): LocalWorkerNotification | null {
+  try {
+    if (payload === null || typeof payload !== "object") return null;
+    const keys = Reflect.ownKeys(payload);
+    if (!keys.every((key): key is string => typeof key === "string")) return null;
+    keys.sort();
+    if (keys.length !== 3 || keys[0] !== "body" || keys[1] !== "tag" || keys[2] !== "title") return null;
+
+    const title = payload.title;
+    const body = payload.body;
+    const tag = payload.tag;
+    if (
+      title !== "How Much AI" ||
+      typeof body !== "string" ||
+      body.length < 1 ||
+      body.length > 240 ||
+      BODY_CONTROL_PATTERN.test(body) ||
+      typeof tag !== "string" ||
+      !TAG_PATTERN.test(tag)
+    ) return null;
+    return { title, body, tag };
+  } catch {
+    return null;
+  }
 }
 
 function requestId(): string {
@@ -115,57 +127,69 @@ export async function deliverLocalNotification(
   const permission = localNotificationPermission();
   if (permission === "unsupported") return UNSUPPORTED_RESULT;
   if (permission !== "granted") return DENIED_RESULT;
-  if (!validPayload(payload)) return WORKER_RESULT;
+  const safePayload = validatedPayload(payload);
+  if (!safePayload) return WORKER_RESULT;
 
-  try {
-    const registration = await navigator.serviceWorker.register("/sw.js");
-    const readyRegistration = await navigator.serviceWorker.ready;
-    const target = readyRegistration.active ?? navigator.serviceWorker.controller ?? registration.active;
-    if (!target) return WORKER_RESULT;
+  return await new Promise<LocalDeliveryResult>((resolve) => {
+    let settled = false;
+    let channel: MessageChannel | null = null;
+    let listener: ((event: MessageEvent) => void) | null = null;
+    let portTransferred = false;
+    let timer: ReturnType<typeof setTimeout>;
 
-    const id = requestId();
-    if (!REQUEST_ID_PATTERN.test(id)) return WORKER_RESULT;
-    const channel = new MessageChannel();
+    const finish = (result: LocalDeliveryResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (channel && listener) channel.port1.removeEventListener("message", listener);
+      channel?.port1.close();
+      if (channel && !portTransferred) channel.port2.close();
+      resolve(result);
+    };
 
-    return await new Promise<LocalDeliveryResult>((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout>;
-      const finish = (result: LocalDeliveryResult) => {
+    timer = setTimeout(() => finish(TIMEOUT_RESULT), DELIVERY_TIMEOUT_MS);
+
+    void (async () => {
+      try {
+        const registration = await navigator.serviceWorker.register("/sw.js");
         if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        channel.port1.removeEventListener("message", onMessage);
-        channel.port1.close();
-        resolve(result);
-      };
-      const onMessage = (event: MessageEvent) => {
-        if (!exactAcknowledgement(event.data, id)) {
+        const readyRegistration = await navigator.serviceWorker.ready;
+        if (settled) return;
+        const target = readyRegistration.active ?? navigator.serviceWorker.controller ?? registration.active;
+        if (!target) {
           finish(WORKER_RESULT);
           return;
         }
-        finish(event.data.ok ? { ok: true } : WORKER_RESULT);
-      };
 
-      channel.port1.addEventListener("message", onMessage);
-      channel.port1.start();
-      timer = setTimeout(() => finish(TIMEOUT_RESULT), DELIVERY_TIMEOUT_MS);
-
-      try {
+        const id = requestId();
+        if (!REQUEST_ID_PATTERN.test(id)) {
+          finish(WORKER_RESULT);
+          return;
+        }
+        channel = new MessageChannel();
+        listener = (event: MessageEvent) => {
+          if (!exactAcknowledgement(event.data, id)) {
+            finish(WORKER_RESULT);
+            return;
+          }
+          finish(event.data.ok ? { ok: true } : WORKER_RESULT);
+        };
+        channel.port1.addEventListener("message", listener);
+        channel.port1.start();
         target.postMessage(
           {
             type: LOCAL_NOTIFICATION_MESSAGE,
             requestId: id,
-            title: payload.title,
-            body: payload.body,
-            tag: payload.tag,
+            title: safePayload.title,
+            body: safePayload.body,
+            tag: safePayload.tag,
           },
           [channel.port2],
         );
+        portTransferred = true;
       } catch {
         finish(WORKER_RESULT);
       }
-    });
-  } catch {
-    return WORKER_RESULT;
-  }
+    })();
+  });
 }

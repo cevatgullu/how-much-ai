@@ -661,6 +661,16 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     return present.size === 1 ? providerMeta([...present][0]).label : "AI";
   }, [accounts]);
 
+  const providerOrdinals = useMemo(() => {
+    const counts = new Map<ProviderId, number>();
+    return new Map(accounts.map((account) => {
+      const provider = account.provider ?? "anthropic";
+      const ordinal = (counts.get(provider) ?? 0) + 1;
+      counts.set(provider, ordinal);
+      return [account.id, ordinal] as const;
+    }));
+  }, [accounts]);
+
   useEffect(() => {
     const root = document.documentElement;
     const previous = root.getAttribute("data-provider");
@@ -948,23 +958,25 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
+            <ol className="grid list-none grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
               {accounts.map((account, i) => (
-                <AccountCard
-                  key={account.id}
-                  account={account}
-                  snapshot={snapshots[account.id]}
-                  now={now}
-                  index={i}
-                  onRefresh={() => void refreshAccount(account.id)}
-                  onRemove={() => removeAccount(account.id)}
-                  onReconnect={
-                    strictLocal ? undefined : () => reconnect(account)
-                  }
-                  onRename={(label) => renameAccount(account.id, label)}
-                />
+                <li key={account.id}>
+                  <AccountCard
+                    account={account}
+                    snapshot={snapshots[account.id]}
+                    now={now}
+                    index={i}
+                    providerOrdinal={providerOrdinals.get(account.id)!}
+                    onRefresh={() => void refreshAccount(account.id)}
+                    onRemove={() => removeAccount(account.id)}
+                    onReconnect={
+                      strictLocal ? undefined : () => reconnect(account)
+                    }
+                    onRename={(label) => renameAccount(account.id, label)}
+                  />
+                </li>
               ))}
-            </div>
+            </ol>
           </>
         )}
       </main>

@@ -21,6 +21,7 @@ interface AccountCardProps {
   snapshot: AccountSnapshot | undefined;
   now: number;
   index: number;
+  providerOrdinal: number;
   onRefresh: () => void;
   onRemove: () => void;
   onReconnect?: () => void;
@@ -32,6 +33,7 @@ export function AccountCard({
   snapshot,
   now,
   index,
+  providerOrdinal,
   onRefresh,
   onRemove,
   onReconnect,
@@ -45,6 +47,7 @@ export function AccountCard({
   const removeButtonRef = useRef<HTMLButtonElement>(null);
   const cancelRemoveRef = useRef<HTMLButtonElement>(null);
   const headingId = useId();
+  const freshnessId = useId();
   const removeTitleId = useId();
   const removeDescriptionId = useId();
 
@@ -65,6 +68,14 @@ export function AccountCard({
   // Stale = the server is showing its last-good reading because Anthropic rate-limited the upstream
   // poll (a cooldown), not a live fetch. We keep the bars but flag their age.
   const stale = (snapshot?.stale ?? false) && status !== "reauth";
+  const oldData = hasBars && status !== "reauth" && (stale || loading || status === "error");
+  const freshnessText = stale
+    ? `Güncel değil — son veri ${snapshot?.fetchedAt ? timeAgo(snapshot.fetchedAt, now) : "daha önce"}.`
+    : loading && hasBars
+      ? "Yenileniyor — son veriler gösteriliyor."
+      : status === "error" && hasBars
+        ? "Yenileme başarısız — son veriler gösteriliyor."
+        : null;
   const displayName = accountDisplayName(account);
   const credentialKind = account.credentialKind;
   const managedLogin = credentialKind === "managed";
@@ -97,7 +108,8 @@ export function AccountCard({
     <article
       aria-labelledby={headingId}
       data-provider={account.provider ?? "anthropic"}
-      className="animate-rise card-lift flex min-w-0 flex-col rounded-2xl border border-border bg-surface p-5"
+      data-stale={oldData || undefined}
+      className="animate-rise card-lift flex h-full min-w-0 flex-col rounded-2xl border border-border bg-surface p-5"
       style={{ animationDelay: `${Math.min(index, 8) * 70}ms` }}
       aria-busy={loading}
       onKeyDown={(event) => {
@@ -106,7 +118,7 @@ export function AccountCard({
         cancelRemove();
       }}
     >
-      <h2 id={headingId} className="sr-only">{displayName}</h2>
+      <h2 id={headingId} className="sr-only">{providerMeta(account.provider).label} {providerOrdinal}</h2>
       <div className="flex min-w-0 flex-col gap-3 xs:flex-row xs:items-start xs:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div
@@ -293,7 +305,7 @@ export function AccountCard({
         </div>
       )}
 
-      <div aria-live="polite" className={`mt-5 flex-1 space-y-4 transition-opacity duration-300 ${loading && hasBars ? "opacity-60" : ""}`}>
+      <div className={`mt-5 flex-1 space-y-4 transition-opacity duration-300 ${loading && hasBars ? "opacity-60" : ""}`}>
         {status === "reauth" ? (
           <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
             <p className="text-sm leading-relaxed text-muted">
@@ -319,19 +331,18 @@ export function AccountCard({
           </div>
         ) : hasBars ? (
           <>
-            {stale && (
-              <div role="status" className="rounded-lg border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-[11px] leading-relaxed text-[#e3b56e]">
-                Rate-limited upstream — showing last update from {snapshot?.fetchedAt ? timeAgo(snapshot.fetchedAt, now) : "earlier"}.
+            {freshnessText && (
+              <div id={freshnessId} role="status" aria-live="polite" className="rounded-lg border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-[11px] leading-relaxed text-[#e3b56e]">
+                {freshnessText}
               </div>
             )}
             {bars.map((bar) => (
               <UsageBar
                 key={bar.key}
-                label={bar.label}
-                percent={bar.usedPercent}
-                resetsAt={bar.resetsAt}
-                severity={bar.severity}
+                bar={bar}
                 now={now}
+                stale={oldData}
+                freshnessDescriptionId={freshnessText ? freshnessId : undefined}
               />
             ))}
           </>

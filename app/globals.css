@@ -274,6 +274,23 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   }
 }
 
+@media (forced-colors: active) {
+  body,
+  .card-lift {
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  [role="progressbar"] {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+
+  .bar-fill {
+    background-color: Highlight !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;

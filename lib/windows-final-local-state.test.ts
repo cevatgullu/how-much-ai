@@ -27,7 +27,7 @@ const vaultSecretCanary = `VAULT-VALUE-CANARY-${"c".repeat(32)}`;
 const processMetadataCanary = "PROCESS-METADATA-CANARY";
 const listenerPidCanary = "424242";
 const reviewedVerifierHash =
-  "a1efd2b0df5731064807010b867838ad82e41dce56690024bd9b3c6e84a4886e";
+  "5f73cfcc5794cc74d12326ef470f4efaa48e70cae0e1600d72bd9ce6425508c7";
 const reviewedManifest =
   `{"commit":"${"d".repeat(40)}","nodeSha256":"${"e".repeat(64)}",` +
   `"installerSha256":"${"f".repeat(64)}",` +
@@ -35,7 +35,7 @@ const reviewedManifest =
   `{"path":"scripts/windows/SecureLocalIntegrity.psm1","size":1,"sha256":"${integrityHash}"},` +
   `{"path":"scripts/windows/SecureLocalRuntime.psm1","size":1,"sha256":"${runtimeHash}"},` +
   `{"path":"scripts/windows/SecureLocalSecrets.psm1","size":1,"sha256":"${secretsHash}"},` +
-  `{"path":"scripts/windows/verify-final-local-state.ps1","size":38291,"sha256":"${reviewedVerifierHash}"}` +
+  `{"path":"scripts/windows/verify-final-local-state.ps1","size":42107,"sha256":"${reviewedVerifierHash}"}` +
   "]}";
 const reviewedManifestSha256 = createHash("sha256")
   .update(reviewedManifest)
@@ -133,8 +133,12 @@ const syntheticHarness = [
   "    AssertStartupIntegrity = {",
   "      param($StateRoot)",
   "      Add-TestEvent 'startup-integrity'",
-  "      return [pscustomobject]@{ appRoot = 'C:\\Reviewed\\runtime'; nodePath = 'C:\\Reviewed\\node.exe'; port = 37645 }",
-  "    }",
+      "      return [pscustomobject]@{ appRoot = 'C:\\Reviewed\\runtime'; nodePath = 'C:\\Reviewed\\node.exe'; port = 37645; bootstrapHashes = [pscustomobject]@{ launcher = ('d' * 64); integrity = ('b' * 64); runtime = ('a' * 64) } }",
+      "    }",
+  "    GetTask = { param($TaskName) Add-TestEvent ('get-task-' + [string]$TaskName); return [pscustomobject]@{ TaskName = [string]$TaskName } }",
+  "    TestRegisteredTaskPlan = { param($Task,$Config,$StateRoot) Add-TestEvent ('validate-task-' + [string]$Task.TaskName); return ($script:failure -cne 'task-plan') }",
+  "    BuildLauncherPlan = { param($Config,$StateRoot) Add-TestEvent 'build-launcher-plan'; return [pscustomobject]@{ Path = 'C:\\Reviewed\\Programs\\How Much AI.lnk' } }",
+  "    TestLauncherPlan = { param($Plan) Add-TestEvent 'validate-launcher'; return ($script:failure -cne 'launcher-plan') }",
   "    ImportSecrets = { param($LiteralPath) Add-TestEvent 'import-secrets'; return $true }",
   "    DecryptBundle = {",
   "      param($LiteralPath)",
@@ -243,6 +247,7 @@ const syntheticHarness = [
   "      if ($script:failure -ceq 'scan') { throw $script:vaultSecret }",
   "      return (@($Values).Count -eq 3)",
   "    }",
+  "    TestNoExactValuesInLauncher = { param($Plan,$Values) Add-TestEvent 'launcher-exact-value-scan'; return ($script:failure -cne 'launcher-scan' -and @($Values).Count -eq 3) }",
   "  }",
   "}",
   "function Invoke-TestScenario([string]$Failure, [bool]$Fallback) {",
@@ -486,6 +491,34 @@ test(
       terminateCount: 1,
     });
     assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "final verification validates both task plans and the shortcut before secrets and scans shortcut bytes afterward",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      ...syntheticHarness,
+      "$records = New-Object 'Collections.Generic.List[object]'",
+      "foreach ($failure in @('', 'task-plan', 'launcher-plan', 'launcher-scan')) {",
+      "  $record = Invoke-TestScenario -Failure $failure -Fallback $false",
+      "  [void]$records.Add([pscustomobject]@{ failure = $failure; failed = [bool]$record.failed; sanitized = [bool]$record.sanitized; decrypts = @($script:events | Where-Object { $_ -ceq 'decrypt' }).Count; listenerReads = @($script:events | Where-Object { $_ -ceq 'listeners' }).Count; taskValidations = @($script:events | Where-Object { $_ -like 'validate-task-*' }).Count; launcherValidations = @($script:events | Where-Object { $_ -ceq 'validate-launcher' }).Count; launcherScans = @($script:events | Where-Object { $_ -ceq 'launcher-exact-value-scan' }).Count; validationBeforeDecrypt = ($script:events.IndexOf('validate-launcher') -ge 0 -and $script:events.IndexOf('validate-launcher') -lt $script:events.IndexOf('decrypt')) })",
+      "}",
+      "$records | ConvertTo-Json -Compress",
+    ]);
+
+    assert.deepEqual(parseSafeJson(stdout), [
+      { failure: "", failed: false, sanitized: false, decrypts: 1, listenerReads: 1, taskValidations: 2, launcherValidations: 1, launcherScans: 1, validationBeforeDecrypt: true },
+      { failure: "task-plan", failed: true, sanitized: true, decrypts: 0, listenerReads: 0, taskValidations: 1, launcherValidations: 0, launcherScans: 0, validationBeforeDecrypt: false },
+      { failure: "launcher-plan", failed: true, sanitized: true, decrypts: 0, listenerReads: 0, taskValidations: 2, launcherValidations: 1, launcherScans: 0, validationBeforeDecrypt: false },
+      { failure: "launcher-scan", failed: true, sanitized: true, decrypts: 1, listenerReads: 0, taskValidations: 2, launcherValidations: 1, launcherScans: 1, validationBeforeDecrypt: true },
+    ]);
+    assert.equal(stderr, "");
     assertNoSensitiveOutput(stdout, stderr);
   },
 );

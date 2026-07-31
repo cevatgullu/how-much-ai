@@ -117,6 +117,7 @@ const defaultBootstrapContents: Record<string, string> = {
   "start-secure-local.ps1": "# synthetic reviewed start",
   "open-secure-local.ps1": "# synthetic reviewed open",
   "connect-claude-secure.ps1": "# synthetic reviewed connector",
+  "launch-secure-local.ps1": "# synthetic reviewed launcher",
   "SecureLocalIntegrity.psm1": "# synthetic reviewed integrity",
   "SecureLocalRuntime.psm1": "# synthetic reviewed runtime",
   "SecureLocalSecrets.psm1": "# synthetic reviewed secrets",
@@ -129,6 +130,7 @@ const bootstrapHashNames: Record<string, string> = {
   "start-secure-local.ps1": "start",
   "open-secure-local.ps1": "open",
   "connect-claude-secure.ps1": "connector",
+  "launch-secure-local.ps1": "launcher",
   "SecureLocalIntegrity.psm1": "integrity",
   "SecureLocalRuntime.psm1": "runtime",
   "SecureLocalSecrets.psm1": "secrets",
@@ -269,7 +271,7 @@ test(
       assert.deepEqual(parseSafeRecord(stdout), {
         valid: true,
         propertyCount: 9,
-        bootstrapHashCount: 9,
+        bootstrapHashCount: 10,
       });
       assert.equal(stderr.length, 0);
       assert.equal(stdout.includes(fixture.state), false);

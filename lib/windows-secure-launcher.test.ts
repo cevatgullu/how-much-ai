@@ -14,6 +14,7 @@ const integrityModulePath = path.resolve("scripts/windows/SecureLocalIntegrity.p
 const secretsModulePath = path.resolve("scripts/windows/SecureLocalSecrets.psm1");
 const openScriptPath = path.resolve("scripts/windows/open-secure-local.ps1");
 const startScriptPath = path.resolve("scripts/windows/start-secure-local.ps1");
+const launchScriptPath = path.resolve("scripts/windows/launch-secure-local.ps1");
 const finalVerifierScriptPath = path.resolve(
   "scripts/windows/verify-final-local-state.ps1",
 );
@@ -481,6 +482,7 @@ test(
       `Copy-Item -LiteralPath ${psLiteral(openScriptPath)} -Destination (Join-Path $bootstrap 'open-secure-local.ps1')`,
       "[IO.File]::WriteAllText((Join-Path $bootstrap 'start-secure-local.ps1'), '# reviewed start')",
       "[IO.File]::WriteAllText((Join-Path $bootstrap 'connect-claude-secure.ps1'), '# reviewed connector')",
+      "[IO.File]::WriteAllText((Join-Path $bootstrap 'launch-secure-local.ps1'), '# reviewed launcher')",
       "[IO.File]::WriteAllText((Join-Path $bootstrap 'verify-final-local-state.ps1'), '# reviewed final verifier')",
       "$syntheticSecrets = \"function Unprotect-HmaSecretBundle { [pscustomobject]@{ version = 1; appPassword = ('a' * 64); authSecret = ('b' * 64); vaultEncryptionSecret = ('c' * 64) } }`r`nExport-ModuleMember -Function 'Unprotect-HmaSecretBundle'\"",
       "[IO.File]::WriteAllText((Join-Path $bootstrap 'SecureLocalSecrets.psm1'), $syntheticSecrets)",
@@ -494,6 +496,7 @@ test(
       "  (New-ManifestEntry -Root $bootstrap -Relative 'SecureLocalRuntime.psm1' -ManifestPath 'scripts/windows/SecureLocalRuntime.psm1'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'SecureLocalSecrets.psm1' -ManifestPath 'scripts/windows/SecureLocalSecrets.psm1'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'connect-claude-secure.ps1' -ManifestPath 'scripts/windows/connect-claude-secure.ps1'),",
+      "  (New-ManifestEntry -Root $bootstrap -Relative 'launch-secure-local.ps1' -ManifestPath 'scripts/windows/launch-secure-local.ps1'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'oauth-handoff-extension\\callback.js' -ManifestPath 'scripts/windows/oauth-handoff-extension/callback.js'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'oauth-handoff-extension\\manifest.json' -ManifestPath 'scripts/windows/oauth-handoff-extension/manifest.json'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'open-secure-local.ps1' -ManifestPath 'scripts/windows/open-secure-local.ps1'),",
@@ -504,7 +507,7 @@ test(
       "$integrityPath = Join-Path $state 'integrity.json'",
       "[IO.File]::WriteAllText($integrityPath, ($manifest | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))",
       "$byName = @{}; foreach ($entry in $bootstrapFiles) { $byName[[IO.Path]::GetFileName([string]$entry.path)] = [string]$entry.sha256 }",
-      "$install = [ordered]@{ version = 1; appRoot = $appRoot; stateRoot = $state; nodePath = $nodePath; port = 37645; upstreamBase = '1238189b7017601d21e3579d041480ce3773e191'; commit = $commit; manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityPath).Hash.ToLowerInvariant(); bootstrapHashes = [ordered]@{ start = $byName['start-secure-local.ps1']; open = $byName['open-secure-local.ps1']; connector = $byName['connect-claude-secure.ps1']; integrity = $byName['SecureLocalIntegrity.psm1']; runtime = $byName['SecureLocalRuntime.psm1']; secrets = $byName['SecureLocalSecrets.psm1']; finalVerifier = $byName['verify-final-local-state.ps1']; extensionManifest = $byName['manifest.json']; extensionCallback = $byName['callback.js'] } }",
+      "$install = [ordered]@{ version = 1; appRoot = $appRoot; stateRoot = $state; nodePath = $nodePath; port = 37645; upstreamBase = '1238189b7017601d21e3579d041480ce3773e191'; commit = $commit; manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityPath).Hash.ToLowerInvariant(); bootstrapHashes = [ordered]@{ start = $byName['start-secure-local.ps1']; open = $byName['open-secure-local.ps1']; connector = $byName['connect-claude-secure.ps1']; launcher = $byName['launch-secure-local.ps1']; integrity = $byName['SecureLocalIntegrity.psm1']; runtime = $byName['SecureLocalRuntime.psm1']; secrets = $byName['SecureLocalSecrets.psm1']; finalVerifier = $byName['verify-final-local-state.ps1']; extensionManifest = $byName['manifest.json']; extensionCallback = $byName['callback.js'] } }",
       "[IO.File]::WriteAllText((Join-Path $state 'install.json'), ($install | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))",
       `Import-Module ${psLiteral(secretsModulePath)} -Force`,
       "Set-HmaPrivateAcl -LiteralPath $state",
@@ -713,6 +716,9 @@ test(
     const wrongNodeHashState = path.join(root, "wrong-node-hash-state");
     const wrongPs51HashState = path.join(root, "wrong-ps51-hash-state");
     const hostileNodeState = path.join(root, "hostile-node-state");
+    const rollbackState = path.join(root, "rollback-state");
+    const replacementState = path.join(root, "replacement-state");
+    const raceState = path.join(root, "race-state");
     const commit = "d".repeat(40);
     const { stdout, stderr } = await runPowerShell(
       [
@@ -737,9 +743,14 @@ test(
         "[IO.File]::WriteAllText((Join-Path $source 'node_modules\\next\\dist\\docs\\01-app\\02-guides\\environment-variables.md'), $syntheticPrivateKeyMarker)",
         `Copy-Item -LiteralPath ${psLiteral(integrityModulePath)} -Destination (Join-Path $source 'scripts\\windows\\SecureLocalIntegrity.psm1')`,
         `Copy-Item -LiteralPath ${psLiteral(modulePath)} -Destination (Join-Path $source 'scripts\\windows\\SecureLocalRuntime.psm1')`,
+        "$runtimeFixturePath = Join-Path $source 'scripts\\windows\\SecureLocalRuntime.psm1'",
+        "$runtimeFixtureText = [IO.File]::ReadAllText($runtimeFixturePath)",
+        "$runtimeFixtureText += \"`r`nfunction New-HmaStartMenuLauncherPlan { param([string]`$StateRoot,[string]`$PowerShellPath,[string]`$IntegrityHash,[string]`$LauncherHash) `$fso = New-Object -ComObject Scripting.FileSystemObject; `$canonicalPowerShell = [string]`$fso.GetFile(`$PowerShellPath).Path; [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject(`$fso); [pscustomobject][ordered]@{ Path = (Join-Path `$env:HMA_INSTALL_PROGRAMS 'How Much AI.lnk'); TargetPath = `$canonicalPowerShell; Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command synthetic'; WorkingDirectory = (Join-Path `$StateRoot 'bootstrap'); Description = 'Open the secure local How Much AI dashboard.'; IconLocation = (`$canonicalPowerShell + ',0'); WindowStyle = 7; Hotkey = '' } }`r`n`$originalLauncherTest = `${function:Test-HmaStartMenuLauncherPlan}`r`nfunction Test-HmaStartMenuLauncherPlan { param(`$Plan) `$destination = Join-Path `$env:HMA_INSTALL_PROGRAMS 'How Much AI.lnk'; if (`$env:HMA_LAUNCH_POSTMOVE_FAIL -ceq '1' -and [string]`$Plan.Path -ceq `$destination) { if (`$env:HMA_LAUNCH_REPLACE_ON_FAIL -ceq '1') { [IO.File]::Delete(`$destination); [IO.File]::WriteAllText(`$destination, 'replacement') }; return `$false }; `$result = [bool](& `$originalLauncherTest -Plan `$Plan); `$parentName = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName([string]`$Plan.Path)); if (`$result -and `$env:HMA_LAUNCH_DESTINATION_RACE -ceq '1' -and `$parentName -like '.hma-launcher-*') { [IO.File]::WriteAllText(`$destination, 'race-winner') }; return `$result }`r`nExport-ModuleMember -Function New-HmaStartMenuLauncherPlan,Test-HmaStartMenuLauncherPlan`r`n\"",
+        "[IO.File]::WriteAllText($runtimeFixturePath, $runtimeFixtureText, (New-Object Text.UTF8Encoding($false)))",
         `Copy-Item -LiteralPath ${psLiteral(secretsModulePath)} -Destination (Join-Path $source 'scripts\\windows\\SecureLocalSecrets.psm1')`,
         `Copy-Item -LiteralPath ${psLiteral(openScriptPath)} -Destination (Join-Path $source 'scripts\\windows\\open-secure-local.ps1')`,
         `Copy-Item -LiteralPath ${psLiteral(startScriptPath)} -Destination (Join-Path $source 'scripts\\windows\\start-secure-local.ps1')`,
+        `Copy-Item -LiteralPath ${psLiteral(launchScriptPath)} -Destination (Join-Path $source 'scripts\\windows\\launch-secure-local.ps1')`,
         `Copy-Item -LiteralPath ${psLiteral(finalVerifierScriptPath)} -Destination (Join-Path $source 'scripts\\windows\\verify-final-local-state.ps1')`,
         "[IO.File]::WriteAllText((Join-Path $source 'scripts\\windows\\connect-claude-secure.ps1'), '# reviewed connector')",
         "[IO.File]::WriteAllText((Join-Path $source 'scripts\\windows\\oauth-handoff-extension\\manifest.json'), '{\"manifest_version\":3}')",
@@ -749,6 +760,7 @@ test(
         "$nodeHash = (Microsoft.PowerShell.Utility\\Get-FileHash -Algorithm SHA256 -LiteralPath $nodePath).Hash.ToLowerInvariant()",
         "$ps51Hash = (Microsoft.PowerShell.Utility\\Get-FileHash -Algorithm SHA256 -LiteralPath $ps51Path).Hash.ToLowerInvariant()",
         "$installerTrustArguments = @{ NodePath = $nodePath; ExpectedNodeSha256 = $nodeHash; Ps51Path = $ps51Path; ExpectedPs51Sha256 = $ps51Hash }",
+        "$null = New-Item -ItemType Directory -Path $env:HMA_INSTALL_PROGRAMS -Force",
         "$hostileBin = Join-Path $env:HMA_INSTALL_ROOT 'hostile-bin'",
         "$null = New-Item -ItemType Directory -Path $hostileBin -Force",
         "$hostileNodePath = Join-Path $hostileBin 'node.exe'",
@@ -757,7 +769,7 @@ test(
         "$env:PATH = $hostileBin + ';' + $env:PATH",
         "function New-SourceEntry { param([string]$Relative) $full = Join-Path $source $Relative; $file = Microsoft.PowerShell.Management\\Get-Item -LiteralPath $full -Force; [pscustomobject]@{ path = $Relative.Replace('\\','/'); size = [int]$file.Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash.ToLowerInvariant() } }",
         "$runtimeFiles = @(New-SourceEntry 'package.json')",
-        "$bootstrapFiles = @((New-SourceEntry 'scripts\\windows\\SecureLocalIntegrity.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalRuntime.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalSecrets.psm1'), (New-SourceEntry 'scripts\\windows\\connect-claude-secure.ps1'), (New-SourceEntry 'scripts\\windows\\oauth-handoff-extension\\callback.js'), (New-SourceEntry 'scripts\\windows\\oauth-handoff-extension\\manifest.json'), (New-SourceEntry 'scripts\\windows\\open-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\start-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\verify-final-local-state.ps1'))",
+        "$bootstrapFiles = @((New-SourceEntry 'scripts\\windows\\SecureLocalIntegrity.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalRuntime.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalSecrets.psm1'), (New-SourceEntry 'scripts\\windows\\connect-claude-secure.ps1'), (New-SourceEntry 'scripts\\windows\\launch-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\oauth-handoff-extension\\callback.js'), (New-SourceEntry 'scripts\\windows\\oauth-handoff-extension\\manifest.json'), (New-SourceEntry 'scripts\\windows\\open-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\start-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\verify-final-local-state.ps1'))",
         "$manifest = [ordered]@{ commit = $env:HMA_INSTALL_COMMIT; nodeSha256 = $nodeHash; installerSha256 = ('f' * 64); runtimeFiles = $runtimeFiles; bootstrapFiles = $bootstrapFiles }",
         "$manifestPath = Join-Path $source 'audit\\final\\runtime-manifest.json'",
         "$trustedManifestText = $manifest | ConvertTo-Json -Depth 8 -Compress",
@@ -776,7 +788,7 @@ test(
         "$script:manifestSwapArmed = $false",
         "$script:sourceSwapArmed = $false",
         "function Get-FileHash { [CmdletBinding()] param([string]$Algorithm,[string]$LiteralPath) $result = Microsoft.PowerShell.Utility\\Get-FileHash -Algorithm $Algorithm -LiteralPath $LiteralPath -ErrorAction Stop; $target = Join-Path $source 'scripts\\windows\\SecureLocalIntegrity.psm1'; if ($script:manifestSwapArmed -and [string]::Equals([IO.Path]::GetFullPath($LiteralPath), [IO.Path]::GetFullPath($manifestPath), [StringComparison]::OrdinalIgnoreCase)) { $script:manifestSwapArmed = $false; [IO.File]::WriteAllText($manifestPath, $script:swappedManifestText, (New-Object Text.UTF8Encoding($false))); [IO.File]::WriteAllText($target, $maliciousIntegrityText, (New-Object Text.UTF8Encoding($false))) } elseif ($script:sourceSwapArmed -and [string]::Equals([IO.Path]::GetFullPath($LiteralPath), [IO.Path]::GetFullPath($target), [StringComparison]::OrdinalIgnoreCase)) { $script:sourceSwapArmed = $false; [IO.File]::WriteAllText($target, \"[IO.File]::WriteAllText([Environment]::GetEnvironmentVariable('HMA_SOURCE_SWAP_MARKER'), 'executed')\", (New-Object Text.UTF8Encoding($false))) }; return $result }",
-        "$script:taskStore = @{}; $script:registrationCount = 0; $script:listenerMode = 'none'; $script:listenerTerminations = 0; $script:listenerAddressPrefilters = 0; $script:listenerPortPrefilters = 0; $script:serviceCommand = ''",
+        "$script:taskStore = @{}; $script:registrationCount = 0; $script:unregistrationCount = 0; $script:listenerMode = 'none'; $script:listenerTerminations = 0; $script:listenerAddressPrefilters = 0; $script:listenerPortPrefilters = 0; $script:serviceCommand = ''",
         "function New-ScheduledTaskAction { [CmdletBinding()] param([string]$Execute,[string]$Argument) [pscustomobject]@{ Execute = $Execute; Arguments = $Argument } }",
         "function New-ScheduledTaskTrigger { [CmdletBinding()] param([switch]$AtLogOn,[string]$User) [pscustomobject]@{ UserId = $User; TriggerType = 'Logon' } }",
         "function New-ScheduledTaskPrincipal { [CmdletBinding()] param([string]$UserId,[string]$LogonType,[string]$RunLevel) [pscustomobject]@{ UserId = $UserId; LogonType = 'InteractiveToken'; RunLevel = $RunLevel } }",
@@ -784,10 +796,21 @@ test(
         "function Register-ScheduledTask { [CmdletBinding()] param([string]$TaskName,$Action,$Trigger,$Principal,$Settings,[switch]$Force) $task = [pscustomobject]@{ TaskName = $TaskName; Actions = @($Action); Triggers = @($Trigger); Principal = $Principal; Settings = $Settings }; $script:taskStore[$TaskName] = $task; $script:registrationCount += 1; return $task }",
         "function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName) if ($script:taskStore.ContainsKey($TaskName)) { return $script:taskStore[$TaskName] } }",
         "function Export-ScheduledTask { [CmdletBinding()] param([string]$TaskName) $task = $script:taskStore[$TaskName]; $command = [Security.SecurityElement]::Escape([string]$task.Actions[0].Execute); $arguments = [Security.SecurityElement]::Escape([string]$task.Actions[0].Arguments); $sid = [Security.SecurityElement]::Escape([string]$task.Principal.UserId); '<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Triggers><LogonTrigger><UserId>' + $sid + '</UserId></LogonTrigger></Triggers><Principals><Principal><UserId>' + $sid + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions><Exec><Command>' + $command + '</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>' }",
-        "function Unregister-ScheduledTask { [CmdletBinding()] param([string]$TaskName,[switch]$Confirm) $script:taskStore.Remove($TaskName) | Out-Null }",
+        "function Unregister-ScheduledTask { [CmdletBinding()] param([string]$TaskName,[switch]$Confirm) $script:unregistrationCount += 1; $script:taskStore.Remove($TaskName) | Out-Null }",
         "function Get-NetTCPConnection { [CmdletBinding()] param([string]$LocalAddress,[int]$LocalPort,[string]$State) $exact = [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 42 }; $unknown = [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 37645; State = 'Listen'; OwningProcess = 84 }; $otherPort = [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 3000; State = 'Listen'; OwningProcess = 21 }; $rows = if ($script:listenerMode -ceq 'exact') { @($exact, $otherPort) } elseif ($script:listenerMode -ceq 'wildcard') { @($unknown, $otherPort) } elseif ($script:listenerMode -ceq 'multiple') { @($exact, $unknown, $otherPort) } elseif ($script:listenerMode -ceq 'other-port') { @($otherPort) } else { @() }; if ($PSBoundParameters.ContainsKey('LocalAddress')) { $script:listenerAddressPrefilters += 1; $rows = @($rows | Where-Object { [string]$_.LocalAddress -ceq $LocalAddress }) }; if ($PSBoundParameters.ContainsKey('LocalPort')) { $script:listenerPortPrefilters += 1; $rows = @($rows | Where-Object { [int]$_.LocalPort -eq $LocalPort }); if ($script:listenerMode -ceq 'other-port' -and $rows.Count -eq 0) { Write-Error 'No matching MSFT_NetTCPConnection objects found.'; return } }; @($rows) }",
         "function Get-CimInstance { [CmdletBinding()] param([string]$ClassName,[string]$Filter) [pscustomobject]@{ ProcessId = 42; ExecutablePath = $nodePath; CommandLine = $script:serviceCommand } }",
         "function Stop-Process { [CmdletBinding()] param([int]$Id,[switch]$Force) $script:listenerTerminations += 1 }",
+        "$racePrograms = Join-Path $env:HMA_INSTALL_ROOT 'race-programs'; $null = New-Item -ItemType Directory -Path $racePrograms -Force; $env:HMA_INSTALL_PROGRAMS = $racePrograms; $env:HMA_LAUNCH_DESTINATION_RACE = '1'",
+        "$raceFailed = $false; try { . " + psLiteral(installerScriptPath) + " @installerTrustArguments -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_RACE_STATE } catch { $raceFailed = $true }",
+        "$racePreserved = ($raceFailed -and [IO.File]::Exists((Join-Path $racePrograms 'How Much AI.lnk')) -and [IO.File]::ReadAllText((Join-Path $racePrograms 'How Much AI.lnk')) -ceq 'race-winner' -and $script:registrationCount -eq 0 -and $script:unregistrationCount -eq 0)",
+        "$env:HMA_LAUNCH_DESTINATION_RACE = '0'",
+        "$rollbackPrograms = Join-Path $env:HMA_INSTALL_ROOT 'rollback-programs'; $null = New-Item -ItemType Directory -Path $rollbackPrograms -Force; $env:HMA_INSTALL_PROGRAMS = $rollbackPrograms; $env:HMA_LAUNCH_POSTMOVE_FAIL = '1'; $env:HMA_LAUNCH_REPLACE_ON_FAIL = '0'",
+        "$rollbackFailed = $false; try { . " + psLiteral(installerScriptPath) + " @installerTrustArguments -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_ROLLBACK_STATE } catch { $rollbackFailed = $true }",
+        "$rollbackRemoved = ($rollbackFailed -and -not [IO.File]::Exists((Join-Path $rollbackPrograms 'How Much AI.lnk')) -and $script:registrationCount -eq 0)",
+        "$replacementPrograms = Join-Path $env:HMA_INSTALL_ROOT 'replacement-programs'; $null = New-Item -ItemType Directory -Path $replacementPrograms -Force; $env:HMA_INSTALL_PROGRAMS = $replacementPrograms; $env:HMA_LAUNCH_REPLACE_ON_FAIL = '1'",
+        "$replacementFailed = $false; try { . " + psLiteral(installerScriptPath) + " @installerTrustArguments -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_REPLACEMENT_STATE } catch { $replacementFailed = $true }",
+        "$replacementPreserved = ($replacementFailed -and [IO.File]::Exists((Join-Path $replacementPrograms 'How Much AI.lnk')) -and [IO.File]::ReadAllText((Join-Path $replacementPrograms 'How Much AI.lnk')) -ceq 'replacement' -and $script:registrationCount -eq 0)",
+        "$env:HMA_INSTALL_PROGRAMS = Join-Path $env:HMA_INSTALL_ROOT 'programs'; $env:HMA_LAUNCH_POSTMOVE_FAIL = '0'; $env:HMA_LAUNCH_REPLACE_ON_FAIL = '0'",
         "$missingTrustFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_MISSING_TRUST_STATE } catch { $missingTrustFailed = $true }",
         "$missingTrustRejected = ($missingTrustFailed -and -not [IO.Directory]::Exists($env:HMA_MISSING_TRUST_STATE))",
         "$wrongNodeArguments = $installerTrustArguments.Clone(); $wrongNodeArguments.ExpectedNodeSha256 = ('0' * 64)",
@@ -817,6 +840,10 @@ test(
         "$firstSecretHash = if ([IO.File]::Exists($secretsPath)) { (Get-FileHash -Algorithm SHA256 -LiteralPath $secretsPath).Hash } else { '' }",
         "$secondFailed = $false; try { . " + psLiteral(installerScriptPath) + " @installerTrustArguments -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $secondFailed = $true }",
         "$secondSecretHash = if ([IO.File]::Exists($secretsPath)) { (Get-FileHash -Algorithm SHA256 -LiteralPath $secretsPath).Hash } else { '' }",
+        "$mainLauncher = Join-Path $env:HMA_INSTALL_PROGRAMS 'How Much AI.lnk'; $launcherBytes = [IO.File]::ReadAllBytes($mainLauncher); $shortcutShell = New-Object -ComObject WScript.Shell; $shortcut = $shortcutShell.CreateShortcut($mainLauncher); $shortcut.Hotkey = 'Ctrl+Alt+H'; $shortcut.Save(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcutShell); Set-HmaPrivateAcl -LiteralPath $mainLauncher",
+        "$mismatchHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $mainLauncher).Hash; $registrationsBeforeMismatch = $script:registrationCount; $unregistrationsBeforeMismatch = $script:unregistrationCount; $mismatchError = ''; try { . " + psLiteral(installerScriptPath) + " @installerTrustArguments -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $mismatchError = [string]$_.Exception.Message }; $mismatchHashAfter = (Get-FileHash -Algorithm SHA256 -LiteralPath $mainLauncher).Hash",
+        "$mismatchRefusedUntouched = ($mismatchError -ceq 'Secure local installation failed.' -and $mismatchHashBefore -ceq $mismatchHashAfter -and $script:registrationCount -eq $registrationsBeforeMismatch -and $script:unregistrationCount -eq $unregistrationsBeforeMismatch -and $script:taskStore.Count -eq 2)",
+        "[IO.File]::WriteAllBytes($mainLauncher, $launcherBytes); [Array]::Clear($launcherBytes, 0, $launcherBytes.Length); Set-HmaPrivateAcl -LiteralPath $mainLauncher",
         "$installedHashCount = if ([IO.File]::Exists((Join-Path $state 'install.json'))) { $installedConfig = ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $state 'install.json'))); @($installedConfig.bootstrapHashes.PSObject.Properties).Count } else { 0 }",
         "$integrityPass = $false; if (-not $secondFailed) { Import-Module (Join-Path $state 'bootstrap\\SecureLocalIntegrity.psm1') -Force; $integrityPass = ($null -ne (Assert-HmaStartupIntegrity -StateRoot $state)) }",
         "$retainedPathsExact = (-not $secondFailed -and [string]$installedConfig.nodePath -ceq $nodePath -and @($script:taskStore.Values | Where-Object { [string]$_.Actions[0].Execute -cne $ps51Path }).Count -eq 0)",
@@ -865,12 +892,16 @@ test(
         "$unmanifestedFailed = $false; try { . " + psLiteral(installerScriptPath) + " @installerTrustArguments -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_UNMANIFESTED_STATE } catch { $unmanifestedFailed = $true }",
         "[IO.File]::Delete((Join-Path $source 'scripts\\windows\\unmanifested.ps1'))",
         "$foreignFailed = $false; try { . " + psLiteral(installerScriptPath) + " @installerTrustArguments -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_FOREIGN_STATE } catch { $foreignFailed = $true }",
-        "[pscustomobject]@{ ambientGitUnused = ($script:gitCalls -eq 0); missingTrustRejected = $missingTrustRejected; wrongNodeHashRejected = $wrongNodeHashRejected; wrongPs51HashRejected = $wrongPs51HashRejected; hostileNodeRejected = $hostileNodeRejected; retainedPathsExact = $retainedPathsExact; manifestSwapRejected = $manifestSwapFailed; manifestSwapNotExecuted = $manifestSwapNotExecuted; sourceSwapRejected = $sourceSwapFailed; sourceSwapNotExecuted = $sourceSwapNotExecuted; first = (-not $firstFailed); second = (-not $secondFailed); secretsPreserved = ($firstSecretHash.Length -eq 64 -and $firstSecretHash -ceq $secondSecretHash); integrity = $integrityPass; excludedArtifactsAbsent = $excludedArtifactsAbsent; bootstrapHashCount = $installedHashCount; unfilteredQuery = ($script:listenerAddressPrefilters -eq 0 -and $script:listenerPortPrefilters -eq 0); otherPortListenerAccepted = $otherPortListenerAccepted; exactListenerAccepted = $exactListenerAccepted; wildcardListenerRejected = $wildcardListenerRejected; multipleListenersRejected = $multipleListenersRejected; unknownListenerUntouched = ($script:listenerTerminations -eq 0); invalidExistingUntouched = $invalidExistingUntouched; forbiddenEnvironmentRejected = $forbiddenEnvironmentRejected; taskCount = $script:taskStore.Count; registrations = $script:registrationCount; unmanifestedRejected = ($unmanifestedFailed -and -not [IO.Directory]::Exists($env:HMA_UNMANIFESTED_STATE) -and $script:registrationCount -eq $beforeRefusal); foreignTaskRejected = ($foreignFailed -and $script:registrationCount -eq $beforeRefusal) } | ConvertTo-Json -Compress",
+        "[pscustomobject]@{ ambientGitUnused = ($script:gitCalls -eq 0); racePreserved = $racePreserved; rollbackRemoved = $rollbackRemoved; replacementPreserved = $replacementPreserved; mismatchRefusedUntouched = $mismatchRefusedUntouched; missingTrustRejected = $missingTrustRejected; wrongNodeHashRejected = $wrongNodeHashRejected; wrongPs51HashRejected = $wrongPs51HashRejected; hostileNodeRejected = $hostileNodeRejected; retainedPathsExact = $retainedPathsExact; manifestSwapRejected = $manifestSwapFailed; manifestSwapNotExecuted = $manifestSwapNotExecuted; sourceSwapRejected = $sourceSwapFailed; sourceSwapNotExecuted = $sourceSwapNotExecuted; first = (-not $firstFailed); second = (-not $secondFailed); secretsPreserved = ($firstSecretHash.Length -eq 64 -and $firstSecretHash -ceq $secondSecretHash); integrity = $integrityPass; excludedArtifactsAbsent = $excludedArtifactsAbsent; bootstrapHashCount = $installedHashCount; unfilteredQuery = ($script:listenerAddressPrefilters -eq 0 -and $script:listenerPortPrefilters -eq 0); otherPortListenerAccepted = $otherPortListenerAccepted; exactListenerAccepted = $exactListenerAccepted; wildcardListenerRejected = $wildcardListenerRejected; multipleListenersRejected = $multipleListenersRejected; unknownListenerUntouched = ($script:listenerTerminations -eq 0); invalidExistingUntouched = $invalidExistingUntouched; forbiddenEnvironmentRejected = $forbiddenEnvironmentRejected; taskCount = $script:taskStore.Count; registrations = $script:registrationCount; unmanifestedRejected = ($unmanifestedFailed -and -not [IO.Directory]::Exists($env:HMA_UNMANIFESTED_STATE) -and $script:registrationCount -eq $beforeRefusal); foreignTaskRejected = ($foreignFailed -and $script:registrationCount -eq $beforeRefusal) } | ConvertTo-Json -Compress",
       ],
       {
         HMA_INSTALL_ROOT: root,
         HMA_INSTALL_SOURCE: source,
         HMA_INSTALL_STATE: state,
+        HMA_INSTALL_PROGRAMS: path.join(root, "programs"),
+        HMA_ROLLBACK_STATE: rollbackState,
+        HMA_REPLACEMENT_STATE: replacementState,
+        HMA_RACE_STATE: raceState,
         HMA_MANIFEST_SWAP_STATE: manifestSwapState,
         HMA_MANIFEST_SWAP_MARKER: manifestSwapMarker,
         HMA_SOURCE_SWAP_STATE: sourceSwapState,
@@ -888,6 +919,10 @@ test(
     try {
       assert.deepEqual(parseSafeRecord(stdout), {
         ambientGitUnused: true,
+        racePreserved: true,
+        rollbackRemoved: true,
+        replacementPreserved: true,
+        mismatchRefusedUntouched: true,
         missingTrustRejected: true,
         wrongNodeHashRejected: true,
         wrongPs51HashRejected: true,
@@ -902,7 +937,7 @@ test(
         secretsPreserved: true,
         integrity: true,
         excludedArtifactsAbsent: true,
-        bootstrapHashCount: 9,
+        bootstrapHashCount: 10,
         unfilteredQuery: true,
         otherPortListenerAccepted: true,
         exactListenerAccepted: true,

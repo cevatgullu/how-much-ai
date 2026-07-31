@@ -35,7 +35,7 @@ Same-machine CLI discovery is automatic in development. In a production-mode loc
 
 ## Secure Windows local mode
 
-For the reviewed, authenticated, loopback-only Windows installation and its exact threat boundary, see [Secure Windows local mode](docs/WINDOWS_SECURE_LOCAL.md). Its launcher establishes the browser session with challenge/server-proof/client-proof HMAC using the protected `AUTH_SECRET`; it never transmits `APP_PASSWORD`. Complete its pre-credential security gate before connecting any real provider account.
+For the reviewed, authenticated, loopback-only Windows installation and its exact threat boundary, see [Secure Windows local mode](docs/WINDOWS_SECURE_LOCAL.md). The installer adds a verified **How Much AI** Start-menu launcher whose hash-bound arguments contain only the state root and public hashes, never a URL, secret, ticket, account, provider, or credential. It validates both exact scheduled tasks before reopening the dashboard: a `Ready` service starts Service then Window, while a `Running` service starts Window only; any mismatch or other state refuses to start either task. The browser session is established with challenge/server-proof/client-proof HMAC using the protected `AUTH_SECRET`; it never transmits `APP_PASSWORD`. Complete the pre-credential security gate before connecting any real provider account.
 
 ## Choose a storage mode
 

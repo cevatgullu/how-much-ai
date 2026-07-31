@@ -160,7 +160,7 @@ Reparse points in control, bootstrap, runtime, vault, or closed-profile state
 also fail validation. ACLs prevent access by other ordinary Windows users; they
 do not form a same-user malware boundary.
 
-## Autostart
+## Autostart and Start-menu launcher
 
 The installer registers exactly two current-user Task Scheduler tasks:
 
@@ -181,6 +181,27 @@ DPAPI module or decrypting `secrets.dpapi`. The Edge launcher repeats integrity
 and exact listener-owner checks, then proves possession of the DPAPI-held
 `AUTH_SECRET` with the bootstrap HMAC exchange. It never transmits
 `APP_PASSWORD` or `AUTH_SECRET` to the service or browser.
+
+The installer also creates the current user's
+`Programs\How Much AI.lnk`. The shortcut targets the exact retained Windows
+PowerShell 5.1 executable and runs the installed, hash-verified
+`launch-secure-local.ps1` from the private bootstrap directory. Its fixed
+arguments contain only the state root plus the public expected launcher and
+integrity-module SHA-256 hashes. They contain no URL, password or secret name
+or value, bootstrap ticket, account or provider identity, or credential.
+
+Before starting anything, the Start-menu launcher verifies its own installed
+hash, the integrity and runtime anchors, and both exact registered task plans.
+If `HowMuchAI-Service` is `Ready`, it starts `HowMuchAI-Service` and then
+`HowMuchAI-Window`. If the service is already `Running`, it starts only
+`HowMuchAI-Window`. A missing, foreign, or mutated task, or any other service
+state, starts neither task and reports only `Secure local launcher failed.`
+
+The installer reopens the shortcut through the Windows Shell COM interface and
+verifies every reviewed field, its private current-user/`SYSTEM` ACL, and its
+ordinary non-reparse leaf and ancestors. An exact existing shortcut is accepted
+idempotently. Any mismatch is refused: the installer does not overwrite,
+repair, delete, or weaken an existing shortcut.
 
 ## Browser bootstrap
 
@@ -1346,8 +1367,9 @@ The idempotent installer creates and verifies
 `%LOCALAPPDATA%\HowMuchAI`, copies only the manifest file sets, creates the
 DPAPI bundle only when absent, writes only the non-secret `install.json`,
 checks any existing listener and task ownership, and registers the two limited
-tasks. It refuses to overwrite a mismatched runtime, unrelated task, invalid
-state root, or unverified DPAPI state.
+tasks. It also creates the verified current-user **How Much AI** Start-menu
+shortcut described above. It refuses to overwrite a mismatched runtime,
+unrelated task or shortcut, invalid state root, or unverified DPAPI state.
 
 Start the reviewed service, wait for its exact loopback listener and reviewed
 Node executable, and then open the reviewed Edge window:
@@ -1660,10 +1682,12 @@ the four-origin Fetch policy or extension permissions in place.
 
 ## Removal
 
-First hash-verify the installed runtime/integrity modules and require every
+First hash-verify the installed runtime/integrity modules, require every
 existing named task to pass `Test-HmaRegisteredTaskPlan` for this exact state
-root. If either ownership check fails, do not run the block below. After both
-checks pass, stop and unregister only the two exact task names:
+root, and require the current-user `Programs\How Much AI.lnk` to match its exact
+reviewed shortcut plan and private ACL. If any ownership check fails, do not
+run the block below and do not delete the shortcut. After all checks pass, stop
+and unregister only the two exact task names:
 
 ```powershell
 Stop-ScheduledTask -TaskName 'HowMuchAI-Window' -ErrorAction SilentlyContinue
@@ -1671,6 +1695,11 @@ Stop-ScheduledTask -TaskName 'HowMuchAI-Service' -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName 'HowMuchAI-Window' -Confirm:$false -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName 'HowMuchAI-Service' -Confirm:$false -ErrorAction SilentlyContinue
 ```
+
+Remove the verified current-user
+`[Environment]::GetFolderPath('Programs')\How Much AI.lnk` as part of the same
+uninstall. Do not remove, overwrite, or repair a mismatched shortcut, and do
+not inspect or mutate another user's Programs directory.
 
 Confirm that no process using the exact dedicated Edge profile remains and
 that port `37645` no longer has a listener. Preserve

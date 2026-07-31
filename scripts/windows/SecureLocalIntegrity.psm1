@@ -16,6 +16,7 @@ $script:HmaBootstrapHashProperties = @(
     'start',
     'open',
     'connector',
+    'launcher',
     'integrity',
     'runtime',
     'secrets',
@@ -35,6 +36,7 @@ $script:HmaBootstrapHashFiles = [ordered]@{
     start = 'start-secure-local.ps1'
     open = 'open-secure-local.ps1'
     connector = 'connect-claude-secure.ps1'
+    launcher = 'launch-secure-local.ps1'
     integrity = 'SecureLocalIntegrity.psm1'
     runtime = 'SecureLocalRuntime.psm1'
     secrets = 'SecureLocalSecrets.psm1'
@@ -659,6 +661,7 @@ function Assert-HmaStartupIntegrity {
                 start = ([string]$install.bootstrapHashes.start).ToLowerInvariant()
                 open = ([string]$install.bootstrapHashes.open).ToLowerInvariant()
                 connector = ([string]$install.bootstrapHashes.connector).ToLowerInvariant()
+                launcher = ([string]$install.bootstrapHashes.launcher).ToLowerInvariant()
                 integrity = ([string]$install.bootstrapHashes.integrity).ToLowerInvariant()
                 runtime = ([string]$install.bootstrapHashes.runtime).ToLowerInvariant()
                 secrets = ([string]$install.bootstrapHashes.secrets).ToLowerInvariant()

@@ -568,6 +568,29 @@ function Stop-HmaFinalValidatedListener {
     }
 }
 
+function Get-HmaFinalTaskVerificationRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$TaskName)
+
+    if ($TaskName -cnotin @('HowMuchAI-Service', 'HowMuchAI-Window')) {
+        throw 'Final local state verification failed.'
+    }
+    $task = Get-ScheduledTask `
+        -TaskName $TaskName `
+        -ErrorAction Stop
+    $xml = Export-ScheduledTask `
+        -TaskName $TaskName `
+        -ErrorAction Stop
+    return [pscustomobject]@{
+        TaskName = [string]$task.TaskName
+        Principal = $task.Principal
+        Actions = @($task.Actions)
+        Triggers = @($task.Triggers)
+        Settings = $task.Settings
+        Xml = [string]$xml
+    }
+}
+
 function New-HmaFinalDefaultOperations {
     [CmdletBinding()]
     param()
@@ -605,6 +628,34 @@ function New-HmaFinalDefaultOperations {
             param($RequestedStateRoot)
             return Assert-HmaStartupIntegrity `
                 -StateRoot ([string]$RequestedStateRoot)
+        }
+        GetTask = {
+            param($TaskName)
+            return Get-HmaFinalTaskVerificationRecord `
+                -TaskName ([string]$TaskName)
+        }
+        TestRegisteredTaskPlan = {
+            param($Task, $Config, $RequestedStateRoot)
+            return [bool](Test-HmaRegisteredTaskPlan `
+                    -Task $Task `
+                    -Config $Config `
+                    -StateRoot ([string]$RequestedStateRoot))
+        }
+        BuildLauncherPlan = {
+            param($Config, $RequestedStateRoot)
+            $powerShellPath = [IO.Path]::Combine(
+                [Environment]::SystemDirectory,
+                'WindowsPowerShell\v1.0\powershell.exe'
+            )
+            return New-HmaStartMenuLauncherPlan `
+                -StateRoot ([string]$RequestedStateRoot) `
+                -PowerShellPath $powerShellPath `
+                -IntegrityHash ([string]$Config.bootstrapHashes.integrity) `
+                -LauncherHash ([string]$Config.bootstrapHashes.launcher)
+        }
+        TestLauncherPlan = {
+            param($Plan)
+            return [bool](Test-HmaStartMenuLauncherPlan -Plan $Plan)
         }
         ImportSecrets = {
             param($LiteralPath)
@@ -694,6 +745,12 @@ function New-HmaFinalDefaultOperations {
             return [bool](Test-HmaNoExactValuesAtRest `
                 -LiteralPath ([string]$RequestedStateRoot) `
                 -Values @($Values))
+        }
+        TestNoExactValuesInLauncher = {
+            param($Plan, $Values)
+            return [bool](Test-HmaNoExactValuesAtRest `
+                    -LiteralPath ([string]$Plan.Path) `
+                    -Values @($Values))
         }
     }
 }
@@ -916,6 +973,7 @@ function Invoke-HmaFinalLocalStateCore {
     $config = $null
     $secretValues = $null
     $servicePlan = $null
+    $launcherPlan = $null
     $validatedListenerPid = $null
     $listenerCount = 0
     $moduleHashesValid = $false
@@ -987,6 +1045,36 @@ function Invoke-HmaFinalLocalStateCore {
         $config = $integrityResult[0]
         $startupIntegrityValid = $true
 
+        $getTaskOperation = Get-HmaFinalOperation `
+            -Operations $Operations `
+            -Name 'GetTask'
+        foreach ($taskName in @('HowMuchAI-Service', 'HowMuchAI-Window')) {
+            $taskResult = @(& $getTaskOperation $taskName)
+            if ($taskResult.Count -ne 1 -or
+                $null -eq $taskResult[0] -or
+                -not (Invoke-HmaFinalBooleanOperation `
+                    -Operations $Operations `
+                    -Name 'TestRegisteredTaskPlan' `
+                    -Arguments @($taskResult[0], $config, $StateRoot))) {
+                throw 'Final local state verification failed.'
+            }
+        }
+        $buildLauncherOperation = Get-HmaFinalOperation `
+            -Operations $Operations `
+            -Name 'BuildLauncherPlan'
+        $launcherPlans = @(& $buildLauncherOperation $config $StateRoot)
+        if ($launcherPlans.Count -ne 1 -or
+            $null -eq $launcherPlans[0]) {
+            throw 'Final local state verification failed.'
+        }
+        $launcherPlan = $launcherPlans[0]
+        if (-not (Invoke-HmaFinalBooleanOperation `
+                -Operations $Operations `
+                -Name 'TestLauncherPlan' `
+                -Arguments @($launcherPlan))) {
+            throw 'Final local state verification failed.'
+        }
+
         if (-not (Invoke-HmaFinalBooleanOperation `
                 -Operations $Operations `
                 -Name 'ImportSecrets' `
@@ -1004,6 +1092,12 @@ function Invoke-HmaFinalLocalStateCore {
         }
         $bundle = $decrypted[0]
         $secretValues = @(Get-HmaFinalSecretValues -Bundle $bundle)
+        if (-not (Invoke-HmaFinalBooleanOperation `
+                -Operations $Operations `
+                -Name 'TestNoExactValuesInLauncher' `
+                -Arguments @($launcherPlan, @($secretValues)))) {
+            throw 'Final local state verification failed.'
+        }
 
         $planOperation = Get-HmaFinalOperation `
             -Operations $Operations `
@@ -1123,6 +1217,7 @@ function Invoke-HmaFinalLocalStateCore {
         $config = $null
         $secretValues = $null
         $servicePlan = $null
+        $launcherPlan = $null
         $validatedListenerPid = $null
     }
 }

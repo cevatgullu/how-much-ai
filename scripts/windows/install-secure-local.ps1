@@ -21,6 +21,11 @@ $ErrorActionPreference = 'Stop'
 
 $upstreamBase = '1238189b7017601d21e3579d041480ce3773e191'
 $registrationAttempted = $false
+$launcherCreatedByThisRun = $false
+$launcherCreatedIdentity = $null
+$launcherPlan = $null
+$launcherStagingRoot = $null
+$launcherProgramsRoot = $null
 $registeredTaskNames = @('HowMuchAI-Service', 'HowMuchAI-Window')
 $bundle = $null
 $manifestBytes = $null
@@ -32,6 +37,7 @@ $bootstrapHashFiles = [ordered]@{
     start = 'start-secure-local.ps1'
     open = 'open-secure-local.ps1'
     connector = 'connect-claude-secure.ps1'
+    launcher = 'launch-secure-local.ps1'
     integrity = 'SecureLocalIntegrity.psm1'
     runtime = 'SecureLocalRuntime.psm1'
     secrets = 'SecureLocalSecrets.psm1'
@@ -924,7 +930,217 @@ function Get-HmaTaskVerificationRecord {
     }
 }
 
+function Get-HmaLauncherFileIdentity {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LiteralPath)
+
+    try {
+        $verified = Get-HmaVerifiedExistingPath -LiteralPath $LiteralPath -File
+        return [HmaInstaller.FileIdentity]::Get($verified)
+    } catch {
+        throw 'The launcher identity is invalid.'
+    }
+}
+
+function New-HmaStartMenuShortcutCandidate {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Plan)
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut([string]$Plan.Path)
+        foreach ($name in @(
+                'TargetPath',
+                'Arguments',
+                'WorkingDirectory',
+                'Description',
+                'IconLocation',
+                'WindowStyle',
+                'Hotkey'
+            )) {
+            $shortcut.$name = $Plan.$name
+        }
+        $shortcut.Save()
+    } finally {
+        if ($null -ne $shortcut) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)
+        }
+        if ($null -ne $shell) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+        }
+        $shortcut = $null
+        $shell = $null
+    }
+}
+
+function Remove-HmaValidatedLauncherStagingRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [Parameter(Mandatory)][string]$ExpectedParent
+    )
+
+    $staging = Get-HmaVerifiedExistingPath -LiteralPath $LiteralPath -Directory
+    $parent = Get-HmaVerifiedExistingPath `
+        -LiteralPath ([IO.Path]::GetDirectoryName($staging)) `
+        -Directory
+    if (-not (Test-HmaOrdinalEqual `
+            -Left $parent `
+            -Right $ExpectedParent `
+            -IgnoreCase) -or
+        [IO.Path]::GetFileName($staging) -cnotmatch '^\.hma-launcher-[a-f0-9]{32}$') {
+        throw 'The launcher staging path is invalid.'
+    }
+    $queue = New-Object 'Collections.Generic.Queue[string]'
+    $queue.Enqueue($staging)
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        foreach ($item in @(Get-ChildItem `
+                -LiteralPath $current `
+                -Force `
+                -ErrorAction Stop)) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'The launcher staging path is invalid.'
+            }
+            if ($item.PSIsContainer) {
+                $queue.Enqueue($item.FullName)
+            }
+        }
+    }
+    [IO.Directory]::Delete($staging, $true)
+}
+
+function Install-HmaStartMenuLauncher {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Plan)
+
+    $destination = [string]$Plan.Path
+    if ([IO.File]::Exists($destination) -or
+        [IO.Directory]::Exists($destination)) {
+        if (-not [IO.File]::Exists($destination) -or
+            -not (Test-HmaStartMenuLauncherPlan -Plan $Plan)) {
+            throw 'The existing Start-menu launcher differs.'
+        }
+        return
+    }
+
+    $programs = Get-HmaVerifiedExistingPath `
+        -LiteralPath ([IO.Path]::GetDirectoryName($destination)) `
+        -Directory
+    $script:launcherProgramsRoot = $programs
+    $staging = Join-Path $programs (
+        '.hma-launcher-' + [Guid]::NewGuid().ToString('N')
+    )
+    if ([IO.File]::Exists($staging) -or [IO.Directory]::Exists($staging)) {
+        throw 'The launcher staging path is invalid.'
+    }
+    [void][IO.Directory]::CreateDirectory($staging)
+    $script:launcherStagingRoot = $staging
+    try {
+        Set-HmaPrivateAcl -LiteralPath $staging
+        $candidatePlan = [pscustomobject][ordered]@{
+            Path = Join-Path $staging 'How Much AI.lnk'
+            TargetPath = [string]$Plan.TargetPath
+            Arguments = [string]$Plan.Arguments
+            WorkingDirectory = [string]$Plan.WorkingDirectory
+            Description = [string]$Plan.Description
+            IconLocation = [string]$Plan.IconLocation
+            WindowStyle = [int]$Plan.WindowStyle
+            Hotkey = [string]$Plan.Hotkey
+        }
+        New-HmaStartMenuShortcutCandidate -Plan $candidatePlan
+        if (-not (Test-HmaStartMenuLauncherFields -Plan $candidatePlan)) {
+            throw 'The Start-menu launcher did not round-trip exactly.'
+        }
+        Set-HmaPrivateAcl -LiteralPath $candidatePlan.Path
+        if (-not (Test-HmaStartMenuLauncherPlan -Plan $candidatePlan)) {
+            throw 'The Start-menu launcher is invalid.'
+        }
+        if ([IO.File]::Exists($destination) -or
+            [IO.Directory]::Exists($destination)) {
+            throw 'The Start-menu launcher destination is occupied.'
+        }
+        [IO.File]::Move([string]$candidatePlan.Path, $destination)
+        $script:launcherCreatedIdentity = Get-HmaLauncherFileIdentity `
+            -LiteralPath $destination
+        $script:launcherCreatedByThisRun = $true
+        if (-not (Test-HmaStartMenuLauncherPlan -Plan $Plan)) {
+            throw 'The installed Start-menu launcher is invalid.'
+        }
+    } finally {
+        if ($null -ne $script:launcherStagingRoot -and
+            [IO.Directory]::Exists([string]$script:launcherStagingRoot)) {
+            Remove-HmaValidatedLauncherStagingRoot `
+                -LiteralPath ([string]$script:launcherStagingRoot) `
+                -ExpectedParent $programs
+        }
+        $script:launcherStagingRoot = $null
+    }
+}
+
 try {
+    if ($null -eq ('HmaInstaller.FileIdentity' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+
+namespace HmaInstaller
+{
+    public static class FileIdentity
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ByHandleFileInformation
+        {
+            public uint FileAttributes;
+            public uint CreationTimeLow;
+            public uint CreationTimeHigh;
+            public uint LastAccessTimeLow;
+            public uint LastAccessTimeHigh;
+            public uint LastWriteTimeLow;
+            public uint LastWriteTimeHigh;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(
+            IntPtr fileHandle,
+            out ByHandleFileInformation information);
+
+        public static string Get(string path)
+        {
+            using (FileStream stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete))
+            {
+                ByHandleFileInformation information;
+                if (!GetFileInformationByHandle(
+                    stream.SafeFileHandle.DangerousGetHandle(),
+                    out information))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                return String.Format(
+                    "{0:x8}:{1:x8}:{2:x8}",
+                    information.VolumeSerialNumber,
+                    information.FileIndexHigh,
+                    information.FileIndexLow);
+            }
+        }
+    }
+}
+'@ -ErrorAction Stop
+    }
     if ($PSVersionTable.PSEdition -cne 'Desktop' -or
         $PSVersionTable.PSVersion.Major -ne 5 -or
         $PSVersionTable.PSVersion.Minor -lt 1) {
@@ -1264,6 +1480,12 @@ try {
     if ($taskPlans.Count -ne 2) {
         throw 'The scheduled-task plans are invalid.'
     }
+    $launcherPlan = New-HmaStartMenuLauncherPlan `
+        -StateRoot $state `
+        -PowerShellPath $powerShellPath `
+        -IntegrityHash ([string]$config.bootstrapHashes.integrity) `
+        -LauncherHash ([string]$config.bootstrapHashes.launcher)
+    Install-HmaStartMenuLauncher -Plan $launcherPlan
 
     $listeners = @(
         Get-NetTCPConnection `
@@ -1371,6 +1593,33 @@ try {
         throw 'A retained executable changed.'
     }
 } catch {
+    if ($launcherCreatedByThisRun -and
+        $null -ne $launcherCreatedIdentity -and
+        $null -ne $launcherPlan -and
+        [IO.File]::Exists([string]$launcherPlan.Path)) {
+        try {
+            $currentIdentity = Get-HmaLauncherFileIdentity `
+                -LiteralPath ([string]$launcherPlan.Path)
+            if (Test-HmaOrdinalEqual `
+                    -Left ([string]$currentIdentity) `
+                    -Right ([string]$launcherCreatedIdentity)) {
+                [IO.File]::Delete([string]$launcherPlan.Path)
+            }
+        } catch {
+        }
+    }
+    if ($null -ne $launcherStagingRoot -and
+        [IO.Directory]::Exists([string]$launcherStagingRoot)) {
+        try {
+            if ($null -eq $launcherProgramsRoot) {
+                throw 'The launcher staging parent is invalid.'
+            }
+            Remove-HmaValidatedLauncherStagingRoot `
+                -LiteralPath ([string]$launcherStagingRoot) `
+                -ExpectedParent ([string]$launcherProgramsRoot)
+        } catch {
+        }
+    }
     if ($registrationAttempted) {
         foreach ($taskName in $registeredTaskNames) {
             try {

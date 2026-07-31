@@ -163,6 +163,7 @@ function Get-HmaExpectedIntegrityHash {
                 'start',
                 'open',
                 'connector',
+                'launcher',
                 'integrity',
                 'runtime',
                 'secrets',

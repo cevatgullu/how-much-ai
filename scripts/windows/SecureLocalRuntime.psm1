@@ -465,6 +465,218 @@ function Get-HmaRequiredSha256 {
     return ([string]$value).ToLowerInvariant()
 }
 
+function New-HmaStartMenuLauncherPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)][string]$PowerShellPath,
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-fA-F0-9]{64}$')]
+        [string]$IntegrityHash,
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-fA-F0-9]{64}$')]
+        [string]$LauncherHash
+    )
+
+    $state = Get-HmaSafeAbsolutePath -LiteralPath $StateRoot
+    $powershell = Get-HmaSafeAbsolutePath -LiteralPath $PowerShellPath
+    $fileSystem = $null
+    try {
+        $powerShellItem = Get-Item -LiteralPath $powershell -Force -ErrorAction Stop
+        if ($powerShellItem.PSIsContainer -or
+            ($powerShellItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Windows PowerShell 5.1 is required.'
+        }
+        $fileSystem = New-Object -ComObject Scripting.FileSystemObject
+        $powershell = [string]$fileSystem.GetFile($powershell).Path
+    } finally {
+        if ($null -ne $fileSystem) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($fileSystem)
+        }
+        $fileSystem = $null
+    }
+    if ($powershell -cnotmatch '(?i)\\WindowsPowerShell\\v1\.0\\powershell\.exe$') {
+        throw 'Windows PowerShell 5.1 is required.'
+    }
+    $programs = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::Programs
+    )
+    if ([string]::IsNullOrWhiteSpace($programs)) {
+        throw 'The Start-menu path is invalid.'
+    }
+    $programs = Get-HmaSafeAbsolutePath -LiteralPath $programs
+    $launcherPath = Join-Path $state 'bootstrap\launch-secure-local.ps1'
+    $normalizedIntegrityHash = $IntegrityHash.ToLowerInvariant()
+    $normalizedLauncherHash = $LauncherHash.ToLowerInvariant()
+    $command = "& { try { " +
+        "`$ErrorActionPreference = 'Stop'; " +
+        "`$launcherPath = '$launcherPath'; " +
+        "if ((Get-FileHash -Algorithm SHA256 -LiteralPath `$launcherPath -ErrorAction Stop).Hash.ToLowerInvariant() -cne '$normalizedLauncherHash') { throw 'Bootstrap verification failed.' }; " +
+        "& `$launcherPath -StateRoot '$state' -IntegrityModuleHash '$normalizedIntegrityHash' -LauncherHash '$normalizedLauncherHash' " +
+        "} catch { `$Error.Clear(); [Console]::Error.WriteLine('Secure local launcher failed.'); exit 1 } }"
+    $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+        $command.Replace('"', '\"') + '"'
+
+    return [pscustomobject][ordered]@{
+        Path = Join-Path $programs 'How Much AI.lnk'
+        TargetPath = $powershell
+        Arguments = $arguments
+        WorkingDirectory = Join-Path $state 'bootstrap'
+        Description = 'Open the secure local How Much AI dashboard.'
+        IconLocation = $powershell + ',0'
+        WindowStyle = 7
+        Hotkey = ''
+    }
+}
+
+function Test-HmaStartMenuLauncherPrivateAcl {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][IO.FileSystemInfo]$Item)
+
+    try {
+        if ($Item.PSIsContainer -or
+            ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return $false
+        }
+        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $systemSid = 'S-1-5-18'
+        if (Test-HmaOrdinalEqual -Left $currentSid -Right $systemSid) {
+            return $false
+        }
+        $acl = Get-Acl -LiteralPath $Item.FullName -ErrorAction Stop
+        if (-not (Test-HmaOrdinalEqual `
+                -Left $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value `
+                -Right $currentSid) -or
+            -not $acl.AreAccessRulesProtected) {
+            return $false
+        }
+        $rules = @($acl.GetAccessRules(
+                $true,
+                $true,
+                [Security.Principal.SecurityIdentifier]
+            ))
+        if ($rules.Count -ne 2) {
+            return $false
+        }
+        $currentCount = 0
+        $systemCount = 0
+        foreach ($rule in $rules) {
+            if ($rule.IsInherited -or
+                $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+                $rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None -or
+                $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+                return $false
+            }
+            if (Test-HmaOrdinalEqual -Left $rule.IdentityReference.Value -Right $currentSid) {
+                $currentCount += 1
+            } elseif (Test-HmaOrdinalEqual -Left $rule.IdentityReference.Value -Right $systemSid) {
+                $systemCount += 1
+            } else {
+                return $false
+            }
+        }
+        return ($currentCount -eq 1 -and $systemCount -eq 1)
+    } catch {
+        return $false
+    }
+}
+
+function Test-HmaStartMenuLauncherFields {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Plan)
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $propertyNames = @(
+            'Path',
+            'TargetPath',
+            'Arguments',
+            'WorkingDirectory',
+            'Description',
+            'IconLocation',
+            'WindowStyle',
+            'Hotkey'
+        )
+        $actualNames = @($Plan.PSObject.Properties | ForEach-Object { $_.Name })
+        if ([bool](Compare-Object `
+                -ReferenceObject @($propertyNames | Sort-Object) `
+                -DifferenceObject @($actualNames | Sort-Object) `
+                -CaseSensitive)) {
+            return $false
+        }
+        $path = Get-HmaSafeAbsolutePath -LiteralPath ([string]$Plan.Path)
+        $root = [IO.Path]::GetPathRoot($path)
+        $current = $root
+        $segments = $path.Substring($root.Length).Split(
+            [char[]]@(
+                [IO.Path]::DirectorySeparatorChar,
+                [IO.Path]::AltDirectorySeparatorChar
+            ),
+            [StringSplitOptions]::RemoveEmptyEntries
+        )
+        for ($index = 0; $index -lt $segments.Count; $index += 1) {
+            $current = [IO.Path]::Combine($current, $segments[$index])
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                ($index -lt ($segments.Count - 1) -and -not $item.PSIsContainer) -or
+                ($index -eq ($segments.Count - 1) -and $item.PSIsContainer)) {
+                return $false
+            }
+        }
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($path)
+        foreach ($name in @(
+                'TargetPath',
+                'Arguments',
+                'WorkingDirectory',
+                'Description',
+                'IconLocation',
+                'Hotkey'
+            )) {
+            if (-not (Test-HmaOrdinalEqual `
+                    -Left ([string]$shortcut.$name) `
+                    -Right ([string]$Plan.$name))) {
+                return $false
+            }
+        }
+        if ([int]$shortcut.WindowStyle -ne [int]$Plan.WindowStyle) {
+            return $false
+        }
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $shortcut) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)
+        }
+        if ($null -ne $shell) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+        }
+        $shortcut = $null
+        $shell = $null
+    }
+}
+
+function Test-HmaStartMenuLauncherPlan {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Plan)
+
+    try {
+        if (-not (Test-HmaStartMenuLauncherFields -Plan $Plan)) {
+            return $false
+        }
+        $leaf = Get-Item `
+            -LiteralPath ([string]$Plan.Path) `
+            -Force `
+            -ErrorAction Stop
+        return [bool](Test-HmaStartMenuLauncherPrivateAcl -Item $leaf)
+    } catch {
+        return $false
+    }
+}
+
 function New-HmaTaskActionArguments {
     [CmdletBinding()]
     param(
@@ -744,6 +956,9 @@ Export-ModuleMember -Function @(
     'New-HmaServiceLaunchPlan',
     'Test-HmaLiveServiceProcess',
     'New-HmaEdgeLaunchPlan',
+    'New-HmaStartMenuLauncherPlan',
+    'Test-HmaStartMenuLauncherFields',
+    'Test-HmaStartMenuLauncherPlan',
     'New-HmaTaskPlans',
     'Test-HmaRegisteredTaskPlan',
     'Stop-HmaDedicatedEdgeProfile'

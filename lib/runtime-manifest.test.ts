@@ -50,6 +50,7 @@ const bootstrapPaths = [
   "scripts/windows/SecureLocalRuntime.psm1",
   "scripts/windows/SecureLocalSecrets.psm1",
   "scripts/windows/connect-claude-secure.ps1",
+  "scripts/windows/launch-secure-local.ps1",
   "scripts/windows/oauth-handoff-extension/callback.js",
   "scripts/windows/oauth-handoff-extension/manifest.json",
   "scripts/windows/open-secure-local.ps1",

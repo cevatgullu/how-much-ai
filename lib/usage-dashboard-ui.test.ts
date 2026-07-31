@@ -64,6 +64,7 @@ const moduleHooks = registerHooks({
 
 const { UsageBar } = await import("../components/UsageBar.tsx");
 const { AccountCard } = await import("../components/AccountCard.tsx");
+const { accountProviderOrdinals } = await import("../components/Dashboard.tsx");
 
 after(() => moduleHooks.deregister());
 
@@ -138,28 +139,33 @@ test("remaining allowance is the visible and accessible progress value without a
   assert.doesNotMatch(markup, /style="width:0%;/);
 });
 
-test("remaining boundaries always have a textual state in addition to color", () => {
-  for (const [remaining, expected] of [
-    [50, "Az kaldı"],
-    [30, "Az kaldı"],
-    [15, "Kritik"],
-    [0, "Limit bitti"],
+test("remaining boundaries drive matching textual and rendered color states", () => {
+  for (const [remaining, expectedText, expectedColor] of [
+    [50, "Az kaldı", "var(--color-amber)"],
+    [30, "Az kaldı", "var(--color-amber)"],
+    [15, "Kritik", "var(--color-danger)"],
+    [0, "Limit bitti", "var(--color-danger)"],
   ] as const) {
     const markup = renderToStaticMarkup(createElement(UsageBar, {
       bar: usageBar(remaining, { resetsAt: null }),
       now: NOW,
       stale: false,
     }));
-    assert.match(markup, new RegExp(`>${expected}<`), `${remaining}% remaining must say ${expected}`);
+    assert.match(markup, new RegExp(`>${expectedText}<`), `${remaining}% remaining must say ${expectedText}`);
+    assert.match(
+      markup,
+      new RegExp(`style="width:${remaining}%;background-color:${expectedColor.replace(/[()]/g, "\\$&")}"`),
+      `${remaining}% remaining must render ${expectedColor}`,
+    );
   }
 });
 
 test("ready-stale, loading, and error cards keep old bars with one live freshness status", () => {
   const usage = { five_hour: { utilization: 85, resets_at: RESET_AT } };
   const cases: Array<[string, AccountSnapshot, string]> = [
-    ["ready-stale", { status: "ready", usage, stale: true, fetchedAt: NOW - 180_000 }, "Güncel değil — son veri 3m ago."],
-    ["loading", { status: "loading", usage, fetchedAt: NOW - 180_000 }, "Yenileniyor — son veriler gösteriliyor."],
-    ["error", { status: "error", usage, error: "private upstream detail", fetchedAt: NOW - 180_000 }, "Yenileme başarısız — son veriler gösteriliyor."],
+    ["ready-stale", { status: "ready", usage, stale: true, fetchedAt: NOW - 180_000 }, "Güncel değil — son veri 3 dk önce."],
+    ["loading-stale", { status: "loading", usage, stale: true, fetchedAt: NOW - 180_000 }, "Yenileniyor — son veriler gösteriliyor. Son veri 3 dk önce."],
+    ["error-stale", { status: "error", usage, stale: true, error: "private upstream detail", fetchedAt: NOW - 180_000 }, "Yenileme başarısız — son veriler gösteriliyor. Son veri 3 dk önce."],
   ];
 
   for (const [name, snapshot, freshnessText] of cases) {
@@ -167,11 +173,31 @@ test("ready-stale, loading, and error cards keep old bars with one live freshnes
     assert.match(markup, /data-stale="true"/, `${name} must mark only the stale boolean`);
     assert.match(markup, />5 saatlik limit</, `${name} must retain its old bar`);
     assert.match(markup, new RegExp(`>${freshnessText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}<`));
+    assert.doesNotMatch(markup, /\bago\b/);
     assert.equal((markup.match(/aria-live="polite"/g) ?? []).length, 1, `${name} must have one live region`);
     const freshnessId = markup.match(/id="([^"]+)"[^>]*role="status"[^>]*aria-live="polite"/)?.[1];
     assert.ok(freshnessId, `${name} must identify its freshness status`);
     assert.match(markup, new RegExp(`role="progressbar"[^>]*aria-describedby="${freshnessId}"`));
     assert.doesNotMatch(markup, /aria-live="polite"[^>]*role="progressbar"|role="progressbar"[^>]*aria-live="polite"/);
+  }
+});
+
+test("stale freshness ages stay compact and entirely Turkish", () => {
+  const usage = { five_hour: { utilization: 85, resets_at: RESET_AT } };
+  for (const [elapsed, expected] of [
+    [30_000, "az önce"],
+    [180_000, "3 dk önce"],
+    [7_200_000, "2 sa önce"],
+    [172_800_000, "2 gün önce"],
+  ] as const) {
+    const markup = renderAccountCard(account(`age-${elapsed}`), {
+      status: "ready",
+      usage,
+      stale: true,
+      fetchedAt: NOW - elapsed,
+    });
+    assert.match(markup, new RegExp(`Güncel değil — son veri ${expected}\\.`));
+    assert.doesNotMatch(markup, /\b(?:ago|just now)\b/);
   }
 });
 
@@ -195,25 +221,32 @@ test("four Claude cards have ordered provider ordinals and unique semantic headi
   ));
 
   assert.match(markup, /^<ol><li><article/);
-  const headings = [...markup.matchAll(/<h2 id="([^"]+)" class="sr-only">(Claude \d+)<\/h2>/g)];
-  assert.deepEqual(headings.map((match) => match[2]), ["Claude 1", "Claude 2", "Claude 3", "Claude 4"]);
+  const headings = [...markup.matchAll(/<h2 id="([^"]+)" class="([^"]*)">(Claude \d+)<\/h2>/g)];
+  assert.deepEqual(headings.map((match) => match[3]), ["Claude 1", "Claude 2", "Claude 3", "Claude 4"]);
   assert.equal(new Set(headings.map((match) => match[1])).size, 4);
+  assert.ok(headings.every((match) => !match[2].split(/\s+/).includes("sr-only")), "provider headings must be visible");
+  assert.match(markup, /<h2[^>]*>Claude 1<\/h2>[\s\S]*>Private claude-1</);
 });
 
-test("mixed providers use independent ordinals", () => {
-  const cases = [
-    [account("claude-1"), 1],
-    [account("openai-1", "openai"), 1],
-    [account("claude-2"), 2],
-    [account("openai-2", "openai"), 2],
-  ] as const;
-  const markup = cases.map(([accountValue, providerOrdinal], index) => renderAccountCard(
+test("mixed providers compute independent ordinals without changing account order", () => {
+  const accounts = [
+    account("claude-1"),
+    account("openai-1", "openai"),
+    account("claude-2"),
+    account("openai-2", "openai"),
+  ];
+  assert.equal(typeof accountProviderOrdinals, "function");
+  if (typeof accountProviderOrdinals !== "function") return;
+  const ordinals = accountProviderOrdinals(accounts);
+  assert.deepEqual(accounts.map((accountValue) => ordinals.get(accountValue.id)), [1, 1, 2, 2]);
+
+  const markup = accounts.map((accountValue) => renderAccountCard(
     accountValue,
     { status: "idle" },
-    providerOrdinal,
+    ordinals.get(accountValue.id),
   )).join("");
   assert.deepEqual(
-    [...markup.matchAll(/<h2 id="[^"]+" class="sr-only">((?:Claude|ChatGPT) \d+)<\/h2>/g)].map((match) => match[1]),
+    [...markup.matchAll(/<h2 id="[^"]+" class="[^"]*">((?:Claude|ChatGPT) \d+)<\/h2>/g)].map((match) => match[1]),
     ["Claude 1", "ChatGPT 1", "Claude 2", "ChatGPT 2"],
   );
 });
@@ -221,7 +254,8 @@ test("mixed providers use independent ordinals", () => {
 test("dashboard source wires provider ordinals into a direct ordered card list", () => {
   const source = readFileSync(path.join(projectRoot, "components", "Dashboard.tsx"), "utf8");
   assert.match(source, /const providerOrdinals = useMemo/);
-  assert.match(source, /<ol className="grid [^"]*">\s*\{accounts\.map/s);
+  assert.match(source, /useMemo\(\(\) => accountProviderOrdinals\(accounts\), \[accounts\]\)/);
+  assert.match(source, /<ol role="list" className="grid [^"]*">\s*\{accounts\.map/s);
   assert.match(source, /accounts\.map\(\(account, i\) => \(\s*<li key=\{account\.id\}>\s*<AccountCard[\s\S]*?providerOrdinal=\{providerOrdinals\.get\(account\.id\)!\}/);
 });
 

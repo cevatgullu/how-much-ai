@@ -46,6 +46,18 @@ function errText(value: unknown, fallback: string): string {
 
 const LOCAL_LABEL_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 
+export function accountProviderOrdinals(
+  accounts: readonly Pick<BrowserAccount, "id" | "provider">[],
+): ReadonlyMap<string, number> {
+  const counts = new Map<ProviderId, number>();
+  return new Map(accounts.map((account) => {
+    const provider = account.provider ?? "anthropic";
+    const ordinal = (counts.get(provider) ?? 0) + 1;
+    counts.set(provider, ordinal);
+    return [account.id, ordinal] as const;
+  }));
+}
+
 export function localAccountLabel(
   account: Pick<BrowserAccount, "label" | "provider">,
   providerOrdinal: number,
@@ -661,15 +673,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     return present.size === 1 ? providerMeta([...present][0]).label : "AI";
   }, [accounts]);
 
-  const providerOrdinals = useMemo(() => {
-    const counts = new Map<ProviderId, number>();
-    return new Map(accounts.map((account) => {
-      const provider = account.provider ?? "anthropic";
-      const ordinal = (counts.get(provider) ?? 0) + 1;
-      counts.set(provider, ordinal);
-      return [account.id, ordinal] as const;
-    }));
-  }, [accounts]);
+  const providerOrdinals = useMemo(() => accountProviderOrdinals(accounts), [accounts]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -958,7 +962,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                 </div>
               </div>
             )}
-            <ol className="grid list-none grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
+            <ol role="list" className="grid list-none grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
               {accounts.map((account, i) => (
                 <li key={account.id}>
                   <AccountCard

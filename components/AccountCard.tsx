@@ -2,13 +2,23 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { AccountSnapshot, BrowserAccount } from "@/lib/types";
-import { extractBars, formatClock, timeAgo } from "@/lib/format";
+import { extractBars, formatClock } from "@/lib/format";
 import { UsageBar } from "./UsageBar";
 import { RefreshIcon, XIcon } from "./Icons";
 import { providerMeta } from "./providers-ui";
 
 const ICON_BTN =
   "flex h-11 w-11 items-center justify-center rounded-lg text-faint transition-colors enabled:hover:bg-surface-hover enabled:hover:text-ivory disabled:opacity-40";
+
+function freshnessAge(timestamp: number, now: number): string {
+  const elapsed = Math.max(0, now - timestamp);
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "az önce";
+  if (minutes < 60) return `${minutes} dk önce`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} sa önce`;
+  return `${Math.floor(hours / 24)} gün önce`;
+}
 
 export function accountDisplayName(
   account: Pick<BrowserAccount, "label" | "fullName" | "email">,
@@ -69,12 +79,13 @@ export function AccountCard({
   // poll (a cooldown), not a live fetch. We keep the bars but flag their age.
   const stale = (snapshot?.stale ?? false) && status !== "reauth";
   const oldData = hasBars && status !== "reauth" && (stale || loading || status === "error");
-  const freshnessText = stale
-    ? `Güncel değil — son veri ${snapshot?.fetchedAt ? timeAgo(snapshot.fetchedAt, now) : "daha önce"}.`
-    : loading && hasBars
-      ? "Yenileniyor — son veriler gösteriliyor."
-      : status === "error" && hasBars
-        ? "Yenileme başarısız — son veriler gösteriliyor."
+  const lastDataText = snapshot?.fetchedAt ? ` Son veri ${freshnessAge(snapshot.fetchedAt, now)}.` : "";
+  const freshnessText = loading && hasBars
+    ? `Yenileniyor — son veriler gösteriliyor.${lastDataText}`
+    : status === "error" && hasBars
+      ? `Yenileme başarısız — son veriler gösteriliyor.${lastDataText}`
+      : stale
+        ? `Güncel değil — son veri ${snapshot?.fetchedAt ? freshnessAge(snapshot.fetchedAt, now) : "daha önce"}.`
         : null;
   const displayName = accountDisplayName(account);
   const credentialKind = account.credentialKind;
@@ -118,7 +129,6 @@ export function AccountCard({
         cancelRemove();
       }}
     >
-      <h2 id={headingId} className="sr-only">{providerMeta(account.provider).label} {providerOrdinal}</h2>
       <div className="flex min-w-0 flex-col gap-3 xs:flex-row xs:items-start xs:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div
@@ -133,6 +143,9 @@ export function AccountCard({
             {initial}
           </div>
           <div className="min-w-0">
+            <h2 id={headingId} className="truncate text-[11px] font-semibold uppercase tracking-wide text-faint">
+              {providerMeta(account.provider).label} {providerOrdinal}
+            </h2>
             {editing ? (
               <input
                 ref={inputRef}

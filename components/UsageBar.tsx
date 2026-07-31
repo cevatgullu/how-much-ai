@@ -1,7 +1,7 @@
 "use client";
 
 import { useId } from "react";
-import { formatResetSchedule, severityColor, type NormalizedUsageBar } from "@/lib/format";
+import { formatResetSchedule, type NormalizedUsageBar } from "@/lib/format";
 
 interface UsageBarProps {
   bar: NormalizedUsageBar;
@@ -24,6 +24,11 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
   const stateClass = atLimit || critical
     ? "bg-danger/15 text-[#ea7b74]"
     : "bg-amber/15 text-[#e3b56e]";
+  const fillColor = atLimit || critical
+    ? "var(--color-danger)"
+    : low
+      ? "var(--color-amber)"
+      : "var(--accent, var(--color-coral))";
   const scheduleText = reset
     ? [reset.countdown, `Sıfırlanma zamanı ${reset.exact}`].filter(Boolean).join(", ")
     : null;
@@ -71,7 +76,7 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
       >
         <div
           className="bar-fill h-full rounded-full"
-          style={{ width: `${remaining}%`, backgroundColor: severityColor(used, bar.severity) }}
+          style={{ width: `${remaining}%`, backgroundColor: fillColor }}
         />
       </div>
     </div>

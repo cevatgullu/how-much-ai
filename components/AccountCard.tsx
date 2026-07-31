@@ -23,7 +23,7 @@ interface AccountCardProps {
   index: number;
   onRefresh: () => void;
   onRemove: () => void;
-  onReconnect: () => void;
+  onReconnect?: () => void;
   onRename: (label: string | undefined) => void;
 }
 
@@ -249,13 +249,19 @@ export function AccountCard({
           <span className="max-w-sm">
             This account shares Claude Code&apos;s rotating login. A private app login renews independently.
           </span>
-          <button
-            type="button"
-            onClick={onReconnect}
-            className="min-h-11 rounded-lg border border-current/30 px-3 font-semibold text-ivory transition-colors hover:bg-white/5"
-          >
-            Replace with private login
-          </button>
+          {onReconnect ? (
+            <button
+              type="button"
+              onClick={onReconnect}
+              className="min-h-11 rounded-lg border border-current/30 px-3 font-semibold text-ivory transition-colors hover:bg-white/5"
+            >
+              Replace with private login
+            </button>
+          ) : (
+            <span className="font-medium text-ivory">
+              Use the secure launcher to replace it.
+            </span>
+          )}
         </div>
       )}
 
@@ -271,13 +277,19 @@ export function AccountCard({
                 ? "Estimated monitor-token renewal is due today."
                 : `Estimated monitor-token renewal in ${tokenDaysRemaining} day${tokenDaysRemaining === 1 ? "" : "s"}.`}
           </span>
-          <button
-            type="button"
-            onClick={onReconnect}
-            className="min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-semibold text-ivory transition-colors hover:bg-white/5"
-          >
-            Replace with private login
-          </button>
+          {onReconnect ? (
+            <button
+              type="button"
+              onClick={onReconnect}
+              className="min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-semibold text-ivory transition-colors hover:bg-white/5"
+            >
+              Replace with private login
+            </button>
+          ) : (
+            <span className="font-medium text-ivory">
+              Use the secure launcher to replace it.
+            </span>
+          )}
         </div>
       )}
 
@@ -291,13 +303,19 @@ export function AccountCard({
                   ? "This legacy inference-only setup token expired or was revoked. Replace it to restore checks."
                   : "This shared Claude Code session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard."}
             </p>
-            <button
-              type="button"
-              onClick={onReconnect}
-              className="accent-btn min-h-11 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
-            >
-              {managedLogin ? "Reconnect private login" : setupToken ? "Replace with private login" : "Reconnect reliably"}
-            </button>
+            {onReconnect ? (
+              <button
+                type="button"
+                onClick={onReconnect}
+                className="accent-btn min-h-11 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
+              >
+                {managedLogin ? "Reconnect private login" : setupToken ? "Replace with private login" : "Reconnect reliably"}
+              </button>
+            ) : (
+              <p className="text-xs font-medium text-ivory">
+                Use the secure launcher&apos;s Claude connector to replace it.
+              </p>
+            )}
           </div>
         ) : hasBars ? (
           <>

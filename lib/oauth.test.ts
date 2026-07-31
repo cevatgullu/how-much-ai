@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildAuthorizeUrl, CLAUDE_OAUTH, createPkce, parsePastedCode } from "./oauth.ts";
+import {
+  buildAuthorizeUrl,
+  CLAUDE_OAUTH,
+  createPkce,
+  parseOAuthCallbackRepresentation,
+  parseOAuthProviderCallback,
+} from "./oauth.ts";
 
 test("app-owned OAuth uses a fresh PKCE verifier and least-privilege monitoring scopes", async () => {
   const bundle = await createPkce(1_900_000_000_000);
@@ -20,18 +26,73 @@ test("app-owned OAuth uses a fresh PKCE verifier and least-privilege monitoring 
   assert.equal(url.searchParams.get("state"), bundle.state);
 });
 
-test("callback parsing accepts Claude's code#state text and a complete callback URL", () => {
-  assert.deepEqual(parsePastedCode(" auth-code-1#state-1 "), {
+test("strict callback parsing accepts only the two reviewed Claude representations", () => {
+  const state = "s".repeat(43);
+  assert.deepEqual(parseOAuthCallbackRepresentation(` auth-code-1#${state} `), {
     code: "auth-code-1",
-    state: "state-1",
+    state,
   });
   assert.deepEqual(
-    parsePastedCode("https://platform.claude.com/oauth/code/callback?code=auth-code-2&state=state-2"),
-    { code: "auth-code-2", state: "state-2" },
+    parseOAuthCallbackRepresentation(
+      `https://platform.claude.com/oauth/code/callback?code=auth-code-2&state=${state}`,
+    ),
+    { code: "auth-code-2", state },
   );
   assert.deepEqual(
-    parsePastedCode("https://platform.claude.com/oauth/code/callback?code=auth-code-3#state-3"),
-    { code: "auth-code-3", state: "state-3" },
+    parseOAuthProviderCallback(
+      `https://platform.claude.com/oauth/code/callback?code=auth-code-3#${state}`,
+      "ignored",
+    ),
+    { code: "auth-code-3", state },
   );
-  assert.deepEqual(parsePastedCode("bare-code"), { code: "bare-code" });
+  assert.deepEqual(
+    parseOAuthProviderCallback(
+      "https://platform.claude.com/oauth/code/callback",
+      ` auth-code-4#${state} `,
+    ),
+    { code: "auth-code-4", state },
+  );
+});
+
+test("strict callback parsing rejects lookalikes, ambiguity, and unbounded input", () => {
+  const state = "s".repeat(43);
+  for (const raw of [
+    "bare-code",
+    `code#short-state`,
+    `code#${state}#${state}`,
+    `https://attacker.example/oauth/code/callback?code=code&state=${state}`,
+    `https://platform.claude.com:444/oauth/code/callback?code=code&state=${state}`,
+    `https://platform.claude.com/oauth/code/callback-suffix?code=code&state=${state}`,
+    `https://platform.claude.com/oauth/code/callback?code=one&code=two&state=${state}`,
+    `https://platform.claude.com/oauth/code/callback?code=code&state=${state}&extra=1`,
+    `https://platform.claude.com/oauth/code/callback?code=code&state=${state}#${state}`,
+    `${"c".repeat(4097)}#${state}`,
+  ]) {
+    assert.equal(parseOAuthCallbackRepresentation(raw), null, raw);
+  }
+
+  assert.equal(
+    parseOAuthProviderCallback(
+      "https://platform.claude.com/oauth/code/callback?code=bad",
+      `valid-code#${state}`,
+    ),
+    null,
+  );
+  assert.equal(
+    parseOAuthProviderCallback(
+      "https://user@platform.claude.com/oauth/code/callback",
+      `valid-code#${state}`,
+    ),
+    null,
+  );
+  for (const href of [
+    "https://platform.claude.com/oauth/code/callback?",
+    "https://platform.claude.com/oauth/code/callback#",
+  ]) {
+    assert.equal(
+      parseOAuthProviderCallback(href, `valid-code#${state}`),
+      null,
+      href,
+    );
+  }
 });

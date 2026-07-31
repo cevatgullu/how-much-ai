@@ -9,6 +9,7 @@ import {
 import { saveResolvedAccount } from "@/lib/connect-account";
 import { browserMutationFailure, readJsonObject, requestBodyFailure } from "@/lib/request-body";
 import { reportServerError } from "@/lib/server-error-diagnostics";
+import { strictLocalModeEnabled } from "@/lib/strict-local-mode";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,6 +32,12 @@ function upstreamStatus(status: number): number {
 // The authorization code is exchanged once, its credential verifies both usage and profile, and
 // the encrypted vault save completes before a success response. Tokens are never reflected.
 export async function POST(req: Request) {
+  if (strictLocalModeEnabled()) {
+    return NextResponse.json(
+      { error: "Not found" },
+      { status: 404, headers: { "Cache-Control": "no-store" } },
+    );
+  }
   const guard = browserMutationFailure(req);
   if (guard) return NextResponse.json({ error: guard.error }, { status: guard.status });
 

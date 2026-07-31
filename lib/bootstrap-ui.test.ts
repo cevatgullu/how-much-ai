@@ -5,6 +5,7 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
 import { transformSync } from "next/dist/build/swc/index.js";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -78,6 +79,11 @@ const { beginBootstrapSession } = await import("./bootstrap-session.ts");
 const { PasswordLogin } = await import("../components/PasswordLogin.tsx");
 const { default: LoginPage } = await import("../app/login/page.tsx");
 const { default: BootstrapPage } = await import("../app/bootstrap/page.tsx");
+const { default: OAuthCallbackPage } = await import(
+  "../app/oauth/callback/page.tsx"
+);
+const { AddAccountModal } = await import("../components/AddAccountModal.tsx");
+const { default: HomePage } = await import("../app/page.tsx");
 
 after(() => {
   process.env = originalEnv;
@@ -159,4 +165,51 @@ test("the bootstrap page renders its consumer only in validated strict-local mod
   process.env = validStrictEnvironment();
   const page = BootstrapPage() as { type?: { name?: string } };
   assert.equal(page.type?.name, "BootstrapSession");
+});
+
+test("the OAuth callback page is strict-only and renders only generic completion state", () => {
+  process.env = { NODE_ENV: "production", APP_PASSWORD: "ordinary-password" };
+  assert.throws(
+    () => OAuthCallbackPage(),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { destination?: string }).destination === "/login",
+  );
+
+  process.env = validStrictEnvironment();
+  const page = OAuthCallbackPage() as { type?: { name?: string } };
+  assert.equal(page.type?.name, "OAuthCallbackSession");
+  const markup = renderToStaticMarkup(
+    page as Parameters<typeof renderToStaticMarkup>[0],
+  );
+  assert.match(markup, /completing your secure claude connection/i);
+  assert.doesNotMatch(markup, /textarea|input|authorization code|account id/i);
+});
+
+test("strict dashboard connection UI delegates Claude to the connector and never renders browser PKCE or paste controls", () => {
+  process.env = validStrictEnvironment();
+  const page = HomePage() as { props?: Record<string, unknown> };
+  assert.equal(page.props?.strictLocal, true);
+
+  const sharedProps = {
+    open: true,
+    onClose() {},
+    onServerConnected() {},
+  };
+  const strictMarkup = renderToStaticMarkup(
+    createElement(AddAccountModal, { ...sharedProps, strictLocal: true }),
+  );
+  assert.match(strictMarkup, /secure claude connector/i);
+  assert.doesNotMatch(
+    strictMarkup,
+    /authorization code|preparing secure sign-in|claude-credentials|private app login/i,
+  );
+  assert.doesNotMatch(strictMarkup, /<textarea/i);
+
+  const ordinaryMarkup = renderToStaticMarkup(
+    createElement(AddAccountModal, { ...sharedProps, strictLocal: false }),
+  );
+  assert.match(ordinaryMarkup, /authorize a private login/i);
+  assert.match(ordinaryMarkup, /paste the authorization code/i);
+  assert.match(ordinaryMarkup, /<textarea/i);
 });

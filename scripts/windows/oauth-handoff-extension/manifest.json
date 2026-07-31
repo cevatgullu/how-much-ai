@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "How Much AI secure OAuth handoff",
+  "version": "1.0.0",
+  "description": "Transfers one Claude OAuth callback to the local How Much AI service.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://platform.claude.com/oauth/code/callback*"
+      ],
+      "js": [
+        "callback.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -22,6 +22,10 @@ export interface PkceBundle {
 const PKCE_KEY = "usage.pkce.v2";
 const PKCE_MAX_AGE_MS = 30 * 60_000;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const CALLBACK_ORIGIN = "https://platform.claude.com";
+const CALLBACK_PATH = "/oauth/code/callback";
+const CALLBACK_CODE_MAX_LENGTH = 4 * 1024;
+const CALLBACK_STATE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 function base64url(bytes: Uint8Array): string {
   let binary = "";
@@ -97,40 +101,122 @@ export function clearPkce(): void {
 }
 
 export function buildAuthorizeUrl(bundle: PkceBundle): string {
+  return buildAuthorizeUrlFromChallenge(bundle.challenge, bundle.state);
+}
+
+export function buildAuthorizeUrlFromChallenge(
+  challenge: string,
+  state: string,
+): string {
   const params = new URLSearchParams({
     code: "true",
     client_id: CLAUDE_OAUTH.clientId,
     response_type: "code",
     redirect_uri: CLAUDE_OAUTH.redirectUri,
     scope: CLAUDE_OAUTH.scopes,
-    code_challenge: bundle.challenge,
+    code_challenge: challenge,
     code_challenge_method: "S256",
-    state: bundle.state,
+    state,
   });
   return `${CLAUDE_OAUTH.authorizeUrl}?${params.toString()}`;
 }
 
-// Claude's callback displays `code#state`. Also accept the full callback URL so copying the address
-// bar works. State is mandatory in the UI before the code is sent to the server.
-export function parsePastedCode(raw: string): { code: string; state?: string } {
+export interface OAuthCallbackValue {
+  code: string;
+  state: string;
+}
+
+function validCallbackCode(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= CALLBACK_CODE_MAX_LENGTH &&
+    !/[\u0000-\u0020\u007f]/.test(value) &&
+    !value.includes("#")
+  );
+}
+
+function parseCallbackBody(raw: string): OAuthCallbackValue | null {
   const trimmed = raw.trim();
-  if (!trimmed) return { code: "" };
+  const separator = trimmed.indexOf("#");
+  if (separator <= 0 || separator !== trimmed.lastIndexOf("#")) return null;
+  const code = trimmed.slice(0, separator);
+  const state = trimmed.slice(separator + 1);
+  return validCallbackCode(code) && CALLBACK_STATE_PATTERN.test(state)
+    ? { code, state }
+    : null;
+}
+
+function parseCallbackUrl(url: URL): OAuthCallbackValue | null {
+  if (
+    url.origin !== CALLBACK_ORIGIN ||
+    url.pathname !== CALLBACK_PATH ||
+    url.username !== "" ||
+    url.password !== ""
+  ) {
+    return null;
+  }
+  const keys = [...url.searchParams.keys()];
+  if (
+    keys.some((key) => key !== "code" && key !== "state") ||
+    url.searchParams.getAll("code").length !== 1 ||
+    url.searchParams.getAll("state").length > 1
+  ) {
+    return null;
+  }
+  const code = url.searchParams.get("code") ?? "";
+  const queryStates = url.searchParams.getAll("state");
+  if (!validCallbackCode(code)) return null;
+
+  let state: string;
+  if (queryStates.length === 1) {
+    if (url.hash !== "") return null;
+    state = queryStates[0];
+  } else {
+    if (!url.hash.startsWith("#")) return null;
+    state = url.hash.slice(1);
+  }
+  return CALLBACK_STATE_PATTERN.test(state) ? { code, state } : null;
+}
+
+// Accept only the exact provider callback URL or the provider page's complete `code#state` body.
+// URL-shaped lookalikes never fall through to the body grammar.
+export function parseOAuthCallbackRepresentation(raw: string): OAuthCallbackValue | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
   try {
     const url = new URL(trimmed);
-    const code = url.searchParams.get("code")?.trim();
-    if (code) {
-      return {
-        code,
-        state: url.searchParams.get("state")?.trim() || url.hash.slice(1).trim() || undefined,
-      };
-    }
+    return parseCallbackUrl(url);
   } catch {
-    // Raw callback text falls through.
+    return parseCallbackBody(trimmed);
   }
-  const separator = trimmed.lastIndexOf("#");
-  if (separator < 0) return { code: trimmed };
-  return {
-    code: trimmed.slice(0, separator).trim(),
-    state: trimmed.slice(separator + 1).trim() || undefined,
-  };
+}
+
+// The extension passes both the exact current URL and the whole visible body. A malformed URL
+// representation is terminal; body fallback is allowed only when the callback URL has no payload.
+export function parseOAuthProviderCallback(
+  href: string,
+  visibleBody: string,
+): OAuthCallbackValue | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (
+    url.origin !== CALLBACK_ORIGIN ||
+    url.pathname !== CALLBACK_PATH ||
+    url.username !== "" ||
+    url.password !== ""
+  ) {
+    return null;
+  }
+  if (url.search !== "" || url.hash !== "") return parseCallbackUrl(url);
+  if (href !== `${CALLBACK_ORIGIN}${CALLBACK_PATH}`) return null;
+  return parseCallbackBody(visibleBody);
+}
+
+// Legacy non-strict UI compatibility. Strict-local mode never renders or executes this path.
+export function parsePastedCode(raw: string): { code: string; state?: string } {
+  return parseOAuthCallbackRepresentation(raw) ?? { code: "" };
 }

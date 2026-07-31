@@ -119,6 +119,8 @@ const defaultBootstrapContents: Record<string, string> = {
   "SecureLocalIntegrity.psm1": "# synthetic reviewed integrity",
   "SecureLocalRuntime.psm1": "# synthetic reviewed runtime",
   "SecureLocalSecrets.psm1": "# synthetic reviewed secrets",
+  "oauth-handoff-extension/manifest.json": '{"manifest_version":3}',
+  "oauth-handoff-extension/callback.js": '"use strict";',
 };
 
 const bootstrapHashNames: Record<string, string> = {
@@ -128,6 +130,8 @@ const bootstrapHashNames: Record<string, string> = {
   "SecureLocalIntegrity.psm1": "integrity",
   "SecureLocalRuntime.psm1": "runtime",
   "SecureLocalSecrets.psm1": "secrets",
+  "oauth-handoff-extension/manifest.json": "extensionManifest",
+  "oauth-handoff-extension/callback.js": "extensionCallback",
 };
 
 async function writeTree(root: string, files: Record<string, string>): Promise<FileRecord[]> {
@@ -256,9 +260,13 @@ test(
         "$ErrorActionPreference = 'Stop'",
         `Import-Module ${psLiteral(integrityModulePath)} -Force`,
         `$config = Assert-HmaStartupIntegrity -StateRoot ${psLiteral(fixture.state)}`,
-        "[pscustomobject]@{ valid = ($config.version -eq 1 -and $config.port -eq 37645); propertyCount = @($config.PSObject.Properties).Count } | ConvertTo-Json -Compress",
+        "[pscustomobject]@{ valid = ($config.version -eq 1 -and $config.port -eq 37645); propertyCount = @($config.PSObject.Properties).Count; bootstrapHashCount = @($config.bootstrapHashes.PSObject.Properties).Count } | ConvertTo-Json -Compress",
       ]);
-      assert.deepEqual(parseSafeRecord(stdout), { valid: true, propertyCount: 9 });
+      assert.deepEqual(parseSafeRecord(stdout), {
+        valid: true,
+        propertyCount: 9,
+        bootstrapHashCount: 8,
+      });
       assert.equal(stderr.length, 0);
       assert.equal(stdout.includes(fixture.state), false);
       assert.equal(stdout.includes(fixture.install.manifestSha256), false);
@@ -303,6 +311,37 @@ test(
       },
       async (fixture) => {
         await writeFile(path.join(fixture.state, "oauth-temp", "leftover"), "not empty", "utf8");
+      },
+      async (fixture) => {
+        await rm(path.join(fixture.bootstrap, "oauth-handoff-extension", "manifest.json"));
+      },
+      async (fixture) => {
+        await writeFile(
+          path.join(fixture.bootstrap, "oauth-handoff-extension", "callback.js"),
+          '"changed";',
+          "utf8",
+        );
+      },
+      async (fixture) => {
+        await writeFile(
+          path.join(fixture.bootstrap, "oauth-handoff-extension", "unreviewed.js"),
+          '"extra";',
+          "utf8",
+        );
+      },
+      async (fixture) => {
+        const { extensionCallback: _removed, ...bootstrapHashes } =
+          fixture.install.bootstrapHashes;
+        await rewriteInstall(fixture, { ...fixture.install, bootstrapHashes });
+      },
+      async (fixture) => {
+        await rewriteInstall(fixture, {
+          ...fixture.install,
+          bootstrapHashes: {
+            ...fixture.install.bootstrapHashes,
+            unexpectedExtension: "0".repeat(64),
+          },
+        });
       },
     ];
 

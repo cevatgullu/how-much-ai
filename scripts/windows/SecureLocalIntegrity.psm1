@@ -18,7 +18,9 @@ $script:HmaBootstrapHashProperties = @(
     'connector',
     'integrity',
     'runtime',
-    'secrets'
+    'secrets',
+    'extensionManifest',
+    'extensionCallback'
 )
 $script:HmaManifestProperties = @(
     'commit',
@@ -34,6 +36,8 @@ $script:HmaBootstrapHashFiles = [ordered]@{
     integrity = 'SecureLocalIntegrity.psm1'
     runtime = 'SecureLocalRuntime.psm1'
     secrets = 'SecureLocalSecrets.psm1'
+    extensionManifest = 'oauth-handoff-extension/manifest.json'
+    extensionCallback = 'oauth-handoff-extension/callback.js'
 }
 
 function Assert-HmaExactProperties {
@@ -589,6 +593,13 @@ function Assert-HmaStartupIntegrity {
         $bootstrapEntries = @(
             Get-HmaValidatedManifestEntries -Entries $manifest.bootstrapFiles -Kind bootstrap
         )
+        if (-not (Test-HmaExactStringSet `
+                -Expected @($script:HmaBootstrapHashFiles.Values) `
+                -Actual @($bootstrapEntries | ForEach-Object {
+                        [string]$_.InstalledPath
+                    }))) {
+            throw 'The bootstrap manifest file set is invalid.'
+        }
 
         $runtimeParentTree = @(Get-HmaTree -Root $runtimeRoot)
         if ($runtimeParentTree.Count -lt 1 -or
@@ -647,6 +658,12 @@ function Assert-HmaStartupIntegrity {
                 integrity = ([string]$install.bootstrapHashes.integrity).ToLowerInvariant()
                 runtime = ([string]$install.bootstrapHashes.runtime).ToLowerInvariant()
                 secrets = ([string]$install.bootstrapHashes.secrets).ToLowerInvariant()
+                extensionManifest = (
+                    [string]$install.bootstrapHashes.extensionManifest
+                ).ToLowerInvariant()
+                extensionCallback = (
+                    [string]$install.bootstrapHashes.extensionCallback
+                ).ToLowerInvariant()
             }
         }
     } catch {

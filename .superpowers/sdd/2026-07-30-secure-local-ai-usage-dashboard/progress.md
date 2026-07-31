@@ -21,3 +21,7 @@ Task 4: complete at `803870b`; production now uses the deterministic five-accoun
 Task 4 review: initial unbounded-cache finding repaired; focused fix checks passed 86/86, full suite passed 336/336, typecheck/build passed, and independent re-review returned CLEAN.
 Task 5: complete at `2d1a2e2` after cherry-picking reviewed commit `1cd6723046f7ea2dd639a183bee2010a82220244`; added CurrentUser DPAPI protection, pairwise secret validation, current-user/SYSTEM-only recursive ACL enforcement, static no-follow component validation, and exact-value at-rest scanning.
 Task 5 review: initial ancestor-junction finding repaired; focused Windows checks passed 6/6, full suite passed 329/329, typecheck/build passed, and independent re-review returned CLEAN.
+
+Task 8: in progress (base c42616140291af86ebe4deec404f8b1ae1510843)
+Baseline: npm test 374/375; inherited PowerShell argv fixture failed once, then isolated suite passed 9/9.
+Task 8 implementation gate: exact OAuth focus passed 20/20, full suite passed 397/397, typecheck passed, and the production build verified 31 vault-safe traces.

@@ -17,6 +17,16 @@ $registeredTaskNames = @('HowMuchAI-Service', 'HowMuchAI-Window')
 $bundle = $null
 $manifestBytes = $null
 $installBytes = $null
+$bootstrapHashFiles = [ordered]@{
+    start = 'start-secure-local.ps1'
+    open = 'open-secure-local.ps1'
+    connector = 'connect-claude-secure.ps1'
+    integrity = 'SecureLocalIntegrity.psm1'
+    runtime = 'SecureLocalRuntime.psm1'
+    secrets = 'SecureLocalSecrets.psm1'
+    extensionManifest = 'oauth-handoff-extension/manifest.json'
+    extensionCallback = 'oauth-handoff-extension/callback.js'
+}
 
 function Test-HmaOrdinalEqual {
     [CmdletBinding()]
@@ -679,6 +689,13 @@ try {
     $bootstrapEntries = @(
         Get-HmaValidatedManifestEntries -Entries $manifest.bootstrapFiles -Kind bootstrap
     )
+    if (-not (Test-HmaExactStringSet `
+            -Expected @($bootstrapHashFiles.Values) `
+            -Actual @($bootstrapEntries | ForEach-Object {
+                    [string]$_.InstalledPath
+                }))) {
+        throw 'The bootstrap manifest file set is invalid.'
+    }
     Assert-HmaSourceEntries `
         -Source $source `
         -RuntimeEntries $runtimeEntries `
@@ -687,13 +704,11 @@ try {
     $runtimeParent = Join-Path $state 'runtime'
     $appRoot = Join-Path $runtimeParent $head
     $bootstrapRoot = Join-Path $state 'bootstrap'
-    $bootstrapHashes = [ordered]@{
-        start = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'start-secure-local.ps1'
-        open = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'open-secure-local.ps1'
-        connector = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'connect-claude-secure.ps1'
-        integrity = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalIntegrity.psm1'
-        runtime = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalRuntime.psm1'
-        secrets = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalSecrets.psm1'
+    $bootstrapHashes = [ordered]@{}
+    foreach ($hashName in $bootstrapHashFiles.Keys) {
+        $bootstrapHashes[$hashName] = Get-HmaBootstrapHash `
+            -Entries $bootstrapEntries `
+            -FileName ([string]$bootstrapHashFiles[$hashName])
     }
     $install = [ordered]@{
         version = 1
@@ -751,14 +766,7 @@ try {
                 -IgnoreCase)) {
             throw 'The existing install configuration differs.'
         }
-        foreach ($hashName in @(
-                'start',
-                'open',
-                'connector',
-                'integrity',
-                'runtime',
-                'secrets'
-            )) {
+        foreach ($hashName in $bootstrapHashFiles.Keys) {
             if (-not (Test-HmaOrdinalEqual `
                     -Left ([string]$existingConfig.bootstrapHashes.$hashName) `
                     -Right ([string]$bootstrapHashes[$hashName]) `

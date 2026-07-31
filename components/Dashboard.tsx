@@ -39,9 +39,10 @@ function errText(value: unknown, fallback: string): string {
 
 interface DashboardProps {
   showSignOut: boolean;
+  strictLocal: boolean;
 }
 
-export function Dashboard({ showSignOut }: DashboardProps) {
+export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const [accounts, setAccounts] = useState<BrowserAccount[]>([]);
   const [snapshots, setSnapshots] = useState<Record<string, AccountSnapshot>>({});
   const [vaultUi, dispatchVaultUi] = useReducer(dashboardVaultReducer, initialDashboardVaultState);
@@ -440,9 +441,15 @@ export function Dashboard({ showSignOut }: DashboardProps) {
   }, []);
 
   const reconnect = useCallback((account: BrowserAccount) => {
+    if (strictLocal) {
+      setActionError(
+        "Use the secure launcher's Claude connector to replace this account.",
+      );
+      return;
+    }
     setReconnectAccount(account);
     setModalOpen(true);
-  }, []);
+  }, [strictLocal]);
 
   const closeNotifications = useCallback(() => setNotifyOpen(false), []);
 
@@ -790,7 +797,9 @@ export function Dashboard({ showSignOut }: DashboardProps) {
                   index={i}
                   onRefresh={() => void refreshAccount(account.id)}
                   onRemove={() => removeAccount(account.id)}
-                  onReconnect={() => reconnect(account)}
+                  onReconnect={
+                    strictLocal ? undefined : () => reconnect(account)
+                  }
                   onRename={(label) => renameAccount(account.id, label)}
                 />
               ))}
@@ -816,6 +825,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
 
       <AddAccountModal
         open={modalOpen}
+        strictLocal={strictLocal}
         onClose={closeModal}
         reconnectAccount={reconnectAccount}
         onServerConnected={reloadVault}

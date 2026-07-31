@@ -12,6 +12,7 @@ import { PROVIDER_META, PROVIDER_ORDER, parseCodexCredential } from "./providers
 
 interface AddAccountModalProps {
   open: boolean;
+  strictLocal: boolean;
   onClose: () => void;
   reconnectAccount?: BrowserAccount | null;
   // Local / pairing flow: the server added the account to the vault directly, so the dashboard should
@@ -78,7 +79,13 @@ async function withDeadline<T>(promise: Promise<T>, action: string): Promise<T> 
   }
 }
 
-export function AddAccountModal({ open, onClose, reconnectAccount, onServerConnected }: AddAccountModalProps) {
+export function AddAccountModal({
+  open,
+  strictLocal,
+  onClose,
+  reconnectAccount,
+  onServerConnected,
+}: AddAccountModalProps) {
   const [mode, setMode] = useState<Mode>("paste");
   const [showPaste, setShowPaste] = useState(true);
   // Which provider is being connected. Reconnect is locked to the account's own provider.
@@ -346,36 +353,37 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     setCompletionError(null);
 
     let cancelled = false;
-    void loadOrCreatePkce().then(
-      (bundle) => {
-        if (!cancelled) setOauthBundle(bundle);
-      },
-      () => {
-        if (!cancelled) setError("Couldn't prepare a secure Claude sign-in. Close this dialog and try again.");
-      },
-    );
-    (async () => {
-      // Self-hosted local quick-connect is available only on the machine running the app. Otherwise
-      // offer device pairing as the legacy alternative; availability is checked only if selected.
-      try {
-        const res = await fetch("/api/connect/local", { cache: "no-store" });
-        if (cancelled) return;
-        if (res.ok) {
-          setMode("local");
-          return;
+    if (!strictLocal) {
+      void loadOrCreatePkce().then(
+        (bundle) => {
+          if (!cancelled) setOauthBundle(bundle);
+        },
+        () => {
+          if (!cancelled) setError("Couldn't prepare a secure Claude sign-in. Close this dialog and try again.");
+        },
+      );
+      void (async () => {
+        // Self-hosted local quick-connect is available only on the machine running the app.
+        try {
+          const res = await fetch("/api/connect/local", { cache: "no-store" });
+          if (cancelled) return;
+          if (res.ok) {
+            setMode("local");
+            return;
+          }
+        } catch {
+          /* fall through */
         }
-      } catch {
-        /* fall through */
-      }
-      setMode("pair");
-    })();
+        setMode("pair");
+      })();
+    }
 
     return () => {
       cancelled = true;
     };
     // Runs only on open transitions; the convenience probe must not hide the durable setup flow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, strictLocal]);
 
   // Stop polling + mark closed whenever the modal is not open / unmounts.
   useEffect(() => {
@@ -476,7 +484,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
   }, [localWorking, finishServerConnect, reconnectAccount?.id]);
 
   const connectPaste = useCallback(async () => {
-    if (!pasted.trim() || working || operationRef.current) return;
+    if (strictLocal || !pasted.trim() || working || operationRef.current) return;
     const oauthFlow = credentialMethod === "private-login";
     const operation = oauthFlow ? "oauth" : "manual";
     const controller = new AbortController();
@@ -569,7 +577,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       if (operationRef.current === operation) operationRef.current = null;
       if (!closedRef.current) setWorking(false);
     }
-  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, working]);
+  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, strictLocal, working]);
 
   // OpenAI: one-click read of this machine's ~/.codex/auth.json.
   const connectOpenAILocal = useCallback(async () => {
@@ -691,7 +699,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
   if (!open) return null;
   const requestBusy = working || localWorking || pairStarting || pairState === "processing";
   const command = DUMP_COMMANDS[os];
-  const oauthUrl = oauthBundle ? buildAuthorizeUrl(oauthBundle) : null;
+  const oauthUrl = !strictLocal && oauthBundle ? buildAuthorizeUrl(oauthBundle) : null;
 
   const successCard = connected && (
     <div className="space-y-3">
@@ -1087,6 +1095,30 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     </div>
   );
 
+  const strictConnectorBlock = (
+    <div className="mt-5 rounded-xl border border-coral/35 bg-coral/10 p-5">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
+          <DesktopIcon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-ivory">
+            Use the secure Claude connector
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            Close this dialog and choose the Claude connection action in the
+            secure launcher. It opens a private, temporary Edge profile and
+            completes the one-use handoff directly with this local service.
+          </p>
+          <p className="mt-2 text-[11px] leading-relaxed text-faint">
+            Connection material is not entered into or copied through the
+            dashboard.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <ModalShell
       open={open}
@@ -1101,6 +1133,8 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       {providerPicker}
       {provider === "openai" ? (
         openaiBlock
+      ) : strictLocal ? (
+        strictConnectorBlock
       ) : (
       <div className="mt-5">
           {(mode === "paste" || showPaste) && !connected && pasteBlock}

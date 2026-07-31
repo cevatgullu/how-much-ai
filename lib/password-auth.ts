@@ -9,6 +9,7 @@ import { appPassword, safeEqual } from "./session";
 
 interface PasswordAuthenticationSuccess {
   ok: true;
+  body: Record<string, unknown>;
 }
 
 interface PasswordAuthenticationFailure {
@@ -68,5 +69,5 @@ export async function authenticatePasswordRequest(
   }
 
   limiter.reset(clientKey);
-  return { ok: true };
+  return { ok: true, body };
 }

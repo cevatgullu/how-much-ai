@@ -446,19 +446,23 @@ test(
       "$script:edgeBases = @(@($stableProgramFiles, $stableProgramFilesX86, $poisonProgramFiles, $poisonProgramFilesX86) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)",
       "[Environment]::SetEnvironmentVariable('ProgramFiles', $poisonProgramFiles, 'Process')",
       "[Environment]::SetEnvironmentVariable('ProgramFiles(x86)', $poisonProgramFilesX86, 'Process')",
-      "$script:readinessCalls = 0; $script:passwordPosts = 0; $script:edgeStarts = 0; $script:poisonCandidateUses = 0",
+      "$script:readinessCalls = 0; $script:passwordPosts = 0; $script:edgeStarts = 0; $script:poisonCandidateUses = 0; $script:listenerTerminations = 0; $script:listenerAddressPrefilters = 0; $script:listenerPortPrefilters = 0",
       "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)][string]$LiteralPath,[string]$PathType) if ($LiteralPath -match 'Microsoft\\\\Edge\\\\Application\\\\msedge\\.exe$') { if ($LiteralPath.StartsWith($poisonProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or $LiteralPath.StartsWith($poisonProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)) { $script:poisonCandidateUses += 1 }; return $true }; Microsoft.PowerShell.Management\\Test-Path @PSBoundParameters }",
       "function Get-Item { [CmdletBinding()] param([Parameter(Position=0)][string]$LiteralPath,[switch]$Force) foreach ($base in $script:edgeBases) { $candidate = Join-Path $base 'Microsoft\\Edge\\Application\\msedge.exe'; if ([string]::Equals($candidate, $LiteralPath, [StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($LiteralPath.TrimEnd('\\') + '\\', [StringComparison]::OrdinalIgnoreCase)) { if ($LiteralPath.StartsWith($poisonProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or $LiteralPath.StartsWith($poisonProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)) { $script:poisonCandidateUses += 1 }; $isLeaf = [string]::Equals($candidate, $LiteralPath, [StringComparison]::OrdinalIgnoreCase); $attributes = if (-not $isLeaf -and $env:HMA_EDGE_ANCESTOR_REPARSE -ceq '1' -and $LiteralPath.TrimEnd('\\').EndsWith('\\Microsoft', [StringComparison]::OrdinalIgnoreCase) -and ($LiteralPath.StartsWith($stableProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or (-not [string]::IsNullOrWhiteSpace($stableProgramFilesX86) -and $LiteralPath.StartsWith($stableProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)))) { [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint } elseif ($isLeaf) { [IO.FileAttributes]::Normal } else { [IO.FileAttributes]::Directory }; return [pscustomobject]@{ FullName = $LiteralPath; PSIsContainer = (-not $isLeaf); Attributes = $attributes } } }; Microsoft.PowerShell.Management\\Get-Item @PSBoundParameters }",
       "function Get-AuthenticodeSignature { [CmdletBinding()] param([string]$LiteralPath) if ($LiteralPath.StartsWith($poisonProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or $LiteralPath.StartsWith($poisonProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)) { $script:poisonCandidateUses += 1 }; [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = 'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US' } } }",
-      "function Get-NetTCPConnection { [CmdletBinding()] param([string]$LocalAddress,[int]$LocalPort,[string]$State) [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 42 } }",
+      "$exactListener = [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 42 }",
+      "$unknownListener = [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 37645; State = 'Listen'; OwningProcess = 84 }",
+      "$irrelevantListener = [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 3000; State = 'Listen'; OwningProcess = 21 }",
+      "function Get-NetTCPConnection { [CmdletBinding()] param([string]$LocalAddress,[int]$LocalPort,[string]$State) $rows = if ($env:HMA_OPEN_LISTENERS -ceq 'extra') { @($exactListener, $unknownListener, $irrelevantListener) } elseif ($env:HMA_OPEN_LISTENERS -ceq 'wildcard') { @($unknownListener, $irrelevantListener) } else { @($exactListener, $irrelevantListener) }; if ($PSBoundParameters.ContainsKey('LocalAddress')) { $script:listenerAddressPrefilters += 1; $rows = @($rows | Where-Object { [string]$_.LocalAddress -ceq $LocalAddress }) }; if ($PSBoundParameters.ContainsKey('LocalPort')) { $script:listenerPortPrefilters += 1; $rows = @($rows | Where-Object { [int]$_.LocalPort -eq $LocalPort }) }; @($rows) }",
       "$exactCommand = '\"' + $nodePath + '\" \"' + (Join-Path $appRoot 'node_modules\\next\\dist\\bin\\next') + '\" start --hostname 127.0.0.1 --port 37645'",
       "function Get-CimInstance { [CmdletBinding()] param([string]$ClassName,[string]$Filter) $command = if ($env:HMA_OPEN_MATCH -ceq '1') { $exactCommand } else { $exactCommand + ' --inspect' }; [pscustomobject]@{ ProcessId = 42; ExecutablePath = $nodePath; CommandLine = $command } }",
       "function Invoke-WebRequest { [CmdletBinding()] param([string]$Uri,[string]$Method = 'Get',[string]$ContentType,[string]$Body,[switch]$UseBasicParsing,[int]$MaximumRedirection,[int]$TimeoutSec) if ($Method -ceq 'Post') { $script:passwordPosts += 1; return [pscustomobject]@{ StatusCode = 200; Content = ('{\"ticket\":\"' + $env:HMA_OPEN_TICKET + '\",\"expiresInMs\":20000}'); Headers = @{} } }; $script:readinessCalls += 1; [pscustomobject]@{ StatusCode = 200; Content = ''; Headers = @{} } }",
       "function Start-Sleep { param([int]$Milliseconds) throw 'Readiness unexpectedly waited.' }",
       "function Start-Process { [CmdletBinding()] param([string]$FilePath,[object[]]$ArgumentList,[string]$WindowStyle) $script:edgeStarts += 1 }",
-      "$failed = $false",
-      "try { . (Join-Path $bootstrap 'open-secure-local.ps1') -StateRoot $state -IntegrityModuleHash $install.bootstrapHashes.integrity } catch { $failed = $true }",
-      "[pscustomobject]@{ failed = $failed; readinessCalls = $script:readinessCalls; passwordPosts = $script:passwordPosts; edgeStarts = $script:edgeStarts; poisonCandidateUsed = ($script:poisonCandidateUses -gt 0) } | ConvertTo-Json -Compress",
+      "function Stop-Process { [CmdletBinding()] param([int]$Id,[switch]$Force) $script:listenerTerminations += 1 }",
+      "$failed = $false; $failureMessage = ''",
+      "try { . (Join-Path $bootstrap 'open-secure-local.ps1') -StateRoot $state -IntegrityModuleHash $install.bootstrapHashes.integrity } catch { $failed = $true; $failureMessage = [string]$_.Exception.Message }",
+      "[pscustomobject]@{ failed = $failed; sanitizedError = ((-not $failed -and $failureMessage -ceq '') -or ($failed -and $failureMessage -ceq 'Secure local window launch failed.')); unfilteredQuery = ($script:listenerAddressPrefilters -eq 0 -and $script:listenerPortPrefilters -eq 0); readinessCalls = $script:readinessCalls; passwordPosts = $script:passwordPosts; edgeStarts = $script:edgeStarts; listenerTerminations = $script:listenerTerminations; poisonCandidateUsed = ($script:poisonCandidateUses -gt 0) } | ConvertTo-Json -Compress",
     ];
 
     try {
@@ -469,14 +473,39 @@ test(
       });
       assert.deepEqual(parseSafeRecord(matching.stdout), {
         failed: false,
+        sanitizedError: true,
+        unfilteredQuery: true,
         readinessCalls: 1,
         passwordPosts: 1,
         edgeStarts: 1,
+        listenerTerminations: 0,
         poisonCandidateUsed: false,
       });
       assert.equal(matching.stderr.length, 0);
       assert.equal(matching.stdout.includes(ticket), false);
       assert.equal(matching.stdout.includes("a".repeat(64)), false);
+
+      const extraListenerRoot = `${root}-extra-listener`;
+      const extraListener = await runPowerShell(fixtureSetup, {
+        HMA_OPEN_ROOT: extraListenerRoot,
+        HMA_OPEN_MATCH: "1",
+        HMA_OPEN_LISTENERS: "extra",
+        HMA_OPEN_TICKET: ticket,
+      });
+      assert.deepEqual(parseSafeRecord(extraListener.stdout), {
+        failed: true,
+        sanitizedError: true,
+        unfilteredQuery: true,
+        readinessCalls: 0,
+        passwordPosts: 0,
+        edgeStarts: 0,
+        listenerTerminations: 0,
+        poisonCandidateUsed: false,
+      });
+      assert.equal(extraListener.stderr.length, 0);
+      assert.equal(extraListener.stdout.includes(ticket), false);
+      assert.equal(extraListener.stdout.includes("a".repeat(64)), false);
+      await rm(extraListenerRoot, { recursive: true, force: true });
 
       const mismatchedRoot = `${root}-mismatch`;
       const mismatched = await runPowerShell(fixtureSetup, {
@@ -486,9 +515,12 @@ test(
       });
       assert.deepEqual(parseSafeRecord(mismatched.stdout), {
         failed: true,
-        readinessCalls: 1,
+        sanitizedError: true,
+        unfilteredQuery: true,
+        readinessCalls: 0,
         passwordPosts: 0,
         edgeStarts: 0,
+        listenerTerminations: 0,
         poisonCandidateUsed: false,
       });
       assert.equal(mismatched.stderr.length, 0);
@@ -504,9 +536,12 @@ test(
       });
       assert.deepEqual(parseSafeRecord(reparse.stdout), {
         failed: true,
+        sanitizedError: true,
+        unfilteredQuery: true,
         readinessCalls: 0,
         passwordPosts: 0,
         edgeStarts: 0,
+        listenerTerminations: 0,
         poisonCandidateUsed: false,
       });
       assert.equal(reparse.stderr.length, 0);
@@ -555,7 +590,7 @@ test(
         "[IO.File]::WriteAllText((Join-Path $source 'audit\\final\\final-commit.txt'), $env:HMA_INSTALL_COMMIT, (New-Object Text.UTF8Encoding($false)))",
         "$script:gitDirty = $false",
         "function git { param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments) $global:LASTEXITCODE = 0; $joined = $Arguments -join ' '; if ($joined -match 'rev-parse HEAD') { $env:HMA_INSTALL_COMMIT } elseif ($joined -match 'status --porcelain' -and $script:gitDirty) { ' M package.json' } }",
-        "$script:taskStore = @{}; $script:registrationCount = 0",
+        "$script:taskStore = @{}; $script:registrationCount = 0; $script:listenerMode = 'none'; $script:listenerTerminations = 0; $script:listenerAddressPrefilters = 0; $script:listenerPortPrefilters = 0; $script:serviceCommand = ''",
         "function New-ScheduledTaskAction { [CmdletBinding()] param([string]$Execute,[string]$Argument) [pscustomobject]@{ Execute = $Execute; Arguments = $Argument } }",
         "function New-ScheduledTaskTrigger { [CmdletBinding()] param([switch]$AtLogOn,[string]$User) [pscustomobject]@{ UserId = $User; TriggerType = 'Logon' } }",
         "function New-ScheduledTaskPrincipal { [CmdletBinding()] param([string]$UserId,[string]$LogonType,[string]$RunLevel) [pscustomobject]@{ UserId = $UserId; LogonType = 'InteractiveToken'; RunLevel = $RunLevel } }",
@@ -564,13 +599,34 @@ test(
         "function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName) if ($script:taskStore.ContainsKey($TaskName)) { return $script:taskStore[$TaskName] } }",
         "function Export-ScheduledTask { [CmdletBinding()] param([string]$TaskName) $task = $script:taskStore[$TaskName]; $command = [Security.SecurityElement]::Escape([string]$task.Actions[0].Execute); $arguments = [Security.SecurityElement]::Escape([string]$task.Actions[0].Arguments); $sid = [Security.SecurityElement]::Escape([string]$task.Principal.UserId); '<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Triggers><LogonTrigger><UserId>' + $sid + '</UserId></LogonTrigger></Triggers><Principals><Principal><UserId>' + $sid + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions><Exec><Command>' + $command + '</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>' }",
         "function Unregister-ScheduledTask { [CmdletBinding()] param([string]$TaskName,[switch]$Confirm) $script:taskStore.Remove($TaskName) | Out-Null }",
-        "function Get-NetTCPConnection { [CmdletBinding()] param([string]$LocalAddress,[int]$LocalPort,[string]$State) @() }",
+        "function Get-NetTCPConnection { [CmdletBinding()] param([string]$LocalAddress,[int]$LocalPort,[string]$State) $exact = [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 42 }; $unknown = [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 37645; State = 'Listen'; OwningProcess = 84 }; $otherPort = [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 3000; State = 'Listen'; OwningProcess = 21 }; $rows = if ($script:listenerMode -ceq 'exact') { @($exact, $otherPort) } elseif ($script:listenerMode -ceq 'wildcard') { @($unknown, $otherPort) } elseif ($script:listenerMode -ceq 'multiple') { @($exact, $unknown, $otherPort) } elseif ($script:listenerMode -ceq 'other-port') { @($otherPort) } else { @() }; if ($PSBoundParameters.ContainsKey('LocalAddress')) { $script:listenerAddressPrefilters += 1; $rows = @($rows | Where-Object { [string]$_.LocalAddress -ceq $LocalAddress }) }; if ($PSBoundParameters.ContainsKey('LocalPort')) { $script:listenerPortPrefilters += 1; $rows = @($rows | Where-Object { [int]$_.LocalPort -eq $LocalPort }); if ($script:listenerMode -ceq 'other-port' -and $rows.Count -eq 0) { Write-Error 'No matching MSFT_NetTCPConnection objects found.'; return } }; @($rows) }",
+        "function Get-CimInstance { [CmdletBinding()] param([string]$ClassName,[string]$Filter) [pscustomobject]@{ ProcessId = 42; ExecutablePath = $nodePath; CommandLine = $script:serviceCommand } }",
+        "function Stop-Process { [CmdletBinding()] param([int]$Id,[switch]$Force) $script:listenerTerminations += 1 }",
         "$firstFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $firstFailed = $true }",
         "$secretsPath = Join-Path $state 'secrets.dpapi'",
         "$firstSecretHash = if ([IO.File]::Exists($secretsPath)) { (Get-FileHash -Algorithm SHA256 -LiteralPath $secretsPath).Hash } else { '' }",
         "$secondFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $secondFailed = $true }",
         "$secondSecretHash = if ([IO.File]::Exists($secretsPath)) { (Get-FileHash -Algorithm SHA256 -LiteralPath $secretsPath).Hash } else { '' }",
         "$integrityPass = $false; if (-not $secondFailed) { Import-Module (Join-Path $state 'bootstrap\\SecureLocalIntegrity.psm1') -Force; $integrityPass = ($null -ne (Assert-HmaStartupIntegrity -StateRoot $state)) }",
+        "$installedAppRoot = Join-Path (Join-Path $state 'runtime') $env:HMA_INSTALL_COMMIT",
+        "$script:serviceCommand = '\"' + $nodePath + '\" \"' + (Join-Path $installedAppRoot 'node_modules\\next\\dist\\bin\\next') + '\" start --hostname 127.0.0.1 --port 37645'",
+        "$script:listenerMode = 'other-port'",
+        "$beforeOtherPortListener = $script:registrationCount",
+        "$otherPortListenerFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $otherPortListenerFailed = $true }",
+        "$otherPortListenerAccepted = (-not $otherPortListenerFailed -and $script:registrationCount -eq ($beforeOtherPortListener + 2))",
+        "$script:listenerMode = 'exact'",
+        "$beforeExactListener = $script:registrationCount",
+        "$exactListenerFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $exactListenerFailed = $true }",
+        "$exactListenerAccepted = (-not $exactListenerFailed -and $script:registrationCount -eq ($beforeExactListener + 2))",
+        "$script:listenerMode = 'wildcard'",
+        "$beforeWildcardListener = $script:registrationCount",
+        "$wildcardError = ''; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $wildcardError = [string]$_.Exception.Message }",
+        "$wildcardListenerRejected = ($wildcardError -ceq 'Secure local installation failed.' -and $script:registrationCount -eq $beforeWildcardListener)",
+        "$script:listenerMode = 'multiple'",
+        "$beforeMultipleListeners = $script:registrationCount",
+        "$multipleError = ''; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $multipleError = [string]$_.Exception.Message }",
+        "$multipleListenersRejected = ($multipleError -ceq 'Secure local installation failed.' -and $script:registrationCount -eq $beforeMultipleListeners)",
+        "$script:listenerMode = 'none'",
         "$mutationMarker = Join-Path $state 'mutation-marker.txt'",
         "[IO.File]::WriteAllText($mutationMarker, 'must remain untouched', (New-Object Text.UTF8Encoding($false)))",
         "$markerAcl = New-Object Security.AccessControl.FileSecurity",
@@ -591,7 +647,7 @@ test(
         "$unmanifestedFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_UNMANIFESTED_STATE } catch { $unmanifestedFailed = $true }",
         "[IO.File]::Delete((Join-Path $source 'scripts\\windows\\unmanifested.ps1'))",
         "$foreignFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_FOREIGN_STATE } catch { $foreignFailed = $true }",
-        "[pscustomobject]@{ first = (-not $firstFailed); second = (-not $secondFailed); secretsPreserved = ($firstSecretHash.Length -eq 64 -and $firstSecretHash -ceq $secondSecretHash); integrity = $integrityPass; invalidExistingUntouched = $invalidExistingUntouched; taskCount = $script:taskStore.Count; registrations = $script:registrationCount; unmanifestedRejected = ($unmanifestedFailed -and -not [IO.Directory]::Exists($env:HMA_UNMANIFESTED_STATE) -and $script:registrationCount -eq $beforeRefusal); foreignTaskRejected = ($foreignFailed -and $script:registrationCount -eq $beforeRefusal) } | ConvertTo-Json -Compress",
+        "[pscustomobject]@{ first = (-not $firstFailed); second = (-not $secondFailed); secretsPreserved = ($firstSecretHash.Length -eq 64 -and $firstSecretHash -ceq $secondSecretHash); integrity = $integrityPass; unfilteredQuery = ($script:listenerAddressPrefilters -eq 0 -and $script:listenerPortPrefilters -eq 0); otherPortListenerAccepted = $otherPortListenerAccepted; exactListenerAccepted = $exactListenerAccepted; wildcardListenerRejected = $wildcardListenerRejected; multipleListenersRejected = $multipleListenersRejected; unknownListenerUntouched = ($script:listenerTerminations -eq 0); invalidExistingUntouched = $invalidExistingUntouched; taskCount = $script:taskStore.Count; registrations = $script:registrationCount; unmanifestedRejected = ($unmanifestedFailed -and -not [IO.Directory]::Exists($env:HMA_UNMANIFESTED_STATE) -and $script:registrationCount -eq $beforeRefusal); foreignTaskRejected = ($foreignFailed -and $script:registrationCount -eq $beforeRefusal) } | ConvertTo-Json -Compress",
       ],
       {
         HMA_INSTALL_SOURCE: source,
@@ -608,9 +664,15 @@ test(
         second: true,
         secretsPreserved: true,
         integrity: true,
+        unfilteredQuery: true,
+        otherPortListenerAccepted: true,
+        exactListenerAccepted: true,
+        wildcardListenerRejected: true,
+        multipleListenersRejected: true,
+        unknownListenerUntouched: true,
         invalidExistingUntouched: true,
         taskCount: 2,
-        registrations: 4,
+        registrations: 8,
         unmanifestedRejected: true,
         foreignTaskRejected: true,
       });

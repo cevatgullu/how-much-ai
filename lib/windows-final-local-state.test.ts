@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -23,6 +25,18 @@ const authSecretCanary = `AUTH-VALUE-CANARY-${"b".repeat(32)}`;
 const vaultSecretCanary = `VAULT-VALUE-CANARY-${"c".repeat(32)}`;
 const processMetadataCanary = "PROCESS-METADATA-CANARY";
 const listenerPidCanary = "424242";
+const reviewedVerifierHash =
+  "a3dcfd5d0dfa093fc82130bbdafed9f9254882d0ce5f74edc6558cd4e0ee776a";
+const reviewedManifestSha256 =
+  "9435a7a1564e5deb1075e83629172fe7682cd2ab651e6d6422d81dc5b8ee688a";
+const reviewedManifest =
+  `{"commit":"${"d".repeat(40)}","nodeSha256":"${"e".repeat(64)}",` +
+  '"runtimeFiles":[],"bootstrapFiles":[' +
+  `{"path":"scripts/windows/SecureLocalIntegrity.psm1","size":1,"sha256":"${integrityHash}"},` +
+  `{"path":"scripts/windows/SecureLocalRuntime.psm1","size":1,"sha256":"${runtimeHash}"},` +
+  `{"path":"scripts/windows/SecureLocalSecrets.psm1","size":1,"sha256":"${secretsHash}"},` +
+  `{"path":"scripts/windows/verify-final-local-state.ps1","size":34590,"sha256":"${reviewedVerifierHash}"}` +
+  "]}";
 
 function psLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
@@ -103,7 +117,7 @@ const syntheticHarness = [
   "      param($LiteralPath)",
   "      $leaf = [IO.Path]::GetFileName([string]$LiteralPath)",
   "      Add-TestEvent ('hash-' + $leaf)",
-  "      if ($script:failure -ceq 'before-integrity' -and $leaf -ceq 'SecureLocalIntegrity.psm1') { return ('f' * 64) }",
+  "      if ($script:failure -in @('before-integrity','early-wildcard') -and $leaf -ceq 'SecureLocalIntegrity.psm1') { return ('f' * 64) }",
   "      if ($leaf -ceq 'SecureLocalRuntime.psm1') { return ('a' * 64) }",
   "      if ($leaf -ceq 'SecureLocalIntegrity.psm1') { return ('b' * 64) }",
   "      if ($leaf -ceq 'SecureLocalSecrets.psm1') { return ('c' * 64) }",
@@ -138,10 +152,16 @@ const syntheticHarness = [
   "    }",
   "    GetListeners = {",
   "      Add-TestEvent 'listeners'",
+  "      if ($script:failure -ceq 'wildcard') {",
+  "        return @([pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 37645; State = 'Listen'; OwningProcess = 101 })",
+  "      }",
+  "      if ($script:failure -ceq 'additional') {",
+  "        return @(",
+  `          [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = ${listenerPidCanary} },`,
+  "          [pscustomobject]@{ LocalAddress = '::1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 101 }",
+  "        )",
+  "      }",
   "      return @(",
-  "        [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 37645; State = 'Listen'; OwningProcess = 101 },",
-  "        [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37646; State = 'Listen'; OwningProcess = 202 },",
-  "        [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Bound'; OwningProcess = 303 },",
   `        [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = ${listenerPidCanary} }`,
   "      )",
   "    }",
@@ -178,6 +198,14 @@ const syntheticHarness = [
   "      $script:listenerWaitCalls += 1",
   "      if ($script:fallback -and $script:listenerWaitCalls -eq 1) { return $false }",
   "      return $true",
+  "    }",
+  "    WaitExactListenerExit = {",
+  "      Add-TestEvent 'wait-exact-listener'",
+  "      return $true",
+  "    }",
+  "    WaitPortListenersExit = {",
+  "      Add-TestEvent 'wait-port-listeners'",
+  "      return ($script:failure -cnotin @('wildcard','additional','replacement','early-wildcard'))",
   "    }",
   "    TerminateValidatedListener = {",
   "      param($ListenerPid, $Plan, $Values)",
@@ -216,7 +244,8 @@ const syntheticHarness = [
   "  $lastHash = $script:events.IndexOf('hash-SecureLocalSecrets.psm1')",
   "  $firstScan = $script:events.IndexOf('acl-scan')",
   "  $lastTaskWait = [Math]::Max($script:events.IndexOf('wait-task-HowMuchAI-Window'), $script:events.IndexOf('wait-task-HowMuchAI-Service'))",
-  "  $lastShutdown = [Math]::Max($lastTaskWait, $script:events.LastIndexOf('wait-listener'))",
+  "  $lastListenerWait = [Math]::Max($script:events.LastIndexOf('wait-listener'), [Math]::Max($script:events.LastIndexOf('wait-exact-listener'), $script:events.LastIndexOf('wait-port-listeners')))",
+  "  $lastShutdown = [Math]::Max($lastTaskWait, $lastListenerWait)",
   "  return [pscustomobject]@{",
   "    failed = $failed",
   "    sanitized = $sanitized",
@@ -228,6 +257,8 @@ const syntheticHarness = [
   "    stopAttemptCount = @($script:events | Where-Object { $_ -like 'stop-task-*' }).Count",
   "    waitTaskCount = @($script:events | Where-Object { $_ -like 'wait-task-*' }).Count",
   "    waitListenerCount = @($script:events | Where-Object { $_ -ceq 'wait-listener' }).Count",
+  "    waitExactListenerCount = @($script:events | Where-Object { $_ -ceq 'wait-exact-listener' }).Count",
+  "    waitPortListenerCount = @($script:events | Where-Object { $_ -ceq 'wait-port-listeners' }).Count",
   "    terminateCount = @($script:events | Where-Object { $_ -ceq 'terminate-listener' }).Count",
   "    scanCount = @($script:events | Where-Object { $_ -in @('acl-scan','exact-value-scan') }).Count",
   "    importCount = @($script:events | Where-Object { $_ -like 'import-*' }).Count",
@@ -243,29 +274,119 @@ const syntheticHarness = [
 ];
 
 test(
-  "the reviewed call site checks the verifier hash before PS5.1 loads its injectable core",
+  "the reviewed call site trusts an external manifest anchor before PS5.1 loads the verifier",
+  windowsOnly,
+  async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-final-callsite-"));
+    const manifestPath = path.join(fixture, "runtime-manifest.json");
+    const reviewedVerifier = path.join(fixture, "reviewed-verifier.ps1");
+    const tamperedVerifier = path.join(fixture, "verify-final-local-state.ps1");
+    const verifierText = await readFile(verifierPath, "utf8");
+    await writeFile(manifestPath, reviewedManifest, "utf8");
+    await writeFile(
+      reviewedVerifier,
+      verifierText.replace(/\r?\n/gu, "\r\n"),
+      "utf8",
+    );
+    await writeFile(tamperedVerifier, "throw 'tampered verifier loaded'\r\n", "utf8");
+
+    try {
+      const { stdout, stderr } = await runPowerShell([
+        "Set-StrictMode -Version Latest",
+        "$ErrorActionPreference = 'Stop'",
+        `$verifier = ${psLiteral(reviewedVerifier)}`,
+        `$tamperedVerifier = ${psLiteral(tamperedVerifier)}`,
+        `$manifestPath = ${psLiteral(manifestPath)}`,
+        `$trustedManifestHash = ${psLiteral(reviewedManifestSha256)}`,
+        "function Get-ReviewedBootstrapHashes([string]$Manifest, [string]$ExpectedManifestHash) {",
+        "  try {",
+        "    $observedManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Manifest -ErrorAction Stop).Hash",
+        "    if (-not [string]::Equals($observedManifestHash, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase)) { return $null }",
+        "    $bytes = [IO.File]::ReadAllBytes($Manifest)",
+        "    try {",
+        "      if ($bytes.Length -le 0 -or $bytes.Length -gt 67108864) { return $null }",
+        "      $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes)",
+        "      $manifestObject = ConvertFrom-Json -InputObject $text -ErrorAction Stop",
+        "      $required = [ordered]@{",
+        "        runtime = 'scripts/windows/SecureLocalRuntime.psm1'",
+        "        integrity = 'scripts/windows/SecureLocalIntegrity.psm1'",
+        "        secrets = 'scripts/windows/SecureLocalSecrets.psm1'",
+        "        verifier = 'scripts/windows/verify-final-local-state.ps1'",
+        "      }",
+        "      $reviewed = [ordered]@{}",
+        "      foreach ($name in $required.Keys) {",
+        "        $entries = @($manifestObject.bootstrapFiles | Where-Object { [string]$_.path -ceq [string]$required[$name] })",
+        "        if ($entries.Count -ne 1 -or $entries[0].sha256 -isnot [string] -or [string]$entries[0].sha256 -cnotmatch '^[a-fA-F0-9]{64}$') { return $null }",
+        "        $reviewed[$name] = ([string]$entries[0].sha256).ToLowerInvariant()",
+        "      }",
+        "      return [pscustomobject]$reviewed",
+        "    } finally {",
+        "      if ($null -ne $bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }",
+        "    }",
+        "  } catch { return $null }",
+        "}",
+        "function Invoke-ManifestGatedVerifier([string]$Candidate, [string]$Manifest, [string]$ManifestTrustAnchor) {",
+        "  $reviewed = Get-ReviewedBootstrapHashes -Manifest $Manifest -ExpectedManifestHash $ManifestTrustAnchor",
+        "  if ($null -eq $reviewed) { return $false }",
+        "  $observedVerifierHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Candidate -ErrorAction Stop).Hash",
+        "  if (-not [string]::Equals($observedVerifierHash, [string]$reviewed.verifier, [StringComparison]::OrdinalIgnoreCase)) { return $false }",
+        `  . $Candidate -StateRoot ${psLiteral(stateCanary)} -ExpectedRuntimeHash ([string]$reviewed.runtime) -ExpectedIntegrityHash ([string]$reviewed.integrity) -ExpectedSecretsHash ([string]$reviewed.secrets)`,
+        "  return ($null -ne (Get-Command Invoke-HmaFinalLocalStateCore -CommandType Function -ErrorAction SilentlyContinue))",
+        "}",
+        "$wrongAnchorLoaded = Invoke-ManifestGatedVerifier -Candidate $verifier -Manifest $manifestPath -ManifestTrustAnchor ('0' * 64)",
+        "$tamperedLoaded = Invoke-ManifestGatedVerifier -Candidate $tamperedVerifier -Manifest $manifestPath -ManifestTrustAnchor $trustedManifestHash",
+        "$reviewedLoaded = Invoke-ManifestGatedVerifier -Candidate $verifier -Manifest $manifestPath -ManifestTrustAnchor $trustedManifestHash",
+        "[pscustomobject]@{ wrongAnchorBlocked = (-not $wrongAnchorLoaded); tamperedVerifierBlocked = (-not $tamperedLoaded); reviewedLoaded = $reviewedLoaded; coreAvailable = $reviewedLoaded; desktop51 = ($PSVersionTable.PSEdition -ceq 'Desktop' -and $PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -eq 1) } | ConvertTo-Json -Compress",
+      ]);
+
+      assert.deepEqual(parseSafeJson(stdout), {
+        wrongAnchorBlocked: true,
+        tamperedVerifierBlocked: true,
+        reviewedLoaded: true,
+        coreAvailable: true,
+        desktop51: true,
+      });
+      assert.equal(stderr.length, 0);
+      assertNoSensitiveOutput(stdout, stderr);
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "the real Windows wildcard probe detects the listener or fails closed",
   windowsOnly,
   async () => {
     const { stdout, stderr } = await runPowerShell([
       "Set-StrictMode -Version Latest",
       "$ErrorActionPreference = 'Stop'",
-      `$verifier = ${psLiteral(verifierPath)}`,
-      "$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $verifier).Hash",
-      "function Invoke-HashGatedVerifier([string]$ExpectedHash) {",
-      "  $observed = (Get-FileHash -Algorithm SHA256 -LiteralPath $verifier).Hash",
-      "  if (-not [string]::Equals($observed, $ExpectedHash, [StringComparison]::OrdinalIgnoreCase)) { return $false }",
-      ...dotSourceVerifier.map((line) => `  ${line}`),
-      "  return ($null -ne (Get-Command Invoke-HmaFinalLocalStateCore -CommandType Function -ErrorAction SilentlyContinue))",
+      ...dotSourceVerifier,
+      "$listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any, 37645)",
+      "$wildcardSeen = $false",
+      "$probeFailedClosed = $false",
+      "try {",
+      "  $listener.Start()",
+      "  Start-Sleep -Milliseconds 250",
+      "  try {",
+      "    $rows = @(Get-HmaFinalPortListeners)",
+      "    $wildcardSeen = (@($rows | Where-Object { [string]$_.LocalAddress -ceq '0.0.0.0' -and [int]$_.LocalPort -eq 37645 -and [string]$_.State -ceq 'Listen' }).Count -eq 1)",
+      "  } catch {",
+      "    $probeFailedClosed = $true",
+      "  }",
+      "} finally {",
+      "  $listener.Stop()",
       "}",
-      "$wrongInvoked = Invoke-HashGatedVerifier -ExpectedHash ('0' * 64)",
-      "$reviewedLoaded = Invoke-HashGatedVerifier -ExpectedHash $actual",
-      "[pscustomobject]@{ wrongBlocked = (-not $wrongInvoked); reviewedLoaded = $reviewedLoaded; coreAvailable = $reviewedLoaded; desktop51 = ($PSVersionTable.PSEdition -ceq 'Desktop' -and $PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -eq 1) } | ConvertTo-Json -Compress",
+      "[pscustomobject]@{",
+      "  safeOutcome = ($wildcardSeen -or $probeFailedClosed)",
+      "  silentMiss = (-not $wildcardSeen -and -not $probeFailedClosed)",
+      "  desktop51 = ($PSVersionTable.PSEdition -ceq 'Desktop' -and $PSVersionTable.PSVersion.Major -eq 5)",
+      "} | ConvertTo-Json -Compress",
     ]);
 
     assert.deepEqual(parseSafeJson(stdout), {
-      wrongBlocked: true,
-      reviewedLoaded: true,
-      coreAvailable: true,
+      safeOutcome: true,
+      silentMiss: false,
       desktop51: true,
     });
     assert.equal(stderr.length, 0);
@@ -297,6 +418,8 @@ test(
         stopAttemptCount: number;
         waitTaskCount: number;
         waitListenerCount: number;
+        waitExactListenerCount: number;
+        waitPortListenerCount: number;
         terminateCount: number;
         scanCount: number;
         importCount: number;
@@ -322,6 +445,8 @@ test(
       stopAttemptCount: 2,
       waitTaskCount: 2,
       waitListenerCount: 1,
+      waitExactListenerCount: 0,
+      waitPortListenerCount: 1,
       terminateCount: 0,
       scanCount: 2,
       importCount: 3,
@@ -337,6 +462,195 @@ test(
       ...records[0],
       waitListenerCount: 2,
       terminateCount: 1,
+    });
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "the core rejects a single wildcard listener and keeps cleanup fail-closed",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      ...syntheticHarness,
+      "$record = Invoke-TestScenario -Failure 'wildcard' -Fallback $false",
+      "$record | ConvertTo-Json -Compress",
+    ]);
+
+    const record = parseSafeJson<{
+      failed: boolean;
+      sanitized: boolean;
+      ok: boolean;
+      listenersReached: boolean;
+      processesReached: boolean;
+      waitExactListenerCount: number;
+      waitPortListenerCount: number;
+      terminateCount: number;
+    }>(stdout);
+    assert.deepEqual(record, {
+      ...record,
+      failed: true,
+      sanitized: true,
+      ok: false,
+      listenersReached: true,
+      processesReached: false,
+      waitExactListenerCount: 0,
+      waitPortListenerCount: 1,
+      terminateCount: 0,
+    });
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "the core rejects an exact listener when an additional address is listening",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      ...syntheticHarness,
+      "$record = Invoke-TestScenario -Failure 'additional' -Fallback $false",
+      "$record | ConvertTo-Json -Compress",
+    ]);
+
+    const record = parseSafeJson<{
+      failed: boolean;
+      sanitized: boolean;
+      ok: boolean;
+      listenersReached: boolean;
+      processesReached: boolean;
+      processValidationReached: boolean;
+      waitPortListenerCount: number;
+      terminateCount: number;
+    }>(stdout);
+    assert.deepEqual(record, {
+      ...record,
+      failed: true,
+      sanitized: true,
+      ok: false,
+      listenersReached: true,
+      processesReached: false,
+      processValidationReached: false,
+      waitPortListenerCount: 1,
+      terminateCount: 0,
+    });
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "validated shutdown fails when a wildcard listener replaces the stopped child",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      ...syntheticHarness,
+      "$script:events.Clear()",
+      "$script:failure = 'replacement'",
+      `$shutdown = Invoke-HmaFinalFailSafeShutdown -StateRoot ${psLiteral(stateCanary)} -Operations (New-TestOperations) -ValidatedListenerPid ${listenerPidCanary} -ServicePlan ([pscustomobject]@{}) -SecretValues @($script:appSecret,$script:authSecret,$script:vaultSecret)`,
+      "$listenerWait = $script:events.IndexOf('wait-listener')",
+      "$portWait = $script:events.IndexOf('wait-port-listeners')",
+      "[pscustomobject]@{",
+      "  listenerStopped = [bool]$shutdown.listenerStopped",
+      "  waitListenerCount = @($script:events | Where-Object { $_ -ceq 'wait-listener' }).Count",
+      "  portWaitCount = @($script:events | Where-Object { $_ -ceq 'wait-port-listeners' }).Count",
+      "  portWaitAfterListener = ($portWait -gt $listenerWait -and $listenerWait -ge 0)",
+      "  terminateCount = @($script:events | Where-Object { $_ -ceq 'terminate-listener' }).Count",
+      "} | ConvertTo-Json -Compress",
+    ]);
+
+    assert.deepEqual(parseSafeJson(stdout), {
+      listenerStopped: false,
+      waitListenerCount: 1,
+      portWaitCount: 1,
+      portWaitAfterListener: true,
+      terminateCount: 0,
+    });
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "early validation failure detects a remaining wildcard without terminating its unknown PID",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      ...syntheticHarness,
+      "$record = Invoke-TestScenario -Failure 'early-wildcard' -Fallback $false",
+      "$record | ConvertTo-Json -Compress",
+    ]);
+
+    const record = parseSafeJson<{
+      failed: boolean;
+      sanitized: boolean;
+      importCount: number;
+      listenersReached: boolean;
+      waitExactListenerCount: number;
+      waitPortListenerCount: number;
+      terminateCount: number;
+    }>(stdout);
+    assert.deepEqual(record, {
+      ...record,
+      failed: true,
+      sanitized: true,
+      importCount: 0,
+      listenersReached: false,
+      waitExactListenerCount: 0,
+      waitPortListenerCount: 1,
+      terminateCount: 0,
+    });
+    assert.equal(stderr.length, 0);
+    assertNoSensitiveOutput(stdout, stderr);
+  },
+);
+
+test(
+  "fail-safe shutdown requires all-address port emptiness without terminating an unvalidated wildcard listener",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      ...dotSourceVerifier,
+      ...syntheticHarness,
+      "$script:events.Clear()",
+      "$script:failure = 'wildcard'",
+      `$shutdown = Invoke-HmaFinalFailSafeShutdown -StateRoot ${psLiteral(stateCanary)} -Operations (New-TestOperations) -ValidatedListenerPid $null -ServicePlan $null -SecretValues $null`,
+      "$lastTaskWait = [Math]::Max($script:events.IndexOf('wait-task-HowMuchAI-Window'), $script:events.IndexOf('wait-task-HowMuchAI-Service'))",
+      "$portWait = $script:events.IndexOf('wait-port-listeners')",
+      "[pscustomobject]@{",
+      "  listenerStopped = [bool]$shutdown.listenerStopped",
+      "  stopAttemptCount = @($script:events | Where-Object { $_ -like 'stop-task-*' }).Count",
+      "  waitTaskCount = @($script:events | Where-Object { $_ -like 'wait-task-*' }).Count",
+      "  exactWaitCount = @($script:events | Where-Object { $_ -ceq 'wait-exact-listener' }).Count",
+      "  portWaitCount = @($script:events | Where-Object { $_ -ceq 'wait-port-listeners' }).Count",
+      "  portWaitAfterTasks = ($portWait -gt $lastTaskWait -and $lastTaskWait -ge 0)",
+      "  terminateCount = @($script:events | Where-Object { $_ -ceq 'terminate-listener' }).Count",
+      "} | ConvertTo-Json -Compress",
+    ]);
+
+    assert.deepEqual(parseSafeJson(stdout), {
+      listenerStopped: false,
+      stopAttemptCount: 2,
+      waitTaskCount: 2,
+      exactWaitCount: 0,
+      portWaitCount: 1,
+      portWaitAfterTasks: true,
+      terminateCount: 0,
     });
     assert.equal(stderr.length, 0);
     assertNoSensitiveOutput(stdout, stderr);
@@ -371,6 +685,8 @@ test(
         stopAttemptCount: number;
         waitTaskCount: number;
         waitListenerCount: number;
+        waitExactListenerCount: number;
+        waitPortListenerCount: number;
         terminateCount: number;
         scanCount: number;
         importCount: number;
@@ -392,16 +708,54 @@ test(
     assert.deepEqual(
       records.map((record) => ({
         waitListenerCount: record.waitListenerCount,
+        waitExactListenerCount: record.waitExactListenerCount,
+        waitPortListenerCount: record.waitPortListenerCount,
         scanCount: record.scanCount,
         importCount: record.importCount,
       })),
       [
-        { waitListenerCount: 0, scanCount: 0, importCount: 0 },
-        { waitListenerCount: 0, scanCount: 0, importCount: 3 },
-        { waitListenerCount: 0, scanCount: 0, importCount: 3 },
-        { waitListenerCount: 0, scanCount: 0, importCount: 3 },
-        { waitListenerCount: 1, scanCount: 2, importCount: 3 },
-        { waitListenerCount: 1, scanCount: 0, importCount: 3 },
+        {
+          waitListenerCount: 0,
+          waitExactListenerCount: 0,
+          waitPortListenerCount: 1,
+          scanCount: 0,
+          importCount: 0,
+        },
+        {
+          waitListenerCount: 0,
+          waitExactListenerCount: 0,
+          waitPortListenerCount: 1,
+          scanCount: 0,
+          importCount: 3,
+        },
+        {
+          waitListenerCount: 0,
+          waitExactListenerCount: 0,
+          waitPortListenerCount: 1,
+          scanCount: 0,
+          importCount: 3,
+        },
+        {
+          waitListenerCount: 0,
+          waitExactListenerCount: 0,
+          waitPortListenerCount: 1,
+          scanCount: 0,
+          importCount: 3,
+        },
+        {
+          waitListenerCount: 1,
+          waitExactListenerCount: 0,
+          waitPortListenerCount: 1,
+          scanCount: 2,
+          importCount: 3,
+        },
+        {
+          waitListenerCount: 1,
+          waitExactListenerCount: 0,
+          waitPortListenerCount: 1,
+          scanCount: 0,
+          importCount: 3,
+        },
       ],
     );
     assert.equal(stderr.length, 0);

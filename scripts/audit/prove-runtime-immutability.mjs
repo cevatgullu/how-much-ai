@@ -12,6 +12,7 @@ import {
   rm,
 } from "node:fs/promises";
 import http from "node:http";
+import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -226,7 +227,7 @@ async function stageRuntime(sourceRoot, stageRoot, entries) {
 }
 
 async function enumerateStage(stageRoot) {
-  const files = [];
+  const snapshot = [];
   const pending = [{ absolute: stageRoot, relative: "" }];
   while (pending.length > 0) {
     const current = pending.pop();
@@ -246,17 +247,50 @@ async function enumerateStage(stageRoot) {
         if (resolved.toLowerCase() !== absolute.toLowerCase()) {
           throw new Error("stage-reparse");
         }
+        snapshot.push({
+          path: relative,
+          type: "directory",
+          size: 0,
+          sha256: "",
+        });
         pending.push({ absolute, relative });
       } else if (info.isFile()) {
         const hashed = await hashStableFile(absolute);
-        files.push({ path: relative, size: hashed.size, sha256: hashed.sha256 });
+        snapshot.push({
+          path: relative,
+          type: "file",
+          size: hashed.size,
+          sha256: hashed.sha256,
+        });
       } else {
         throw new Error("stage-special-entry");
       }
     }
   }
-  files.sort((left, right) => left.path.localeCompare(right.path, "en"));
-  return files;
+  snapshot.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  return snapshot;
+}
+
+function expectedStageSnapshot(runtimeFiles) {
+  const directories = new Set();
+  for (const entry of runtimeFiles) {
+    const parts = entry.path.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      directories.add(parts.slice(0, index).join("/"));
+    }
+  }
+  return [
+    ...[...directories].map((relative) => ({
+      path: relative,
+      type: "directory",
+      size: 0,
+      sha256: "",
+    })),
+    ...runtimeFiles.map((entry) => ({
+      ...entry,
+      type: "file",
+    })),
+  ].sort((left, right) => left.path.localeCompare(right.path, "en"));
 }
 
 function sameSnapshot(actual, expected) {
@@ -265,23 +299,30 @@ function sameSnapshot(actual, expected) {
     actual.every(
       (entry, index) =>
         entry.path === expected[index].path &&
+        entry.type === expected[index].type &&
         entry.size === expected[index].size &&
         entry.sha256 === expected[index].sha256,
     )
   );
 }
 
-function createSyntheticServiceEnvironment(vaultRoot) {
+function createSyntheticServiceEnvironment(vaultRoot, profileRoot) {
   return {
     ...createSanitizedBuildEnvironment(process.env),
+    APPDATA: path.join(profileRoot, "appdata"),
     APP_PASSWORD: randomBytes(32).toString("base64url"),
     AUTH_SECRET: randomBytes(32).toString("base64url"),
     ENABLE_LOCAL_CONNECT: "1",
+    HOME: profileRoot,
     HMC_LISTEN_HOST: "127.0.0.1",
     HMC_LISTEN_PORT: "37645",
     HMC_STRICT_LOCAL_MODE: "1",
+    LOCALAPPDATA: path.join(profileRoot, "localappdata"),
     PORT: "37645",
+    TEMP: path.join(profileRoot, "temp"),
+    TMP: path.join(profileRoot, "temp"),
     TRUST_PROXY_IP_HEADERS: "0",
+    USERPROFILE: profileRoot,
     VAULT_DATA_DIR: vaultRoot,
     VAULT_ENCRYPTION_SECRET: randomBytes(32).toString("base64url"),
   };
@@ -309,6 +350,179 @@ function requestReadiness() {
   });
 }
 
+function normalizeRuntimeListeners(value) {
+  if (!Array.isArray(value)) {
+    throw new Error("listener-probe-invalid");
+  }
+  return value.map((listener) => {
+    if (
+      !listener ||
+      typeof listener !== "object" ||
+      typeof listener.localAddress !== "string" ||
+      listener.localAddress.trim() !== listener.localAddress ||
+      isIP(listener.localAddress) === 0 ||
+      listener.localPort !== 37645 ||
+      !Number.isSafeInteger(listener.pid) ||
+      listener.pid <= 0
+    ) {
+      throw new Error("listener-probe-invalid");
+    }
+    return {
+      localAddress: listener.localAddress,
+      localPort: listener.localPort,
+      pid: listener.pid,
+    };
+  });
+}
+
+function parseNetstatEndpoint(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const match = value.startsWith("[")
+    ? /^\[([^\]\s]+)\]:(\d{1,5})$/u.exec(value)
+    : /^([^:\s]+):(\d{1,5})$/u.exec(value);
+  if (!match || isIP(match[1]) === 0) {
+    return null;
+  }
+  const port = Number(match[2]);
+  if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
+    return null;
+  }
+  return { address: match[1], port };
+}
+
+function getRuntimePortListeners() {
+  if (process.platform !== "win32") {
+    throw new Error("listener-ownership-unsupported");
+  }
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  if (!systemRoot) {
+    throw new Error("missing-system-root");
+  }
+  const netstat = path.join(systemRoot, "System32", "netstat.exe");
+  const result = spawnSync(
+    netstat,
+    ["-ano", "-p", "TCP"],
+    {
+      env: {
+        ...createSanitizedBuildEnvironment(process.env),
+        SystemRoot: systemRoot,
+        WINDIR: systemRoot,
+      },
+      encoding: "utf8",
+      windowsHide: true,
+      shell: false,
+      timeout: 10_000,
+      maxBuffer: 64 * 1024,
+    },
+  );
+  if (result.error || result.signal || result.status !== 0) {
+    throw new Error("listener-probe-failed");
+  }
+  const listeners = [];
+  for (const line of result.stdout.split(/\r?\n/u)) {
+    const columns = line.trim().split(/\s+/u);
+    if (columns[0] !== "TCP") {
+      continue;
+    }
+    if (columns.length !== 5) {
+      throw new Error("listener-probe-invalid");
+    }
+    const local = parseNetstatEndpoint(columns[1]);
+    if (!local) {
+      throw new Error("listener-probe-invalid");
+    }
+    if (local.port !== 37645) {
+      continue;
+    }
+    const foreign = parseNetstatEndpoint(columns[2]);
+    if (!foreign) {
+      throw new Error("listener-probe-invalid");
+    }
+    if (
+      foreign.port !== 0 ||
+      (foreign.address !== "0.0.0.0" && foreign.address !== "::")
+    ) {
+      continue;
+    }
+    if (!/^\d+$/u.test(columns[4])) {
+      throw new Error("listener-probe-invalid");
+    }
+    const pid = Number(columns[4]);
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error("listener-probe-invalid");
+    }
+    listeners.push({
+      localAddress: local.address,
+      localPort: local.port,
+      pid,
+    });
+  }
+  return normalizeRuntimeListeners(listeners);
+}
+
+export async function assertRuntimePortAvailable(
+  listenerProbe = async () => getRuntimePortListeners(),
+) {
+  const listeners = normalizeRuntimeListeners(await listenerProbe());
+  if (listeners.length !== 0) {
+    throw new Error("service-port-in-use");
+  }
+}
+
+function isExclusiveOwnedLoopbackListener(listeners, childPid) {
+  return (
+    listeners.length === 1 &&
+    listeners[0].localAddress === "127.0.0.1" &&
+    listeners[0].localPort === 37645 &&
+    listeners[0].pid === childPid
+  );
+}
+
+export async function waitForOwnedReadiness({
+  child,
+  listenerProbe = async () => getRuntimePortListeners(),
+  readiness = requestReadiness,
+  pause = async () =>
+    await new Promise((resolve) => setTimeout(resolve, 250)),
+  deadline,
+}) {
+  if (
+    !child ||
+    !Number.isSafeInteger(child.pid) ||
+    child.pid <= 0 ||
+    !Number.isFinite(deadline)
+  ) {
+    throw new Error("service-child-invalid");
+  }
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("service-exited");
+    }
+    const before = normalizeRuntimeListeners(await listenerProbe());
+    if (before.length > 0) {
+      if (!isExclusiveOwnedLoopbackListener(before, child.pid)) {
+        throw new Error("service-listener-owner-mismatch");
+      }
+      const ready = await readiness();
+      const after = normalizeRuntimeListeners(await listenerProbe());
+      if (!isExclusiveOwnedLoopbackListener(after, child.pid)) {
+        throw new Error("service-listener-owner-mismatch");
+      }
+      if (
+        ready &&
+        child.exitCode === null &&
+        child.signalCode === null
+      ) {
+        return;
+      }
+    }
+    await pause();
+  }
+  throw new Error("service-not-ready");
+}
+
 async function waitForExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return true;
@@ -326,6 +540,25 @@ async function waitForExit(child, timeoutMs) {
   });
 }
 
+export async function stopRuntimeChildAndAssertPortFree({
+  child,
+  listenerProbe = async () => getRuntimePortListeners(),
+}) {
+  try {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+      if (!(await waitForExit(child, 10_000))) {
+        child.kill("SIGKILL");
+        if (!(await waitForExit(child, 5_000))) {
+          throw new Error("service-did-not-stop");
+        }
+      }
+    }
+  } finally {
+    await assertRuntimePortAvailable(listenerProbe);
+  }
+}
+
 async function defaultRunCycle({ stageRoot, environment, nodePath }) {
   const nextBin = path.join(
     stageRoot,
@@ -335,6 +568,7 @@ async function defaultRunCycle({ stageRoot, environment, nodePath }) {
     "bin",
     "next",
   );
+  await assertRuntimePortAvailable();
   const child = spawn(
     nodePath,
     [nextBin, "start", "--hostname", "127.0.0.1", "--port", "37645"],
@@ -347,30 +581,12 @@ async function defaultRunCycle({ stageRoot, environment, nodePath }) {
     },
   );
   try {
-    const deadline = Date.now() + 60_000;
-    let ready = false;
-    while (!ready && Date.now() < deadline) {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        throw new Error("service-exited");
-      }
-      ready = await requestReadiness();
-      if (!ready) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-    }
-    if (!ready) {
-      throw new Error("service-not-ready");
-    }
+    await waitForOwnedReadiness({
+      child,
+      deadline: Date.now() + 60_000,
+    });
   } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill();
-      if (!(await waitForExit(child, 10_000))) {
-        child.kill("SIGKILL");
-        if (!(await waitForExit(child, 5_000))) {
-          throw new Error("service-did-not-stop");
-        }
-      }
-    }
+    await stopRuntimeChildAndAssertPortFree({ child });
   }
 }
 
@@ -393,16 +609,29 @@ async function internalProof({
     await applyPrivateAcl(proofRoot);
     const stageRoot = path.join(proofRoot, "runtime");
     const vaultRoot = path.join(proofRoot, "state", "vault");
+    const profileRoot = path.join(proofRoot, "profile");
     await mkdir(stageRoot, { recursive: false });
     await mkdir(vaultRoot, { recursive: true });
+    for (const directory of [
+      profileRoot,
+      path.join(profileRoot, "appdata"),
+      path.join(profileRoot, "localappdata"),
+      path.join(profileRoot, "temp"),
+    ]) {
+      await mkdir(directory, { recursive: false });
+    }
     await stageRuntime(sourceRoot, stageRoot, validated.runtimeFiles);
     const initial = await enumerateStage(stageRoot);
-    if (!sameSnapshot(initial, validated.runtimeFiles)) {
+    const expectedInitial = expectedStageSnapshot(validated.runtimeFiles);
+    if (!sameSnapshot(initial, expectedInitial)) {
       throw new Error("initial-stage-mismatch");
     }
 
     for (let cycle = 1; cycle <= 2; cycle += 1) {
-      const environment = createSyntheticServiceEnvironment(vaultRoot);
+      const environment = createSyntheticServiceEnvironment(
+        vaultRoot,
+        profileRoot,
+      );
       try {
         await runCycle({
           stageRoot,
@@ -425,7 +654,7 @@ async function internalProof({
         throw new Error("runtime-mutated");
       }
     }
-    return { ok: true, cycles: 2, files: initial.length };
+    return { ok: true, cycles: 2, files: validated.runtimeFiles.length };
   } finally {
     await rm(proofRoot, { recursive: true, force: true });
   }

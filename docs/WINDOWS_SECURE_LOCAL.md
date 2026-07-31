@@ -40,7 +40,8 @@ plus the exact reviewed local hardening commit stored in
 
 `audit/final/runtime-manifest.json` binds the final commit, the reviewed Node
 executable hash, every installed runtime file, and every bootstrap file. Its
-independent SHA-256 is stored in `audit/final/runtime-manifest.sha256`. The
+SHA-256 is published beside it in `audit/final/runtime-manifest.sha256` and is
+also retained as an in-memory trust anchor in the same PowerShell session. The
 installer refuses a dirty source tree, the wrong ancestry, a manifest mismatch,
 an added or missing installable file, and a changed file hash or size.
 
@@ -314,10 +315,22 @@ do not mutate the staged runtime:
 ```powershell
 git rev-parse HEAD | Set-Content -Encoding ascii 'audit\final\final-commit.txt'
 $node = (Get-Command node.exe -ErrorAction Stop).Source
-node scripts/audit/create-runtime-manifest.mjs --root . --commit (Get-Content -Raw 'audit\final\final-commit.txt').Trim() --node $node --output audit/final/runtime-manifest.json --sha256-output audit/final/runtime-manifest.sha256
+$git = (Get-Command git.exe -ErrorAction Stop).Source
+node scripts/audit/create-runtime-manifest.mjs --root . --commit (Get-Content -Raw 'audit\final\final-commit.txt').Trim() --node $node --git $git --output audit/final/runtime-manifest.json --sha256-output audit/final/runtime-manifest.sha256
+if ($LASTEXITCODE -ne 0) { throw 'Runtime manifest generation failed.' }
+$trustedManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath 'audit\final\runtime-manifest.json').Hash.ToLowerInvariant()
+$publishedManifestSha256 = (Get-Content -Raw -LiteralPath 'audit\final\runtime-manifest.sha256').Trim().ToLowerInvariant()
+if ($trustedManifestSha256 -notmatch '^[a-f0-9]{64}$' -or
+    $publishedManifestSha256 -cne $trustedManifestSha256) {
+    throw 'Runtime manifest trust anchor mismatch.'
+}
 node scripts/audit/safe-secret-scan.mjs --json audit/final/secret-scan.json --manifest audit/final/runtime-manifest.json
 node scripts/audit/prove-runtime-immutability.mjs --root . --manifest audit/final/runtime-manifest.json
 ```
+
+Keep this PowerShell session open through installation and final-state
+verification. Do not reconstruct `$trustedManifestSha256` from the adjacent
+hash file later.
 
 Locate Microsoft Defender's installed platform `MpCmdRun.exe`, bind
 `$mpCmdRun` to that resolved executable, and scan the reviewed source and
@@ -334,9 +347,8 @@ Install only after every pre-credential gate is green:
 
 ```powershell
 $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$expectedManifestSha256 = (Get-Content -Raw -LiteralPath 'audit\final\runtime-manifest.sha256').Trim()
-if ($expectedManifestSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid reviewed manifest hash.' }
-& $ps51 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\windows\install-secure-local.ps1 -SourceRoot (Resolve-Path '.').Path -ExpectedManifestSha256 $expectedManifestSha256
+if ($trustedManifestSha256 -notmatch '^[a-f0-9]{64}$') { throw 'The manifest trust anchor is unavailable.' }
+& $ps51 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\windows\install-secure-local.ps1 -SourceRoot (Resolve-Path '.').Path -ExpectedManifestSha256 $trustedManifestSha256
 ```
 
 The idempotent installer creates and verifies
@@ -511,7 +523,14 @@ the manifest to run the fail-safe final-state verifier:
 
 ```powershell
 $state = Join-Path $env:LOCALAPPDATA 'HowMuchAI'
-$manifest = Get-Content -Raw -LiteralPath 'audit\final\runtime-manifest.json' | ConvertFrom-Json
+$manifestPath = 'audit\final\runtime-manifest.json'
+$manifestHashPath = 'audit\final\runtime-manifest.sha256'
+if ($trustedManifestSha256 -notmatch '^[a-f0-9]{64}$' -or
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash -ne $trustedManifestSha256 -or
+    (Get-Content -Raw -LiteralPath $manifestHashPath).Trim() -ne $trustedManifestSha256) {
+    throw 'The runtime manifest no longer matches the in-memory trust anchor.'
+}
+$manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 function Get-ReviewedBootstrapHash([string]$suffix) {
     $entry = @($manifest.bootstrapFiles | Where-Object { ([string]$_.path).Replace('\','/') -eq $suffix })
     if ($entry.Count -ne 1 -or ([string]$entry[0].sha256) -notmatch '^[a-fA-F0-9]{64}$') {

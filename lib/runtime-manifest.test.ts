@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -13,12 +16,28 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-const generatorUrl = pathToFileURL(
-  path.resolve("scripts/audit/create-runtime-manifest.mjs"),
-).href;
+const generatorPath = path.resolve(
+  "scripts/audit/create-runtime-manifest.mjs",
+);
+const generatorUrl = pathToFileURL(generatorPath).href;
 const scannerUrl = pathToFileURL(
   path.resolve("scripts/audit/safe-secret-scan.mjs"),
 ).href;
+const gitExecutablePath =
+  process.platform === "win32"
+    ? execFileSync("where.exe", ["git.exe"], {
+        encoding: "utf8",
+        windowsHide: true,
+      })
+        .split(/\r?\n/u)
+        .find(Boolean)
+    : execFileSync("sh", ["-c", "command -v git"], {
+        encoding: "utf8",
+      }).trim();
+
+if (!gitExecutablePath || !path.isAbsolute(gitExecutablePath)) {
+  throw new Error("The runtime-manifest tests require an absolute Git executable.");
+}
 
 const bootstrapPaths = [
   "scripts/windows/connect-claude-secure.ps1",
@@ -59,13 +78,145 @@ async function createFixture() {
   return root;
 }
 
+function withoutAmbientGitEnvironment(
+  additions: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  return Object.fromEntries([
+    ...Object.entries(process.env).filter(
+      ([key]) => !key.toUpperCase().startsWith("GIT_"),
+    ),
+    ...Object.entries(additions),
+  ]);
+}
+
+function git(root: string, args: string[]): string {
+  return execFileSync(
+    gitExecutablePath,
+    ["-c", "core.excludesFile=", "-C", root, ...args],
+    {
+      encoding: "utf8",
+      env: withoutAmbientGitEnvironment(),
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    },
+  ).trim();
+}
+
+async function createReviewedFixture(): Promise<{
+  root: string;
+  commit: string;
+}> {
+  const root = await createFixture();
+  git(root, ["init", "--quiet"]);
+  git(root, ["config", "core.autocrlf", "false"]);
+  git(root, ["config", "user.email", "runtime-manifest@example.invalid"]);
+  git(root, ["config", "user.name", "Runtime Manifest Test"]);
+  git(root, [
+    "add",
+    "--force",
+    "--",
+    "package.json",
+    "package-lock.json",
+    "next.config.ts",
+    "public",
+    "scripts/windows",
+  ]);
+  git(root, ["commit", "--quiet", "-m", "reviewed runtime source"]);
+  return { root, commit: git(root, ["rev-parse", "HEAD"]) };
+}
+
+function runManifestCli({
+  root,
+  commit,
+  outputPath,
+  sha256Path,
+  cwd = root,
+  env = withoutAmbientGitEnvironment(),
+}: {
+  root: string;
+  commit: string;
+  outputPath: string;
+  sha256Path: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+}) {
+  return spawnSync(
+    process.execPath,
+    [
+      generatorPath,
+      "--root",
+      root,
+      "--commit",
+      commit,
+      "--node",
+      process.execPath,
+      "--git",
+      gitExecutablePath,
+      "--output",
+      outputPath,
+      "--sha256-output",
+      sha256Path,
+    ],
+    {
+      cwd,
+      encoding: "utf8",
+      env,
+      windowsHide: true,
+    },
+  );
+}
+
+test("security file snapshots retain exact bigint identity precision", async () => {
+  const { sameSecurityFileSnapshot } = (await import(generatorUrl)) as {
+    sameSecurityFileSnapshot: (
+      left: {
+        dev: bigint;
+        ino: bigint;
+        size: bigint;
+        mtimeNs: bigint;
+        ctimeNs: bigint;
+      },
+      right: {
+        dev: bigint;
+        ino: bigint;
+        size: bigint;
+        mtimeNs: bigint;
+        ctimeNs: bigint;
+      },
+    ) => boolean;
+  };
+  const snapshot = {
+    dev: 7n,
+    ino: 9_007_199_254_740_993n,
+    size: 9_007_199_254_740_995n,
+    mtimeNs: 9_007_199_254_740_997n,
+    ctimeNs: 9_007_199_254_740_999n,
+  };
+
+  assert.equal(sameSecurityFileSnapshot(snapshot, { ...snapshot }), true);
+  assert.equal(
+    sameSecurityFileSnapshot(snapshot, {
+      ...snapshot,
+      ino: snapshot.ino + 1n,
+    }),
+    false,
+  );
+  assert.equal(
+    sameSecurityFileSnapshot(snapshot, {
+      ...snapshot,
+      mtimeNs: snapshot.mtimeNs + 1n,
+    }),
+    false,
+  );
+});
+
 test("runtime manifest is deterministic and selects only exact installable files", async () => {
   const { createRuntimeManifest } = (await import(generatorUrl)) as {
     createRuntimeManifest: (options: {
       root: string;
       commit: string;
       nodePath: string;
-      trackedPaths: Set<string>;
+      gitPath: string;
     }) => Promise<{
       manifest: {
         commit: string;
@@ -77,14 +228,14 @@ test("runtime manifest is deterministic and selects only exact installable files
       sha256: string;
     }>;
   };
-  const root = await createFixture();
+  const { root, commit } = await createReviewedFixture();
 
   try {
     const options = {
       root,
-      commit: "a".repeat(40),
+      commit,
       nodePath: process.execPath,
-      trackedPaths: new Set(bootstrapPaths),
+      gitPath: gitExecutablePath,
     };
     const first = await createRuntimeManifest(options);
     const second = await createRuntimeManifest(options);
@@ -121,13 +272,101 @@ test("runtime manifest is deterministic and selects only exact installable files
   }
 });
 
+test("manifest generation rejects relative and reparse-point Git executables", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+  const junctionRoot = await mkdtemp(
+    path.join(os.tmpdir(), "hma-manifest-git-junction-"),
+  );
+  const junction = path.join(junctionRoot, "git-bin");
+
+  try {
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: "git.exe",
+      }),
+      /runtime-manifest-failed/u,
+    );
+    await symlink(path.dirname(gitExecutablePath), junction, "junction");
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: path.join(junction, path.basename(gitExecutablePath)),
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(junctionRoot, { recursive: true, force: true });
+  }
+});
+
+test(
+  "manifest CLI ignores a repository-local fake git.exe and uses the reviewed absolute executable",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const { root, commit } = await createReviewedFixture();
+    const workingDirectory = path.join(root, ".next");
+    const fakeGit = path.join(workingDirectory, "git.exe");
+    const outputPath = path.join(root, "audit", "runtime-manifest.json");
+    const sha256Path = path.join(root, "audit", "runtime-manifest.sha256");
+    const harmlessExecutable = execFileSync("where.exe", ["where.exe"], {
+      encoding: "utf8",
+      windowsHide: true,
+    })
+      .split(/\r?\n/u)
+      .find(Boolean);
+
+    try {
+      assert.ok(harmlessExecutable);
+      await copyFile(harmlessExecutable, fakeGit);
+      const shadowed = spawnSync("git", ["--version"], {
+        cwd: workingDirectory,
+        encoding: "utf8",
+        env: withoutAmbientGitEnvironment(),
+        windowsHide: true,
+      });
+      assert.doesNotMatch(shadowed.stdout, /^git version /u);
+
+      const result = runManifestCli({
+        root,
+        commit,
+        outputPath,
+        sha256Path,
+        cwd: workingDirectory,
+      });
+      assert.equal(result.status, 0);
+      const manifestBytes = await readFile(outputPath);
+      assert.equal(
+        await readFile(sha256Path, "ascii"),
+        `${createHash("sha256").update(manifestBytes).digest("hex")}\n`,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test("manifest paths are all examined by the non-content-emitting scanner", async () => {
   const { createRuntimeManifest } = (await import(generatorUrl)) as {
     createRuntimeManifest: (options: {
       root: string;
       commit: string;
       nodePath: string;
-      trackedPaths: Set<string>;
+      gitPath: string;
     }) => Promise<{
       manifest: {
         runtimeFiles: Array<{ path: string }>;
@@ -145,15 +384,15 @@ test("manifest paths are all examined by the non-content-emitting scanner", asyn
       examinedPathHashes: string[];
     }>;
   };
-  const root = await createFixture();
+  const { root, commit } = await createReviewedFixture();
   const manifestPath = path.join(root, "manifest.json");
 
   try {
     const generated = await createRuntimeManifest({
       root,
-      commit: "b".repeat(40),
+      commit,
       nodePath: process.execPath,
-      trackedPaths: new Set(bootstrapPaths),
+      gitPath: gitExecutablePath,
     });
     await writeFile(manifestPath, generated.bytes);
     const scanned = await scanSecrets({ cwd: root, manifestPath });
@@ -172,7 +411,7 @@ test("manifest paths are all examined by the non-content-emitting scanner", asyn
   }
 });
 
-test("manifest generation rejects missing, additional, untracked, and colliding inputs", async () => {
+test("manifest generation rejects missing, additional, and colliding inputs", async () => {
   const {
     assertUniqueNormalizedPaths,
     createRuntimeManifest,
@@ -182,22 +421,28 @@ test("manifest generation rejects missing, additional, untracked, and colliding 
       root: string;
       commit: string;
       nodePath: string;
-      trackedPaths: Set<string>;
+      gitPath: string;
     }) => Promise<unknown>;
   };
-  const root = await createFixture();
+  const { root, commit } = await createReviewedFixture();
 
   try {
+    await rm(path.join(root, ...bootstrapPaths[0].split("/")));
     await assert.rejects(
       createRuntimeManifest({
         root,
-        commit: "c".repeat(40),
+        commit,
         nodePath: process.execPath,
-        trackedPaths: new Set(bootstrapPaths.slice(1)),
+        gitPath: gitExecutablePath,
       }),
       /runtime-manifest-failed/u,
     );
 
+    await writeFile(
+      path.join(root, ...bootstrapPaths[0].split("/")),
+      "reviewed\n",
+      "utf8",
+    );
     await writeFile(
       path.join(root, "scripts", "windows", "unexpected.ps1"),
       "unexpected\n",
@@ -206,9 +451,9 @@ test("manifest generation rejects missing, additional, untracked, and colliding 
     await assert.rejects(
       createRuntimeManifest({
         root,
-        commit: "c".repeat(40),
+        commit,
         nodePath: process.execPath,
-        trackedPaths: new Set([...bootstrapPaths, "scripts/windows/unexpected.ps1"]),
+        gitPath: gitExecutablePath,
       }),
       /runtime-manifest-failed/u,
     );
@@ -226,36 +471,481 @@ test("manifest generation rejects missing, additional, untracked, and colliding 
   }
 });
 
-test("manifest generation rejects a reparse/symbolic entry", async (t) => {
+test("manifest generation rejects an untracked public runtime input", async () => {
   const { createRuntimeManifest } = (await import(generatorUrl)) as {
     createRuntimeManifest: (options: {
       root: string;
       commit: string;
       nodePath: string;
-      trackedPaths: Set<string>;
+      gitPath: string;
     }) => Promise<unknown>;
   };
-  const root = await createFixture();
-  const target = path.join(root, "outside.txt");
-  const link = path.join(root, "public", "linked.txt");
+  const { root, commit } = await createReviewedFixture();
 
   try {
-    await writeFile(target, "outside\n", "utf8");
-    try {
-      await symlink(target, link, "file");
-    } catch {
-      t.skip("Creating a symbolic link is not permitted on this Windows host.");
-      return;
-    }
+    await writeFile(
+      path.join(root, "public", "not-reviewed.js"),
+      "globalThis.unreviewed = true;\n",
+      "utf8",
+    );
     await assert.rejects(
       createRuntimeManifest({
         root,
-        commit: "d".repeat(40),
+        commit,
         nodePath: process.execPath,
-        trackedPaths: new Set(bootstrapPaths),
+        gitPath: gitExecutablePath,
       }),
       /runtime-manifest-failed/u,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation rejects an untracked application build input", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+  const rogueSource = path.join(root, "app", "rogue", "page.tsx");
+
+  try {
+    await mkdir(path.dirname(rogueSource), { recursive: true });
+    await writeFile(
+      rogueSource,
+      "export default function Rogue() { return 'unreviewed'; }\n",
+      "utf8",
+    );
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation rejects an application change hidden by a fake fsmonitor hook", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root } = await createReviewedFixture();
+  const trackedSource = path.join(root, "app", "tracked", "page.tsx");
+  const hookPath = path.join(root, ".git", "hooks", "fake-fsmonitor");
+
+  try {
+    await mkdir(path.dirname(trackedSource), { recursive: true });
+    await writeFile(trackedSource, "export default 'AAAA';\n", "utf8");
+    git(root, ["add", "--force", "--", "app/tracked/page.tsx"]);
+    git(root, ["commit", "--quiet", "-m", "review application input"]);
+    const commit = git(root, ["rev-parse", "HEAD"]);
+
+    await writeFile(
+      hookPath,
+      "#!/bin/sh\nprintf 'fake-token\\000'\n",
+      "utf8",
+    );
+    await chmod(hookPath, 0o755);
+    git(root, [
+      "config",
+      "core.fsmonitor",
+      hookPath.replaceAll("\\", "/"),
+    ]);
+    git(root, ["config", "core.fsmonitorHookVersion", "2"]);
+    assert.equal(
+      git(root, [
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no",
+      ]),
+      "",
+    );
+
+    await writeFile(trackedSource, "export default 'BBBB';\n", "utf8");
+    assert.equal(
+      git(root, [
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no",
+      ]),
+      "",
+      "the fixture must prove that the fake fsmonitor hid the changed bytes",
+    );
+    assert.match(
+      git(root, ["ls-files", "-f", "--", "app/tracked/page.tsx"]),
+      /^h /u,
+      "the fixture must set Git's fsmonitor-valid index bit",
+    );
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation rejects an ignored application build input", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+  const rogueSource = path.join(root, "app", "rogue", "page.tsx");
+
+  try {
+    await writeFile(
+      path.join(root, ".git", "info", "exclude"),
+      "app/rogue/page.tsx\n",
+      "utf8",
+    );
+    await mkdir(path.dirname(rogueSource), { recursive: true });
+    await writeFile(
+      rogueSource,
+      "export default function Rogue() { return 'ignored'; }\n",
+      "utf8",
+    );
+    assert.equal(
+      git(root, ["check-ignore", "app/rogue/page.tsx"]),
+      "app/rogue/page.tsx",
+    );
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation permits only the reviewed ignored generated paths", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+
+  try {
+    await writeFile(
+      path.join(root, ".git", "info", "exclude"),
+      [
+        ".next/",
+        "node_modules/",
+        "audit/",
+        "next-env.d.ts",
+        "*.tsbuildinfo",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await mkdir(path.join(root, "audit", "final"), { recursive: true });
+    await writeFile(
+      path.join(root, "audit", "final", "review.json"),
+      "{}\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(root, "next-env.d.ts"),
+      "/// <reference types=\"next\" />\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(root, "tsconfig.tsbuildinfo"),
+      "{}\n",
+      "utf8",
+    );
+
+    await createRuntimeManifest({
+      root,
+      commit,
+      nodePath: process.execPath,
+      gitPath: gitExecutablePath,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation rejects an ignored nested tsbuildinfo input", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+  const nestedBuildInfo = path.join(root, "app", "rogue.tsbuildinfo");
+
+  try {
+    await writeFile(
+      path.join(root, ".git", "info", "exclude"),
+      "*.tsbuildinfo\n",
+      "utf8",
+    );
+    await mkdir(path.dirname(nestedBuildInfo), { recursive: true });
+    await writeFile(nestedBuildInfo, "{}\n", "utf8");
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation rejects an untracked top-level runtime input", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root } = await createReviewedFixture();
+
+  try {
+    git(root, ["rm", "--cached", "--quiet", "--", "package.json"]);
+    git(root, ["commit", "--quiet", "-m", "remove reviewed package input"]);
+    const commit = git(root, ["rev-parse", "HEAD"]);
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation binds tracked working bytes to the exact HEAD blob", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+
+  try {
+    await writeFile(
+      path.join(root, "public", "icon.svg"),
+      "<svg><script>changed()</script></svg>\n",
+      "utf8",
+    );
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation rejects a reviewed commit that is no longer HEAD", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+
+  try {
+    git(root, [
+      "commit",
+      "--quiet",
+      "--allow-empty",
+      "-m",
+      "advance reviewed head",
+    ]);
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const hiddenIndexFlag of ["--assume-unchanged", "--skip-worktree"]) {
+  test(`manifest generation rejects ${hiddenIndexFlag.slice(2)} index flags`, async () => {
+    const { createRuntimeManifest } = (await import(generatorUrl)) as {
+      createRuntimeManifest: (options: {
+        root: string;
+        commit: string;
+        nodePath: string;
+        gitPath: string;
+      }) => Promise<unknown>;
+    };
+    const { root, commit } = await createReviewedFixture();
+
+    try {
+      git(root, [
+        "update-index",
+        hiddenIndexFlag,
+        "--",
+        "public/icon.svg",
+      ]);
+      await assert.rejects(
+        createRuntimeManifest({
+          root,
+          commit,
+          nodePath: process.execPath,
+          gitPath: gitExecutablePath,
+        }),
+        /runtime-manifest-failed/u,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("manifest generation rejects a privilege-free directory junction", async () => {
+  const { createRuntimeManifest } = (await import(generatorUrl)) as {
+    createRuntimeManifest: (options: {
+      root: string;
+      commit: string;
+      nodePath: string;
+      gitPath: string;
+    }) => Promise<unknown>;
+  };
+  const { root, commit } = await createReviewedFixture();
+  const target = await mkdtemp(path.join(os.tmpdir(), "hma-manifest-external-"));
+  const link = path.join(root, "node_modules", "linked-directory");
+
+  try {
+    await writeFile(path.join(target, "outside.txt"), "outside\n", "utf8");
+    await symlink(target, link, "junction");
+    await assert.rejects(
+      createRuntimeManifest({
+        root,
+        commit,
+        nodePath: process.execPath,
+        gitPath: gitExecutablePath,
+      }),
+      /runtime-manifest-failed/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
+  }
+});
+
+for (const variable of ["GIT_DIR", "GIT_WORK_TREE"]) {
+  test(`manifest CLI rejects ambient ${variable}`, async () => {
+    const { root, commit } = await createReviewedFixture();
+    const outputPath = path.join(root, "audit", "runtime-manifest.json");
+    const sha256Path = path.join(root, "audit", "runtime-manifest.sha256");
+
+    try {
+      const result = runManifestCli({
+        root,
+        commit,
+        outputPath,
+        sha256Path,
+        env: withoutAmbientGitEnvironment({
+          [variable]: variable === "GIT_DIR" ? path.join(root, ".git") : root,
+        }),
+      });
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stderr,
+        /\{"ok":false,"error":"runtime-manifest-failed"\}\r?\n$/u,
+      );
+      await assert.rejects(readFile(outputPath), { code: "ENOENT" });
+      await assert.rejects(readFile(sha256Path), { code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("manifest CLI never publishes a manifest beside a pre-existing mismatched sha256", async () => {
+  const { root, commit } = await createReviewedFixture();
+  const outputPath = path.join(root, "audit", "runtime-manifest.json");
+  const sha256Path = path.join(root, "audit", "runtime-manifest.sha256");
+  const mismatchedSha256 = `${"0".repeat(64)}\n`;
+
+  try {
+    await mkdir(path.dirname(sha256Path), { recursive: true });
+    await writeFile(sha256Path, mismatchedSha256, {
+      encoding: "ascii",
+      flag: "wx",
+    });
+    const result = runManifestCli({
+      root,
+      commit,
+      outputPath,
+      sha256Path,
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /\{"ok":false,"error":"runtime-manifest-failed"\}\r?\n$/u,
+    );
+    await assert.rejects(readFile(outputPath), { code: "ENOENT" });
+    assert.equal(await readFile(sha256Path, "ascii"), mismatchedSha256);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

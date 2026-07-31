@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdir,
@@ -11,10 +12,17 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import http from "node:http";
 
 const moduleUrl = pathToFileURL(
   path.resolve("scripts/audit/prove-runtime-immutability.mjs"),
 ).href;
+
+type RuntimeListener = {
+  localAddress: string;
+  localPort: number;
+  pid: number;
+};
 
 function sha256(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -79,6 +87,16 @@ test("two injected production cycles leave every staged runtime byte unchanged",
         assert.equal(environment.HMC_LISTEN_HOST, "127.0.0.1");
         assert.equal(environment.PORT, "37645");
         assert.match(environment.APP_PASSWORD, /^[A-Za-z0-9_-]{43}$/u);
+        assert.notEqual(
+          path.resolve(environment.USERPROFILE).toLowerCase(),
+          path.resolve(process.env.USERPROFILE ?? os.homedir()).toLowerCase(),
+        );
+        assert.equal(
+          path.resolve(environment.APPDATA).startsWith(
+            `${path.resolve(environment.USERPROFILE)}${path.sep}`,
+          ),
+          true,
+        );
         seenSecrets.add(environment.APP_PASSWORD);
         assert.equal(
           await readFile(path.join(stageRoot, ".next", "server", "app.js"), "utf8"),
@@ -135,6 +153,43 @@ test("a child-created runtime file is rejected with no path, hash, or secret in 
         assert.equal(/[a-f0-9]{64}/u.test(message), false);
         return /runtime-immutability-failed/u.test(message);
       },
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a child-created empty runtime directory is rejected", async () => {
+  const { proveRuntimeImmutability } = (await import(moduleUrl)) as {
+    proveRuntimeImmutability: (options: {
+      root: string;
+      manifest: unknown;
+      nodePath: string;
+      applyPrivateAcl: () => Promise<void>;
+      runCycle: (context: {
+        stageRoot: string;
+        cycle: number;
+      }) => Promise<void>;
+    }) => Promise<unknown>;
+  };
+  const fixture = await createFixture();
+
+  try {
+    await assert.rejects(
+      proveRuntimeImmutability({
+        root: fixture.root,
+        manifest: fixture.manifest,
+        nodePath: process.execPath,
+        applyPrivateAcl: async () => {},
+        runCycle: async ({ stageRoot, cycle }) => {
+          if (cycle === 1) {
+            await mkdir(path.join(stageRoot, ".next", "cache"), {
+              recursive: true,
+            });
+          }
+        },
+      }),
+      /runtime-immutability-failed/u,
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -200,6 +255,285 @@ test("changed source bytes and wrong Node hash are rejected before a cycle", asy
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("readiness proof rejects an existing listener and a listener owned by another process", async () => {
+  const {
+    assertRuntimePortAvailable,
+    waitForOwnedReadiness,
+  } = (await import(moduleUrl)) as {
+    assertRuntimePortAvailable: (
+      listenerProbe: () => Promise<RuntimeListener[]>,
+    ) => Promise<void>;
+    waitForOwnedReadiness: (options: {
+      child: { pid: number; exitCode: number | null; signalCode: string | null };
+      listenerProbe: () => Promise<RuntimeListener[]>;
+      readiness: () => Promise<boolean>;
+      pause: () => Promise<void>;
+      deadline: number;
+    }) => Promise<void>;
+  };
+
+  await assert.rejects(
+    assertRuntimePortAvailable(async () => [
+      { localAddress: "127.0.0.1", localPort: 37645, pid: 901 },
+    ]),
+    /service-port-in-use/u,
+  );
+
+  let readinessCalls = 0;
+  await assert.rejects(
+    waitForOwnedReadiness({
+      child: { pid: 902, exitCode: null, signalCode: null },
+      listenerProbe: async () => [
+        { localAddress: "127.0.0.1", localPort: 37645, pid: 901 },
+      ],
+      readiness: async () => {
+        readinessCalls += 1;
+        return true;
+      },
+      pause: async () => {
+        throw new Error("unexpected-pause");
+      },
+      deadline: Date.now() + 1_000,
+    }),
+    /service-listener-owner-mismatch/u,
+  );
+  assert.equal(readinessCalls, 0);
+});
+
+test("readiness rejects wildcard, LAN, IPv6, and additional listeners", async () => {
+  const { waitForOwnedReadiness } = (await import(moduleUrl)) as {
+    waitForOwnedReadiness: (options: {
+      child: { pid: number; exitCode: number | null; signalCode: string | null };
+      listenerProbe: () => Promise<RuntimeListener[]>;
+      readiness: () => Promise<boolean>;
+      pause: () => Promise<void>;
+      deadline: number;
+    }) => Promise<void>;
+  };
+  const invalidSnapshots: RuntimeListener[][] = [
+    [{ localAddress: "0.0.0.0", localPort: 37645, pid: 903 }],
+    [{ localAddress: "192.0.2.10", localPort: 37645, pid: 903 }],
+    [{ localAddress: "::1", localPort: 37645, pid: 903 }],
+    [
+      { localAddress: "127.0.0.1", localPort: 37645, pid: 903 },
+      { localAddress: "0.0.0.0", localPort: 37645, pid: 903 },
+    ],
+  ];
+
+  for (const listeners of invalidSnapshots) {
+    let readinessCalls = 0;
+    await assert.rejects(
+      waitForOwnedReadiness({
+        child: { pid: 903, exitCode: null, signalCode: null },
+        listenerProbe: async () => listeners,
+        readiness: async () => {
+          readinessCalls += 1;
+          return true;
+        },
+        pause: async () => {
+          throw new Error("unexpected-pause");
+        },
+        deadline: Date.now() + 1_000,
+      }),
+      /service-listener-owner-mismatch/u,
+    );
+    assert.equal(readinessCalls, 0);
+
+    const snapshots = [
+      [{ localAddress: "127.0.0.1", localPort: 37645, pid: 903 }],
+      listeners,
+    ];
+    await assert.rejects(
+      waitForOwnedReadiness({
+        child: { pid: 903, exitCode: null, signalCode: null },
+        listenerProbe: async () => snapshots.shift() ?? [],
+        readiness: async () => {
+          readinessCalls += 1;
+          return true;
+        },
+        pause: async () => {
+          throw new Error("unexpected-pause");
+        },
+        deadline: Date.now() + 1_000,
+      }),
+      /service-listener-owner-mismatch/u,
+    );
+    assert.equal(readinessCalls, 1);
+  }
+});
+
+test("readiness is accepted only while the launched child exclusively owns loopback", async () => {
+  const { waitForOwnedReadiness } = (await import(moduleUrl)) as {
+    waitForOwnedReadiness: (options: {
+      child: { pid: number; exitCode: number | null; signalCode: string | null };
+      listenerProbe: () => Promise<RuntimeListener[]>;
+      readiness: () => Promise<boolean>;
+      pause: () => Promise<void>;
+      deadline: number;
+    }) => Promise<void>;
+  };
+  const listenerSnapshots: RuntimeListener[][] = [
+    [{ localAddress: "127.0.0.1", localPort: 37645, pid: 903 }],
+    [{ localAddress: "127.0.0.1", localPort: 37645, pid: 903 }],
+  ];
+  let readinessCalls = 0;
+
+  await waitForOwnedReadiness({
+    child: { pid: 903, exitCode: null, signalCode: null },
+    listenerProbe: async () =>
+      listenerSnapshots.shift() ?? [
+        { localAddress: "127.0.0.1", localPort: 37645, pid: 904 },
+      ],
+    readiness: async () => {
+      readinessCalls += 1;
+      return true;
+    },
+    pause: async () => {},
+    deadline: Date.now() + 1_000,
+  });
+
+  assert.equal(readinessCalls, 1);
+  assert.deepEqual(listenerSnapshots, []);
+});
+
+test("post-stop cleanup requires zero listeners on every address", async () => {
+  const { stopRuntimeChildAndAssertPortFree } = (await import(moduleUrl)) as {
+    stopRuntimeChildAndAssertPortFree: (options: {
+      child: { exitCode: number | null; signalCode: string | null };
+      listenerProbe: () => Promise<RuntimeListener[]>;
+    }) => Promise<void>;
+  };
+  const survivingSnapshots: RuntimeListener[][] = [
+    [{ localAddress: "127.0.0.1", localPort: 37645, pid: 905 }],
+    [{ localAddress: "0.0.0.0", localPort: 37645, pid: 905 }],
+    [{ localAddress: "192.0.2.10", localPort: 37645, pid: 905 }],
+    [{ localAddress: "::1", localPort: 37645, pid: 905 }],
+    [
+      { localAddress: "127.0.0.1", localPort: 37645, pid: 905 },
+      { localAddress: "0.0.0.0", localPort: 37645, pid: 906 },
+    ],
+  ];
+
+  for (const listeners of survivingSnapshots) {
+    await assert.rejects(
+      stopRuntimeChildAndAssertPortFree({
+        child: { exitCode: 0, signalCode: null },
+        listenerProbe: async () => listeners,
+      }),
+      /service-port-in-use/u,
+    );
+  }
+});
+
+test(
+  "the Windows port probe rejects a wildcard listener",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const {
+      assertRuntimePortAvailable,
+      stopRuntimeChildAndAssertPortFree,
+    } = (await import(moduleUrl)) as {
+      assertRuntimePortAvailable: () => Promise<void>;
+      stopRuntimeChildAndAssertPortFree: (options: {
+        child: ReturnType<typeof spawn>;
+      }) => Promise<void>;
+    };
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "require('node:net').createServer().listen(37645,'0.0.0.0',()=>process.stdout.write('ready\\n'))",
+      ],
+      {
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+        shell: false,
+      },
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("listener-start-timeout")),
+          5_000,
+        );
+        child.stdout!.once("data", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      await assert.rejects(
+        assertRuntimePortAvailable(),
+        /service-port-in-use/u,
+      );
+    } finally {
+      await stopRuntimeChildAndAssertPortFree({ child });
+    }
+  },
+);
+
+test(
+  "the Windows listener probe recognizes the exact launched Node owner",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const {
+      waitForOwnedReadiness,
+      stopRuntimeChildAndAssertPortFree,
+    } = (await import(moduleUrl)) as {
+      waitForOwnedReadiness: (options: {
+        child: ReturnType<typeof spawn>;
+        readiness: () => Promise<boolean>;
+        deadline: number;
+      }) => Promise<void>;
+      stopRuntimeChildAndAssertPortFree: (options: {
+        child: ReturnType<typeof spawn>;
+      }) => Promise<void>;
+    };
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "require('node:http').createServer((q,s)=>s.end('ok')).listen(37645,'127.0.0.1',()=>process.stdout.write('ready\\n'))",
+      ],
+      {
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+        shell: false,
+      },
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("listener-start-timeout")),
+          5_000,
+        );
+        child.stdout!.once("data", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      await waitForOwnedReadiness({
+        child,
+        readiness: async () =>
+          await new Promise<boolean>((resolve) => {
+            const request = http.get(
+              "http://127.0.0.1:37645/login",
+              (response) => {
+                response.resume();
+                response.once("end", () => resolve(true));
+              },
+            );
+            request.once("error", () => resolve(false));
+          }),
+        deadline: Date.now() + 5_000,
+      });
+    } finally {
+      await stopRuntimeChildAndAssertPortFree({ child });
+    }
+  },
+);
 
 test(
   "the real Windows private-stage ACL path supports a clean proof",

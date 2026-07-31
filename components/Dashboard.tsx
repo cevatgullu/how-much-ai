@@ -6,6 +6,13 @@ import type { ProviderId } from "@/lib/providers/types";
 import { loadSettings, saveSettings } from "@/lib/storage";
 import { refreshAllAccounts } from "@/lib/refresh-all";
 import {
+  processLocalNotificationSnapshot,
+  type LocalNotifyRuntimeResult,
+  type LocalNotifyRuntimeStatus,
+  type LocalSnapshotInput,
+} from "@/lib/local-notify-coordinator";
+import type { LocalNotifyRules } from "@/lib/local-notify-detect";
+import {
   archiveUnreadableVault,
   fetchVault,
   persistVaultMutations,
@@ -37,6 +44,73 @@ function errText(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
+const LOCAL_LABEL_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+
+export function localAccountLabel(
+  account: Pick<BrowserAccount, "label" | "provider">,
+  providerOrdinal: number,
+): string {
+  const nickname = typeof account.label === "string" ? account.label.trim() : "";
+  if (
+    nickname.length >= 1 &&
+    nickname.length <= 40 &&
+    !LOCAL_LABEL_CONTROL_PATTERN.test(nickname) &&
+    !nickname.includes("@")
+  ) return nickname;
+  return `${account.provider === "openai" ? "ChatGPT" : "Claude"} ${providerOrdinal}`;
+}
+
+type DashboardLocalNotificationProcessor = (
+  input: LocalSnapshotInput,
+) => Promise<LocalNotifyRuntimeResult>;
+
+interface ProcessLocalDashboardSnapshotOptions {
+  strictLocal: boolean;
+  response: UsageResponse;
+  account: BrowserAccount;
+  activeAccounts: readonly BrowserAccount[];
+  rules: LocalNotifyRules;
+  process?: DashboardLocalNotificationProcessor;
+}
+
+export async function processLocalDashboardSnapshot({
+  strictLocal,
+  response,
+  account,
+  activeAccounts,
+  rules,
+  process = processLocalNotificationSnapshot,
+}: ProcessLocalDashboardSnapshotOptions): Promise<LocalNotifyRuntimeStatus | null> {
+  if (
+    !strictLocal ||
+    response.status !== "ready" ||
+    response.stale === true ||
+    !response.usage
+  ) return null;
+
+  let providerOrdinal = 0;
+  for (const candidate of activeAccounts) {
+    if (candidate.provider !== account.provider) continue;
+    providerOrdinal += 1;
+    if (candidate.id === account.id) break;
+  }
+  if (providerOrdinal < 1) return null;
+
+  try {
+    const result = await process({
+      accountId: account.id,
+      accountLabel: localAccountLabel(account, providerOrdinal),
+      bars: extractBars(response.usage),
+      activeAccountIds: activeAccounts.map((candidate) => candidate.id),
+      rules,
+      stale: false,
+    });
+    return result.status;
+  } catch {
+    return "worker_error";
+  }
+}
+
 interface DashboardProps {
   showSignOut: boolean;
   strictLocal: boolean;
@@ -59,6 +133,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [reconnectAccount, setReconnectAccount] = useState<BrowserAccount | null>(null);
   const [notifyOpen, setNotifyOpen] = useState(false);
+  const [localNotifyStatus, setLocalNotifyStatus] = useState<LocalNotifyRuntimeStatus>("idle");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefreshAll, setLastRefreshAll] = useState<{ at: number; updated: number; total: number } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -187,7 +262,8 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
 
   useEffect(() => {
     if (vaultState !== "ready") return;
-    if (!saveSettings({ autoRefresh })) {
+    const current = loadSettings();
+    if (!saveSettings({ ...current, autoRefresh })) {
       setPreferenceError("Couldn't save the auto-refresh preference on this device.");
     } else {
       setPreferenceError(null);
@@ -322,6 +398,15 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             cooldownUntil: data.cooldownUntil,
           },
         }));
+        void processLocalDashboardSnapshot({
+          strictLocal,
+          response: data,
+          account: cur,
+          activeAccounts: accountsRef.current,
+          rules: loadSettings().localNotifications,
+        }).then((status) => {
+          if (status !== null) setLocalNotifyStatus(status);
+        });
         return !data.stale;
       } catch {
         if (accountsRef.current.some((a) => a.id === id)) {
@@ -335,7 +420,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         inFlight.current.delete(id);
       }
     },
-    [queueSave],
+    [queueSave, strictLocal],
   );
 
   const refreshAll = useCallback(async () => {
@@ -532,7 +617,8 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
 
   const retrySave = useCallback(() => queueSave(), [queueSave]);
   const retryPreference = useCallback(() => {
-    if (saveSettings({ autoRefresh })) setPreferenceError(null);
+    const current = loadSettings();
+    if (saveSettings({ ...current, autoRefresh })) setPreferenceError(null);
   }, [autoRefresh]);
 
   return (
@@ -830,7 +916,13 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         reconnectAccount={reconnectAccount}
         onServerConnected={reloadVault}
       />
-      <NotificationsPanel open={notifyOpen} onClose={closeNotifications} />
+      <NotificationsPanel
+        open={notifyOpen}
+        onClose={closeNotifications}
+        strictLocal={strictLocal}
+        autoRefresh={autoRefresh}
+        localStatus={localNotifyStatus}
+      />
     </div>
   );
 }

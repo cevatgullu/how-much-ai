@@ -1,23 +1,30 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import type { NotifyConfig, NotifySettings } from "@/lib/notify-client";
+import type { LocalNotifyRuntimeStatus } from "@/lib/local-notify-coordinator";
 import {
-  DEFAULT_CONFIG,
-  disablePush,
-  enablePush,
-  fetchNotifySettings,
-  currentPushSubscription,
-  pushSupported,
-  saveNotifyConfig,
-  type NotifyConfig,
-  type NotifySettings,
-} from "@/lib/notify-client";
+  localNotificationPermission,
+  requestLocalNotificationPermission,
+} from "@/lib/local-notify-delivery";
+import { loadSettings, saveSettings, type Settings } from "@/lib/storage";
 import { ModalShell } from "./ModalShell";
 
 interface NotificationsPanelProps {
   open: boolean;
   onClose: () => void;
+  strictLocal: boolean;
+  autoRefresh: boolean;
+  localStatus: LocalNotifyRuntimeStatus;
 }
+
+const DEFAULT_CONFIG: NotifyConfig = {
+  recovery: true,
+  warning: true,
+  everyReset: false,
+  warnThreshold: 90,
+  recoveryThreshold: 80,
+};
 
 type PushState = "loading" | "on" | "off" | "denied" | "unsupported" | "error";
 
@@ -106,7 +113,156 @@ function Toggle({
   );
 }
 
-export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
+function LocalNotificationsPanel({
+  open,
+  onClose,
+  autoRefresh,
+  localStatus,
+}: Omit<NotificationsPanelProps, "strictLocal">) {
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(
+    () => localNotificationPermission(),
+  );
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [storageError, setStorageError] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setSettings(loadSettings());
+    setPermission(localNotificationPermission());
+    setStorageError(false);
+  }, [open]);
+
+  const updateRules = useCallback((next: Settings["localNotifications"]) => {
+    const current = loadSettings();
+    const nextSettings = { ...current, localNotifications: next };
+    if (!saveSettings(nextSettings)) {
+      setStorageError(true);
+      return;
+    }
+    setSettings(nextSettings);
+    setStorageError(false);
+  }, []);
+
+  const requestPermission = useCallback(async () => {
+    if (permissionBusy || permission !== "default") return;
+    setPermissionBusy(true);
+    try {
+      await requestLocalNotificationPermission();
+      setPermission(localNotificationPermission());
+    } finally {
+      setPermissionBusy(false);
+    }
+  }, [permission, permissionBusy]);
+
+  const statusMessage = storageError || localStatus === "storage_error"
+    ? "Yerel bildirim ayarları bu cihazda saklanamadı."
+    : permission === "unsupported" || localStatus === "unsupported"
+      ? "Bu tarayıcı yerel bildirimleri desteklemiyor."
+      : permission === "denied" || localStatus === "denied"
+        ? "Bildirim izni engellendi; tarayıcı ayarlarından izin verin."
+        : localStatus === "worker_error"
+          ? "Yerel bildirim çalışanına ulaşılamadı."
+          : localStatus === "lock_unavailable"
+            ? "Yerel bildirimler başka bir sekmede işleniyor."
+            : permission === "granted"
+              ? "Bu cihazda yerel bildirimler hazır."
+              : "Bildirimler yalnızca aşağıdaki düğmeye bastığınızda izin ister.";
+
+  return (
+    <ModalShell
+      open={open}
+      title="Bildirimler"
+      description="Limit geçişlerini yalnızca bu cihazda takip edin."
+      onClose={onClose}
+      dismissible={!permissionBusy}
+    >
+      <div className="mt-5 space-y-4">
+        <section className="rounded-xl border border-border bg-bg p-4" aria-labelledby="local-device-heading">
+          <div className="flex items-start justify-between gap-4">
+            <span className="min-w-0">
+              <h3 id="local-device-heading" className="text-sm font-medium text-ivory">Bu cihaz</h3>
+              <span className="mt-1 block text-xs leading-relaxed text-muted" aria-live="polite">
+                {statusMessage}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => void requestPermission()}
+              disabled={permissionBusy || permission !== "default"}
+              className="min-h-11 shrink-0 rounded-lg bg-coral px-3.5 py-1.5 text-sm font-medium text-white enabled:hover:bg-coral-pressed disabled:opacity-45"
+            >
+              {permissionBusy ? "İsteniyor…" : "Bildirim izni ver"}
+            </button>
+          </div>
+        </section>
+
+        {!autoRefresh && (
+          <p className="rounded-xl border border-[#e3b56e]/35 bg-[#e3b56e]/10 px-4 py-3 text-xs leading-relaxed text-[#f0c47d]" role="status">
+            Otomatik yenileme kapalı; canlı bildirimler duraklatıldı.
+          </p>
+        )}
+
+        <fieldset className="space-y-2">
+          <legend className="text-[11px] font-medium uppercase tracking-wide text-faint">Yerel kurallar</legend>
+          <Toggle
+            checked={settings.localNotifications.remainingWarnings}
+            onChange={() => updateRules({
+              ...settings.localNotifications,
+              remainingWarnings: !settings.localNotifications.remainingWarnings,
+            })}
+            label="Kalan limit uyarıları"
+            description="Sabit kalan-limit eşiklerini geçince bu cihazda bildirir."
+          />
+          <div className="overflow-hidden rounded-xl border border-border bg-bg px-4 py-3" aria-label="Kalan limit uyarı ölçeği">
+            <div aria-hidden="true" className="relative mb-2 h-2 rounded-full bg-track">
+              <span className="absolute inset-y-0 left-0 w-1/2 rounded-full bg-coral/75" />
+              {[0, 5, 10, 15, 20, 30, 40, 50].map((threshold) => (
+                <span
+                  key={threshold}
+                  className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-ivory/75"
+                  style={{ left: `${threshold}%` }}
+                />
+              ))}
+            </div>
+            <p className="text-center text-xs tabular-nums tracking-wide text-muted">
+              50 · 40 · 30 · 20 · 15 · 10 · 5 · bitti
+            </p>
+          </div>
+          <Toggle
+            checked={settings.localNotifications.resetNotifications}
+            onChange={() => updateRules({
+              ...settings.localNotifications,
+              resetNotifications: !settings.localNotifications.resetNotifications,
+            })}
+            label="Limit sıfırlanınca bildir"
+            description="Doğrulanmış yeni sıfırlama zamanı geldiğinde bu cihazda bildirir."
+          />
+        </fieldset>
+
+        <p className="border-t border-border/60 pt-4 text-[11px] leading-relaxed text-faint">
+          Yerel bildirimler yalnızca bu pencere açık veya simge durumuna küçültülmüşken çalışır; hesap bilgileri bir bildirim servisine gönderilmez.
+        </p>
+      </div>
+    </ModalShell>
+  );
+}
+
+export function NotificationsPanel(props: NotificationsPanelProps) {
+  if (props.strictLocal) {
+    return (
+      <LocalNotificationsPanel
+        open={props.open}
+        onClose={props.onClose}
+        autoRefresh={props.autoRefresh}
+        localStatus={props.localStatus}
+      />
+    );
+  }
+  return <HostedNotificationsPanel open={props.open} onClose={props.onClose} />;
+}
+
+function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProps, "open" | "onClose">) {
   const warnInputId = useId();
   const recoveryInputId = useId();
   const warnErrorId = useId();
@@ -154,7 +310,8 @@ export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
     if (generationRef.current !== generation) return;
     setPushState("loading");
     setPushError(null);
-    if (!pushSupported()) {
+    const hosted = await import("@/lib/notify-client");
+    if (!hosted.pushSupported()) {
       if (generationRef.current === generation) setPushState("unsupported");
       return;
     }
@@ -164,7 +321,7 @@ export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
         if (generationRef.current === generation) setPushState("denied");
         return;
       }
-      const subscription = await currentPushSubscription();
+      const subscription = await hosted.currentPushSubscription();
       if (generationRef.current === generation) setPushState(subscription ? "on" : "off");
     } catch (error) {
       if (generationRef.current !== generation) return;
@@ -191,7 +348,8 @@ export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
     setSaving(false);
     setConfirmDiscard(false);
 
-    void fetchNotifySettings(controller.signal)
+    void import("@/lib/notify-client")
+      .then((hosted) => hosted.fetchNotifySettings(controller.signal))
       .then((nextSettings) => {
         if (generationRef.current !== generation) return;
         const nextConfig = nextSettings.config ?? DEFAULT_CONFIG;
@@ -234,13 +392,14 @@ export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
     setBusy(true);
     setPushError(null);
     try {
+      const hosted = await import("@/lib/notify-client");
       if (pushState === "error") {
         await refreshPushState(generation);
       } else if (pushState === "on") {
-        await disablePush();
+        await hosted.disablePush();
         if (generationRef.current === generation) setPushState("off");
       } else {
-        const result = await enablePush(settings.vapidPublicKey);
+        const result = await hosted.enablePush(settings.vapidPublicKey);
         if (generationRef.current !== generation) return;
         if (result.ok) {
           setPushState("on");
@@ -286,6 +445,7 @@ export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
     setActionError(null);
     setSaved(false);
     try {
+      const { saveNotifyConfig } = await import("@/lib/notify-client");
       const next = await saveNotifyConfig(draftConfig);
       if (generationRef.current !== generation) return;
       setSavedConfig(next);

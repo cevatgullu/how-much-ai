@@ -170,7 +170,7 @@ test("bootstrap start verifies the password without setting a cookie", async () 
 
 test("bootstrap consume requires the exact same origin, consumes once, and sets one host-only strict cookie", async () => {
   process.env = validStrictEnvironment();
-  const ticket = await startTicket();
+  let ticket = await startTicket();
   const existingSession = await createSession();
 
   for (const headers of [
@@ -193,6 +193,16 @@ test("bootstrap consume requires the exact same origin, consumes once, and sets 
     ),
   );
   assert.equal(wrongTicket.status, 401);
+
+  const invalidatedTicket = await consumePost(
+    jsonRequest(
+      "/api/auth/bootstrap/consume",
+      { ticket },
+      { Origin: "http://127.0.0.1:37645", "Sec-Fetch-Site": "same-origin" },
+    ),
+  );
+  assert.equal(invalidatedTicket.status, 401);
+  ticket = await startTicket();
 
   const response = await consumePost(
     jsonRequest(

@@ -15,8 +15,12 @@ function Get-HmaStableMicrosoftEdge {
 
     $candidates = New-Object 'Collections.Generic.List[string]'
     foreach ($base in @(
-            [Environment]::GetEnvironmentVariable('ProgramFiles', 'Process'),
-            [Environment]::GetEnvironmentVariable('ProgramFiles(x86)', 'Process')
+            [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::ProgramFiles
+            ),
+            [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::ProgramFilesX86
+            )
         )) {
         if (-not [string]::IsNullOrWhiteSpace($base)) {
             [void]$candidates.Add(
@@ -27,22 +31,49 @@ function Get-HmaStableMicrosoftEdge {
 
     foreach ($candidate in @($candidates | Select-Object -Unique)) {
         try {
-            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-                continue
+            $fullCandidate = [IO.Path]::GetFullPath($candidate)
+            $rootPath = [IO.Path]::GetPathRoot($fullCandidate)
+            if ([string]::IsNullOrWhiteSpace($rootPath) -or
+                $rootPath -notmatch '^[A-Za-z]:\\$') {
+                throw 'The Edge path is invalid.'
             }
-            $item = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
-            if ($item.PSIsContainer -or
-                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-                -not [string]::Equals(
-                    [IO.Path]::GetFullPath($candidate),
-                    [string]$item.FullName,
-                    [StringComparison]::OrdinalIgnoreCase
-                )) {
-                continue
+
+            $currentPath = $rootPath
+            $segments = @(
+                $fullCandidate.Substring($rootPath.Length).Split(
+                    [char[]]@(
+                        [IO.Path]::DirectorySeparatorChar,
+                        [IO.Path]::AltDirectorySeparatorChar
+                    ),
+                    [StringSplitOptions]::RemoveEmptyEntries
+                )
+            )
+            for ($index = -1; $index -lt $segments.Count; $index += 1) {
+                if ($index -ge 0) {
+                    $currentPath = [IO.Path]::Combine(
+                        $currentPath,
+                        [string]$segments[$index]
+                    )
+                }
+                $item = Get-Item `
+                    -LiteralPath $currentPath `
+                    -Force `
+                    -ErrorAction Stop
+                $isLeaf = $index -eq ($segments.Count - 1)
+                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    ($isLeaf -and $item.PSIsContainer) -or
+                    (-not $isLeaf -and -not $item.PSIsContainer) -or
+                    -not [string]::Equals(
+                        [IO.Path]::GetFullPath($currentPath),
+                        [IO.Path]::GetFullPath([string]$item.FullName),
+                        [StringComparison]::OrdinalIgnoreCase
+                    )) {
+                    throw 'The Edge path is invalid.'
+                }
             }
 
             $signature = Get-AuthenticodeSignature `
-                -LiteralPath $item.FullName `
+                -LiteralPath $fullCandidate `
                 -ErrorAction Stop
             if ([string]$signature.Status -cne 'Valid' -or
                 $null -eq $signature.SignerCertificate -or
@@ -51,7 +82,7 @@ function Get-HmaStableMicrosoftEdge {
                 )) {
                 continue
             }
-            return [string]$item.FullName
+            return $fullCandidate
         } catch {
         }
     }

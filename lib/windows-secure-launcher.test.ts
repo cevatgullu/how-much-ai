@@ -187,6 +187,44 @@ test(
 );
 
 test(
+  "Edge launch arguments survive the actual PowerShell 5.1 Start-Process argv boundary",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      ...commonSetup,
+      "$stateWithSpaces = 'C:\\private state'",
+      "$plan = New-HmaEdgeLaunchPlan -Config $config -StateRoot $stateWithSpaces -EdgePath 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe' -LaunchUri 'http://127.0.0.1:37645/'",
+      "$captureScript = Join-Path $env:TEMP ('hma-argv-' + [Guid]::NewGuid().ToString('N') + '.ps1')",
+      "$captureOutput = Join-Path $env:TEMP ('hma-argv-' + [Guid]::NewGuid().ToString('N') + '.json')",
+      "$captureText = \"[IO.File]::WriteAllLines(`$env:HMA_ARGV_OUTPUT, [string[]]`$args, (New-Object Text.UTF8Encoding(`$false)))\"",
+      "[IO.File]::WriteAllText($captureScript, $captureText, (New-Object Text.UTF8Encoding($false)))",
+      "$previousOutput = [Environment]::GetEnvironmentVariable('HMA_ARGV_OUTPUT', 'Process')",
+      "try {",
+      "  [Environment]::SetEnvironmentVariable('HMA_ARGV_OUTPUT', $captureOutput, 'Process')",
+      "  $prefix = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$captureScript)",
+      `  $child = Start-Process -FilePath ${psLiteral(powerShell51)} -ArgumentList ([string[]]@($prefix + @($plan.ArgumentList))) -WindowStyle Hidden -Wait -PassThru`,
+      "  $captured = @([IO.File]::ReadAllLines($captureOutput, (New-Object Text.UTF8Encoding($false, $true))))",
+      "  $expected = @('--app=http://127.0.0.1:37645/', ('--user-data-dir=' + (Join-Path $stateWithSpaces 'edge-profile')), '--no-first-run', '--disable-background-mode')",
+      "  $exact = ($captured.Count -eq $expected.Count)",
+      "  for ($index = 0; $exact -and $index -lt $expected.Count; $index += 1) { $exact = ([string]$captured[$index] -ceq [string]$expected[$index]) }",
+      "  [pscustomobject]@{ exitCode = $child.ExitCode; count = $captured.Count; exact = $exact } | ConvertTo-Json -Compress",
+      "} finally {",
+      "  [Environment]::SetEnvironmentVariable('HMA_ARGV_OUTPUT', $previousOutput, 'Process')",
+      "  if ([IO.File]::Exists($captureScript)) { [IO.File]::Delete($captureScript) }",
+      "  if ([IO.File]::Exists($captureOutput)) { [IO.File]::Delete($captureOutput) }",
+      "}",
+    ]);
+
+    assert.deepEqual(parseSafeRecord(stdout), {
+      exitCode: 0,
+      count: 4,
+      exact: true,
+    });
+    assert.equal(stderr.length, 0);
+  },
+);
+
+test(
   "listener ownership and dedicated Edge cleanup use exact executable and argv matches",
   windowsOnly,
   async () => {
@@ -322,6 +360,40 @@ test(
 );
 
 test(
+  "scheduled-task hash guards execute an exactly reviewed script and reject changed bytes",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      ...commonSetup,
+      "$root = Join-Path ([IO.Path]::GetTempPath()) ('hma-task-guard-' + [Guid]::NewGuid().ToString('N'))",
+      "$bootstrap = Join-Path $root 'bootstrap'",
+      "$state = Join-Path $root 'state'",
+      "$null = New-Item -ItemType Directory -Path $bootstrap -Force",
+      "$null = New-Item -ItemType Directory -Path $state -Force",
+      "$marker = Join-Path $state 'executed.marker'",
+      "$scriptText = \"param([string]`$StateRoot,[string]`$IntegrityModuleHash)`r`n[IO.File]::WriteAllText((Join-Path `$StateRoot 'executed.marker'), 'ok')\"",
+      "$startPath = Join-Path $bootstrap 'start-secure-local.ps1'",
+      "$openPath = Join-Path $bootstrap 'open-secure-local.ps1'",
+      "[IO.File]::WriteAllText($startPath, $scriptText, (New-Object Text.UTF8Encoding($false)))",
+      "[IO.File]::WriteAllText($openPath, $scriptText, (New-Object Text.UTF8Encoding($false)))",
+      "$hashes = @{ start = (Get-FileHash -Algorithm SHA256 -LiteralPath $startPath).Hash.ToLowerInvariant(); open = (Get-FileHash -Algorithm SHA256 -LiteralPath $openPath).Hash.ToLowerInvariant(); integrity = ('3' * 64) }",
+      ` $plan = @(New-HmaTaskPlans -BootstrapRoot $bootstrap -StateRoot $state -PowerShellPath ${psLiteral(powerShell51)} -BootstrapHashes $hashes)[0]`,
+      "$valid = Start-Process -FilePath $plan.FilePath -ArgumentList $plan.ActionArguments -WindowStyle Hidden -Wait -PassThru",
+      "$validLaunched = ($valid.ExitCode -eq 0 -and [IO.File]::Exists($marker))",
+      "if ([IO.File]::Exists($marker)) { [IO.File]::Delete($marker) }",
+      "[IO.File]::AppendAllText($startPath, \"`r`n# changed\")",
+      "$changed = Start-Process -FilePath $plan.FilePath -ArgumentList $plan.ActionArguments -WindowStyle Hidden -Wait -PassThru",
+      "$changedRejected = ($changed.ExitCode -ne 0 -and -not [IO.File]::Exists($marker))",
+      "Remove-Item -LiteralPath $root -Recurse -Force",
+      "[bool[]]@($validLaunched, $changedRejected) | ConvertTo-Json -Compress",
+    ]);
+
+    assert.deepEqual(parseSafeRecord(stdout), [true, true]);
+    assert.equal(stderr.length, 0);
+  },
+);
+
+test(
   "the Edge launcher sends a password and starts Edge only while one exact service process owns the listener",
   windowsOnly,
   async () => {
@@ -344,7 +416,7 @@ test(
       `Copy-Item -LiteralPath ${psLiteral(modulePath)} -Destination (Join-Path $bootstrap 'SecureLocalRuntime.psm1')`,
       `Copy-Item -LiteralPath ${psLiteral(openScriptPath)} -Destination (Join-Path $bootstrap 'open-secure-local.ps1')`,
       "[IO.File]::WriteAllText((Join-Path $bootstrap 'start-secure-local.ps1'), '# reviewed start')",
-      "[IO.File]::WriteAllText((Join-Path $bootstrap 'connect-secure-local.ps1'), '# reviewed connector')",
+      "[IO.File]::WriteAllText((Join-Path $bootstrap 'connect-claude-secure.ps1'), '# reviewed connector')",
       "$syntheticSecrets = \"function Unprotect-HmaSecretBundle { [pscustomobject]@{ version = 1; appPassword = ('a' * 64); authSecret = ('b' * 64); vaultEncryptionSecret = ('c' * 64) } }`r`nExport-ModuleMember -Function 'Unprotect-HmaSecretBundle'\"",
       "[IO.File]::WriteAllText((Join-Path $bootstrap 'SecureLocalSecrets.psm1'), $syntheticSecrets)",
       "[IO.File]::WriteAllText((Join-Path $state 'secrets.dpapi'), 'intentionally invalid')",
@@ -354,7 +426,7 @@ test(
       "  (New-ManifestEntry -Root $bootstrap -Relative 'SecureLocalIntegrity.psm1' -ManifestPath 'scripts/windows/SecureLocalIntegrity.psm1'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'SecureLocalRuntime.psm1' -ManifestPath 'scripts/windows/SecureLocalRuntime.psm1'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'SecureLocalSecrets.psm1' -ManifestPath 'scripts/windows/SecureLocalSecrets.psm1'),",
-      "  (New-ManifestEntry -Root $bootstrap -Relative 'connect-secure-local.ps1' -ManifestPath 'scripts/windows/connect-secure-local.ps1'),",
+      "  (New-ManifestEntry -Root $bootstrap -Relative 'connect-claude-secure.ps1' -ManifestPath 'scripts/windows/connect-claude-secure.ps1'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'open-secure-local.ps1' -ManifestPath 'scripts/windows/open-secure-local.ps1'),",
       "  (New-ManifestEntry -Root $bootstrap -Relative 'start-secure-local.ps1' -ManifestPath 'scripts/windows/start-secure-local.ps1')",
       ")",
@@ -362,15 +434,22 @@ test(
       "$integrityPath = Join-Path $state 'integrity.json'",
       "[IO.File]::WriteAllText($integrityPath, ($manifest | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))",
       "$byName = @{}; foreach ($entry in $bootstrapFiles) { $byName[[IO.Path]::GetFileName([string]$entry.path)] = [string]$entry.sha256 }",
-      "$install = [ordered]@{ version = 1; appRoot = $appRoot; stateRoot = $state; nodePath = $nodePath; port = 37645; upstreamBase = '1238189b7017601d21e3579d041480ce3773e191'; commit = $commit; manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityPath).Hash.ToLowerInvariant(); bootstrapHashes = [ordered]@{ start = $byName['start-secure-local.ps1']; open = $byName['open-secure-local.ps1']; connector = $byName['connect-secure-local.ps1']; integrity = $byName['SecureLocalIntegrity.psm1']; runtime = $byName['SecureLocalRuntime.psm1']; secrets = $byName['SecureLocalSecrets.psm1'] } }",
+      "$install = [ordered]@{ version = 1; appRoot = $appRoot; stateRoot = $state; nodePath = $nodePath; port = 37645; upstreamBase = '1238189b7017601d21e3579d041480ce3773e191'; commit = $commit; manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityPath).Hash.ToLowerInvariant(); bootstrapHashes = [ordered]@{ start = $byName['start-secure-local.ps1']; open = $byName['open-secure-local.ps1']; connector = $byName['connect-claude-secure.ps1']; integrity = $byName['SecureLocalIntegrity.psm1']; runtime = $byName['SecureLocalRuntime.psm1']; secrets = $byName['SecureLocalSecrets.psm1'] } }",
       "[IO.File]::WriteAllText((Join-Path $state 'install.json'), ($install | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))",
       `Import-Module ${psLiteral(secretsModulePath)} -Force`,
       "Set-HmaPrivateAcl -LiteralPath $state",
       "Remove-Module SecureLocalSecrets -Force -ErrorAction SilentlyContinue",
-      "$script:readinessCalls = 0; $script:passwordPosts = 0; $script:edgeStarts = 0",
-      "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)][string]$LiteralPath,[string]$PathType) if ($LiteralPath -match 'Microsoft\\\\Edge\\\\Application\\\\msedge\\.exe$') { return $true }; Microsoft.PowerShell.Management\\Test-Path @PSBoundParameters }",
-      "function Get-Item { [CmdletBinding()] param([Parameter(Position=0)][string]$LiteralPath,[switch]$Force) if ($LiteralPath -match 'Microsoft\\\\Edge\\\\Application\\\\msedge\\.exe$') { return [pscustomobject]@{ FullName = $LiteralPath; PSIsContainer = $false; Attributes = [IO.FileAttributes]::Normal } }; Microsoft.PowerShell.Management\\Get-Item @PSBoundParameters }",
-      "function Get-AuthenticodeSignature { [CmdletBinding()] param([string]$LiteralPath) [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = 'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US' } } }",
+      "$stableProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)",
+      "$stableProgramFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)",
+      "$poisonProgramFiles = Join-Path $env:HMA_OPEN_ROOT 'poison-program-files'",
+      "$poisonProgramFilesX86 = Join-Path $env:HMA_OPEN_ROOT 'poison-program-files-x86'",
+      "$script:edgeBases = @(@($stableProgramFiles, $stableProgramFilesX86, $poisonProgramFiles, $poisonProgramFilesX86) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)",
+      "[Environment]::SetEnvironmentVariable('ProgramFiles', $poisonProgramFiles, 'Process')",
+      "[Environment]::SetEnvironmentVariable('ProgramFiles(x86)', $poisonProgramFilesX86, 'Process')",
+      "$script:readinessCalls = 0; $script:passwordPosts = 0; $script:edgeStarts = 0; $script:poisonCandidateUses = 0",
+      "function Test-Path { [CmdletBinding()] param([Parameter(Position=0)][string]$LiteralPath,[string]$PathType) if ($LiteralPath -match 'Microsoft\\\\Edge\\\\Application\\\\msedge\\.exe$') { if ($LiteralPath.StartsWith($poisonProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or $LiteralPath.StartsWith($poisonProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)) { $script:poisonCandidateUses += 1 }; return $true }; Microsoft.PowerShell.Management\\Test-Path @PSBoundParameters }",
+      "function Get-Item { [CmdletBinding()] param([Parameter(Position=0)][string]$LiteralPath,[switch]$Force) foreach ($base in $script:edgeBases) { $candidate = Join-Path $base 'Microsoft\\Edge\\Application\\msedge.exe'; if ([string]::Equals($candidate, $LiteralPath, [StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($LiteralPath.TrimEnd('\\') + '\\', [StringComparison]::OrdinalIgnoreCase)) { if ($LiteralPath.StartsWith($poisonProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or $LiteralPath.StartsWith($poisonProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)) { $script:poisonCandidateUses += 1 }; $isLeaf = [string]::Equals($candidate, $LiteralPath, [StringComparison]::OrdinalIgnoreCase); $attributes = if (-not $isLeaf -and $env:HMA_EDGE_ANCESTOR_REPARSE -ceq '1' -and $LiteralPath.TrimEnd('\\').EndsWith('\\Microsoft', [StringComparison]::OrdinalIgnoreCase) -and ($LiteralPath.StartsWith($stableProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or (-not [string]::IsNullOrWhiteSpace($stableProgramFilesX86) -and $LiteralPath.StartsWith($stableProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)))) { [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint } elseif ($isLeaf) { [IO.FileAttributes]::Normal } else { [IO.FileAttributes]::Directory }; return [pscustomobject]@{ FullName = $LiteralPath; PSIsContainer = (-not $isLeaf); Attributes = $attributes } } }; Microsoft.PowerShell.Management\\Get-Item @PSBoundParameters }",
+      "function Get-AuthenticodeSignature { [CmdletBinding()] param([string]$LiteralPath) if ($LiteralPath.StartsWith($poisonProgramFiles, [StringComparison]::OrdinalIgnoreCase) -or $LiteralPath.StartsWith($poisonProgramFilesX86, [StringComparison]::OrdinalIgnoreCase)) { $script:poisonCandidateUses += 1 }; [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = 'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US' } } }",
       "function Get-NetTCPConnection { [CmdletBinding()] param([string]$LocalAddress,[int]$LocalPort,[string]$State) [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 37645; State = 'Listen'; OwningProcess = 42 } }",
       "$exactCommand = '\"' + $nodePath + '\" \"' + (Join-Path $appRoot 'node_modules\\next\\dist\\bin\\next') + '\" start --hostname 127.0.0.1 --port 37645'",
       "function Get-CimInstance { [CmdletBinding()] param([string]$ClassName,[string]$Filter) $command = if ($env:HMA_OPEN_MATCH -ceq '1') { $exactCommand } else { $exactCommand + ' --inspect' }; [pscustomobject]@{ ProcessId = 42; ExecutablePath = $nodePath; CommandLine = $command } }",
@@ -379,7 +458,7 @@ test(
       "function Start-Process { [CmdletBinding()] param([string]$FilePath,[object[]]$ArgumentList,[string]$WindowStyle) $script:edgeStarts += 1 }",
       "$failed = $false",
       "try { . (Join-Path $bootstrap 'open-secure-local.ps1') -StateRoot $state -IntegrityModuleHash $install.bootstrapHashes.integrity } catch { $failed = $true }",
-      "[pscustomobject]@{ failed = $failed; readinessCalls = $script:readinessCalls; passwordPosts = $script:passwordPosts; edgeStarts = $script:edgeStarts } | ConvertTo-Json -Compress",
+      "[pscustomobject]@{ failed = $failed; readinessCalls = $script:readinessCalls; passwordPosts = $script:passwordPosts; edgeStarts = $script:edgeStarts; poisonCandidateUsed = ($script:poisonCandidateUses -gt 0) } | ConvertTo-Json -Compress",
     ];
 
     try {
@@ -393,6 +472,7 @@ test(
         readinessCalls: 1,
         passwordPosts: 1,
         edgeStarts: 1,
+        poisonCandidateUsed: false,
       });
       assert.equal(matching.stderr.length, 0);
       assert.equal(matching.stdout.includes(ticket), false);
@@ -409,10 +489,29 @@ test(
         readinessCalls: 1,
         passwordPosts: 0,
         edgeStarts: 0,
+        poisonCandidateUsed: false,
       });
       assert.equal(mismatched.stderr.length, 0);
       assert.equal(mismatched.stdout.includes(ticket), false);
       await rm(mismatchedRoot, { recursive: true, force: true });
+
+      const reparseRoot = `${root}-reparse`;
+      const reparse = await runPowerShell(fixtureSetup, {
+        HMA_OPEN_ROOT: reparseRoot,
+        HMA_OPEN_MATCH: "1",
+        HMA_OPEN_TICKET: ticket,
+        HMA_EDGE_ANCESTOR_REPARSE: "1",
+      });
+      assert.deepEqual(parseSafeRecord(reparse.stdout), {
+        failed: true,
+        readinessCalls: 0,
+        passwordPosts: 0,
+        edgeStarts: 0,
+        poisonCandidateUsed: false,
+      });
+      assert.equal(reparse.stderr.length, 0);
+      assert.equal(reparse.stdout.includes(ticket), false);
+      await rm(reparseRoot, { recursive: true, force: true });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -443,11 +542,11 @@ test(
         `Copy-Item -LiteralPath ${psLiteral(secretsModulePath)} -Destination (Join-Path $source 'scripts\\windows\\SecureLocalSecrets.psm1')`,
         `Copy-Item -LiteralPath ${psLiteral(openScriptPath)} -Destination (Join-Path $source 'scripts\\windows\\open-secure-local.ps1')`,
         `Copy-Item -LiteralPath ${psLiteral(startScriptPath)} -Destination (Join-Path $source 'scripts\\windows\\start-secure-local.ps1')`,
-        "[IO.File]::WriteAllText((Join-Path $source 'scripts\\windows\\connect-secure-local.ps1'), '# reviewed connector')",
+        "[IO.File]::WriteAllText((Join-Path $source 'scripts\\windows\\connect-claude-secure.ps1'), '# reviewed connector')",
         "$nodePath = (Get-Command node.exe -ErrorAction Stop).Source",
         "function New-SourceEntry { param([string]$Relative) $full = Join-Path $source $Relative; $file = Microsoft.PowerShell.Management\\Get-Item -LiteralPath $full -Force; [pscustomobject]@{ path = $Relative.Replace('\\','/'); size = [int]$file.Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash.ToLowerInvariant() } }",
         "$runtimeFiles = @(New-SourceEntry 'package.json')",
-        "$bootstrapFiles = @((New-SourceEntry 'scripts\\windows\\SecureLocalIntegrity.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalRuntime.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalSecrets.psm1'), (New-SourceEntry 'scripts\\windows\\connect-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\open-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\start-secure-local.ps1'))",
+        "$bootstrapFiles = @((New-SourceEntry 'scripts\\windows\\SecureLocalIntegrity.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalRuntime.psm1'), (New-SourceEntry 'scripts\\windows\\SecureLocalSecrets.psm1'), (New-SourceEntry 'scripts\\windows\\connect-claude-secure.ps1'), (New-SourceEntry 'scripts\\windows\\open-secure-local.ps1'), (New-SourceEntry 'scripts\\windows\\start-secure-local.ps1'))",
         "$manifest = [ordered]@{ commit = $env:HMA_INSTALL_COMMIT; nodeSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodePath).Hash.ToLowerInvariant(); runtimeFiles = $runtimeFiles; bootstrapFiles = $bootstrapFiles }",
         "$manifestPath = Join-Path $source 'audit\\final\\runtime-manifest.json'",
         "[IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))",
@@ -472,12 +571,27 @@ test(
         "$secondFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $secondFailed = $true }",
         "$secondSecretHash = if ([IO.File]::Exists($secretsPath)) { (Get-FileHash -Algorithm SHA256 -LiteralPath $secretsPath).Hash } else { '' }",
         "$integrityPass = $false; if (-not $secondFailed) { Import-Module (Join-Path $state 'bootstrap\\SecureLocalIntegrity.psm1') -Force; $integrityPass = ($null -ne (Assert-HmaStartupIntegrity -StateRoot $state)) }",
+        "$mutationMarker = Join-Path $state 'mutation-marker.txt'",
+        "[IO.File]::WriteAllText($mutationMarker, 'must remain untouched', (New-Object Text.UTF8Encoding($false)))",
+        "$markerAcl = New-Object Security.AccessControl.FileSecurity",
+        "$markerAcl.SetAccessRuleProtection($true, $false)",
+        "$markerAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)",
+        "$markerRule = New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier('S-1-1-0')), [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.AccessControlType]::Allow)",
+        "[void]$markerAcl.AddAccessRule($markerRule)",
+        "[IO.File]::SetAccessControl($mutationMarker, $markerAcl)",
+        "$markerSddlBefore = [IO.File]::GetAccessControl($mutationMarker).Sddl",
+        "$beforeInvalidExisting = $script:registrationCount",
+        "$invalidExistingFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $state } catch { $invalidExistingFailed = $true }",
+        "$markerSddlAfter = [IO.File]::GetAccessControl($mutationMarker).Sddl",
+        "$invalidExistingUntouched = ($invalidExistingFailed -and [IO.File]::Exists($mutationMarker) -and [IO.File]::ReadAllText($mutationMarker) -ceq 'must remain untouched' -and $markerSddlBefore -ceq $markerSddlAfter -and $script:registrationCount -eq $beforeInvalidExisting)",
+        "Set-HmaPrivateAcl -LiteralPath $mutationMarker",
+        "[IO.File]::Delete($mutationMarker)",
         "[IO.File]::WriteAllText((Join-Path $source 'scripts\\windows\\unmanifested.ps1'), '# extra')",
         "$beforeRefusal = $script:registrationCount",
         "$unmanifestedFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_UNMANIFESTED_STATE } catch { $unmanifestedFailed = $true }",
         "[IO.File]::Delete((Join-Path $source 'scripts\\windows\\unmanifested.ps1'))",
         "$foreignFailed = $false; try { . " + psLiteral(installerScriptPath) + " -SourceRoot $source -ExpectedManifestSha256 $manifestHash -StateRoot $env:HMA_FOREIGN_STATE } catch { $foreignFailed = $true }",
-        "[pscustomobject]@{ first = (-not $firstFailed); second = (-not $secondFailed); secretsPreserved = ($firstSecretHash.Length -eq 64 -and $firstSecretHash -ceq $secondSecretHash); integrity = $integrityPass; taskCount = $script:taskStore.Count; registrations = $script:registrationCount; unmanifestedRejected = ($unmanifestedFailed -and -not [IO.Directory]::Exists($env:HMA_UNMANIFESTED_STATE) -and $script:registrationCount -eq $beforeRefusal); foreignTaskRejected = ($foreignFailed -and $script:registrationCount -eq $beforeRefusal) } | ConvertTo-Json -Compress",
+        "[pscustomobject]@{ first = (-not $firstFailed); second = (-not $secondFailed); secretsPreserved = ($firstSecretHash.Length -eq 64 -and $firstSecretHash -ceq $secondSecretHash); integrity = $integrityPass; invalidExistingUntouched = $invalidExistingUntouched; taskCount = $script:taskStore.Count; registrations = $script:registrationCount; unmanifestedRejected = ($unmanifestedFailed -and -not [IO.Directory]::Exists($env:HMA_UNMANIFESTED_STATE) -and $script:registrationCount -eq $beforeRefusal); foreignTaskRejected = ($foreignFailed -and $script:registrationCount -eq $beforeRefusal) } | ConvertTo-Json -Compress",
       ],
       {
         HMA_INSTALL_SOURCE: source,
@@ -494,6 +608,7 @@ test(
         second: true,
         secretsPreserved: true,
         integrity: true,
+        invalidExistingUntouched: true,
         taskCount: 2,
         registrations: 4,
         unmanifestedRejected: true,

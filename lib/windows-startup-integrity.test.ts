@@ -115,7 +115,7 @@ const runtimeContents: Record<string, string> = {
 const defaultBootstrapContents: Record<string, string> = {
   "start-secure-local.ps1": "# synthetic reviewed start",
   "open-secure-local.ps1": "# synthetic reviewed open",
-  "connect-secure-local.ps1": "# synthetic reviewed connector",
+  "connect-claude-secure.ps1": "# synthetic reviewed connector",
   "SecureLocalIntegrity.psm1": "# synthetic reviewed integrity",
   "SecureLocalRuntime.psm1": "# synthetic reviewed runtime",
   "SecureLocalSecrets.psm1": "# synthetic reviewed secrets",
@@ -124,7 +124,7 @@ const defaultBootstrapContents: Record<string, string> = {
 const bootstrapHashNames: Record<string, string> = {
   "start-secure-local.ps1": "start",
   "open-secure-local.ps1": "open",
-  "connect-secure-local.ps1": "connector",
+  "connect-claude-secure.ps1": "connector",
   "SecureLocalIntegrity.psm1": "integrity",
   "SecureLocalRuntime.psm1": "runtime",
   "SecureLocalSecrets.psm1": "secrets",

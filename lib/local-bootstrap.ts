@@ -47,12 +47,11 @@ export function createLocalBootstrapStore(
     },
 
     consume(ticket, now = Date.now()) {
-      if (!canonicalTicket(ticket)) return false;
-      const digest = digestTicket(ticket);
-      const expiresAt = retained.get(digest);
-      if (expiresAt === undefined) return false;
-      retained.delete(digest);
-      return expiresAt > now;
+      const expiresAt = canonicalTicket(ticket)
+        ? retained.get(digestTicket(ticket))
+        : undefined;
+      retained.clear();
+      return expiresAt !== undefined && expiresAt > now;
     },
   };
 }

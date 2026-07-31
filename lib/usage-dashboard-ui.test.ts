@@ -119,27 +119,27 @@ function renderAccountCard(
   }));
 }
 
-test("remaining allowance is the visible and accessible progress value without a false-zero first frame", () => {
+test("used allowance is the visible and accessible progress value without a false-zero first frame", () => {
   const markup = renderToStaticMarkup(createElement(UsageBar, {
-    bar: usageBar(15),
+    bar: usageBar(16),
     now: NOW,
     stale: true,
     freshnessDescriptionId: "freshness-1",
   }));
 
   assert.match(markup, />5 saatlik limit</);
-  assert.match(markup, />%15 kaldı</);
-  assert.match(markup, />Kullanılan: %85</);
+  assert.match(markup, />%16 kaldı</);
+  assert.match(markup, />Kullanılan: %84</);
   const progress = markup.match(/<div role="progressbar"[^>]*>/)?.[0] ?? "";
-  assert.match(progress, /aria-valuenow="15"/);
+  assert.match(progress, /aria-valuenow="84"/);
   assert.match(progress, /aria-describedby="freshness-1"/);
-  assert.match(progress, /aria-valuetext="[^"]*%15 kaldı[^"]*Kullanılan: %85[^"]*2 sa 30 dk sonra[^"]*31 Tem 22:30[^"]*Eski veri/);
+  assert.match(progress, /aria-valuetext="Kullanılan: %84[^"]*%16 kaldı[^"]*2 sa 30 dk sonra[^"]*31 Tem 22:30[^"]*Eski veri/);
   assert.match(markup, /<time dateTime="2026-07-31T22:30:00.000Z"[^>]*>[^<]*2 sa 30 dk sonra[^<]*31 Tem 22:30[^<]*<\/time>/);
-  assert.match(markup, /style="width:15%;/);
+  assert.match(markup, /style="width:84%;/);
   assert.doesNotMatch(markup, /style="width:0%;/);
 });
 
-test("remaining boundaries drive matching textual and rendered color states", () => {
+test("remaining boundaries drive state colors while used allowance drives fill width", () => {
   for (const [remaining, expectedText, expectedColor] of [
     [50, "Az kaldı", "var(--color-amber)"],
     [30, "Az kaldı", "var(--color-amber)"],
@@ -154,10 +154,44 @@ test("remaining boundaries drive matching textual and rendered color states", ()
     assert.match(markup, new RegExp(`>${expectedText}<`), `${remaining}% remaining must say ${expectedText}`);
     assert.match(
       markup,
-      new RegExp(`style="width:${remaining}%;background-color:${expectedColor.replace(/[()]/g, "\\$&")}"`),
-      `${remaining}% remaining must render ${expectedColor}`,
+      new RegExp(`style="width:${100 - remaining}%;background-color:${expectedColor.replace(/[()]/g, "\\$&")}"`),
+      `${remaining}% remaining must color a ${100 - remaining}% used fill with ${expectedColor}`,
     );
   }
+});
+
+test("provider severity cannot override the remaining-allowance visual state", () => {
+  const markup = renderToStaticMarkup(createElement(UsageBar, {
+    bar: usageBar(80, { resetsAt: null, severity: "critical" }),
+    now: NOW,
+    stale: false,
+  }));
+  assert.doesNotMatch(markup, />Az kaldı<|>Kritik<|>Limit bitti</);
+  assert.match(markup, /style="width:20%;background-color:var\(--accent, var\(--color-coral\)\)"/);
+});
+
+test("OpenAI session rows identify Codex without synthesizing an absent five-hour window", () => {
+  const sessionUsage = { five_hour: { utilization: 84, resets_at: RESET_AT } };
+  const openaiMarkup = renderAccountCard(account("openai-session", "openai"), {
+    status: "ready",
+    usage: sessionUsage,
+  });
+  assert.match(openaiMarkup, />Codex · 5 saatlik limit</);
+
+  const claudeMarkup = renderAccountCard(account("claude-session"), {
+    status: "ready",
+    usage: sessionUsage,
+  });
+  assert.match(claudeMarkup, />5 saatlik limit</);
+  assert.doesNotMatch(claudeMarkup, /Codex · 5 saatlik limit/);
+
+  const weeklyOnlyMarkup = renderAccountCard(account("openai-weekly", "openai"), {
+    status: "ready",
+    usage: { seven_day: { utilization: 17, resets_at: RESET_AT } },
+  });
+  assert.match(weeklyOnlyMarkup, />Haftalık limit</);
+  assert.doesNotMatch(weeklyOnlyMarkup, /Codex · 5 saatlik limit/);
+  assert.doesNotMatch(weeklyOnlyMarkup, />5 saatlik limit</);
 });
 
 test("ready-stale, loading, and error cards keep old bars with one live freshness status", () => {

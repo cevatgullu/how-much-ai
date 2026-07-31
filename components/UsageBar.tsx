@@ -16,10 +16,8 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
   const used = bar.usedPercent;
   const reset = formatResetSchedule(bar.resetsAt, now);
   const atLimit = remaining === 0;
-  const critical = !atLimit && (remaining <= 15 || bar.severity === "critical");
-  const low = !atLimit && !critical && (
-    remaining <= 50 || bar.severity === "warning" || bar.severity === "elevated"
-  );
+  const critical = !atLimit && remaining <= 15;
+  const low = !atLimit && !critical && remaining <= 50;
   const state = atLimit ? "Limit bitti" : critical ? "Kritik" : low ? "Az kaldı" : null;
   const stateClass = atLimit || critical
     ? "bg-danger/15 text-[#ea7b74]"
@@ -33,8 +31,8 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
     ? [reset.countdown, `Sıfırlanma zamanı ${reset.exact}`].filter(Boolean).join(", ")
     : null;
   const valueText = [
-    `%${remaining} kaldı`,
     `Kullanılan: %${used}`,
+    `%${remaining} kaldı`,
     scheduleText,
     stale ? "Eski veri" : null,
   ].filter(Boolean).join(". ");
@@ -53,9 +51,9 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
           )}
         </span>
         <span className="flex min-w-0 items-baseline justify-between gap-2 xs:shrink-0 xs:justify-end">
-          <span className="text-[11px] text-faint">Kullanılan: %{used}</span>
+          <span className="text-[11px] text-faint">%{remaining} kaldı</span>
           <span className="ml-auto shrink-0 text-right text-sm font-semibold tabular-nums text-ivory">
-            %{remaining} kaldı
+            Kullanılan: %{used}
           </span>
         </span>
       </div>
@@ -70,13 +68,13 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
         aria-describedby={freshnessDescriptionId}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={remaining}
+        aria-valuenow={used}
         aria-valuetext={valueText}
         className="mt-1.5 h-2 overflow-hidden rounded-full bg-track"
       >
         <div
           className="bar-fill h-full rounded-full"
-          style={{ width: `${remaining}%`, backgroundColor: fillColor }}
+          style={{ width: `${used}%`, backgroundColor: fillColor }}
         />
       </div>
     </div>

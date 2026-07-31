@@ -73,7 +73,11 @@ export function AccountCard({
 
   const status = snapshot?.status ?? "idle";
   const loading = status === "loading";
-  const bars = snapshot?.usage ? extractBars(snapshot.usage) : null;
+  const bars = snapshot?.usage
+    ? extractBars(snapshot.usage).map((bar) => account.provider === "openai" && bar.kind === "session"
+      ? { ...bar, label: "Codex · 5 saatlik limit" }
+      : bar)
+    : null;
   const hasBars = !!bars && bars.length > 0;
   // Stale = the server is showing its last-good reading because Anthropic rate-limited the upstream
   // poll (a cooldown), not a live fetch. We keep the bars but flag their age.

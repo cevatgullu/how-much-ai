@@ -328,7 +328,7 @@ export function AccountCard({
               <UsageBar
                 key={bar.key}
                 label={bar.label}
-                percent={bar.percent}
+                percent={bar.usedPercent}
                 resetsAt={bar.resetsAt}
                 severity={bar.severity}
                 now={now}

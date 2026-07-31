@@ -520,8 +520,8 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       for (const bar of extractBars(usage)) {
         const isSession = bar.key.startsWith("session") || bar.key === "five_hour";
         const target = isSession ? peakSession : peakWeekly;
-        if (!target || bar.percent > target.percent) {
-          const entry = { percent: bar.percent, displayName: accountDisplayName(account) };
+        if (!target || bar.usedPercent > target.percent) {
+          const entry = { percent: bar.usedPercent, displayName: accountDisplayName(account) };
           if (isSession) peakSession = entry;
           else peakWeekly = entry;
         }

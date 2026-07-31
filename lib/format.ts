@@ -134,11 +134,12 @@ export function formatResetSchedule(
   const delta = resetMs - now;
   if (delta > 120_000) {
     const minutes = Math.ceil(delta / 60_000);
-    const units = [
+    const unitValues: Array<[number, string]> = [
       [Math.floor(minutes / 1440), "gün"],
       [Math.floor((minutes % 1440) / 60), "sa"],
       [minutes % 60, "dk"],
-    ].filter(([value]) => value > 0).slice(0, 2);
+    ];
+    const units = unitValues.filter(([value]) => value > 0).slice(0, 2);
     return { exact, countdown: `${units.map(([value, label]) => `${value} ${label}`).join(" ")} sonra`, state: "future" };
   }
   if (delta >= -120_000) return { exact, countdown: "Sıfırlanıyor…", state: "resetting" };

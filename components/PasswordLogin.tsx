@@ -90,7 +90,21 @@ function LoginForm() {
   );
 }
 
-export function PasswordLogin() {
+export function PasswordLogin({ strictLocal }: { strictLocal: boolean }) {
+  if (strictLocal) {
+    return (
+      <div className="flex min-h-screen items-center justify-center px-4">
+        <div className="animate-rise w-full max-w-sm text-center">
+          <StarburstIcon className="mx-auto h-10 w-10 text-coral" />
+          <h1 className="font-display mt-5 text-2xl text-ivory">How Much AI</h1>
+          <p className="mt-2 text-sm text-muted">
+            Open How Much AI from its secure launcher to continue.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Suspense fallback={null}>
       <LoginForm />

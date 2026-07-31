@@ -16,6 +16,7 @@ $registrationAttempted = $false
 $registeredTaskNames = @('HowMuchAI-Service', 'HowMuchAI-Window')
 $bundle = $null
 $manifestBytes = $null
+$installBytes = $null
 
 function Test-HmaOrdinalEqual {
     [CmdletBinding()]
@@ -683,9 +684,90 @@ try {
         -RuntimeEntries $runtimeEntries `
         -BootstrapEntries $bootstrapEntries
 
+    $runtimeParent = Join-Path $state 'runtime'
+    $appRoot = Join-Path $runtimeParent $head
+    $bootstrapRoot = Join-Path $state 'bootstrap'
+    $bootstrapHashes = [ordered]@{
+        start = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'start-secure-local.ps1'
+        open = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'open-secure-local.ps1'
+        connector = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'connect-claude-secure.ps1'
+        integrity = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalIntegrity.psm1'
+        runtime = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalRuntime.psm1'
+        secrets = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalSecrets.psm1'
+    }
+    $install = [ordered]@{
+        version = 1
+        appRoot = $appRoot
+        stateRoot = $state
+        nodePath = $nodePath
+        port = 37645
+        upstreamBase = $upstreamBase
+        commit = $head
+        manifestSha256 = $ExpectedManifestSha256.ToLowerInvariant()
+        bootstrapHashes = $bootstrapHashes
+    }
+    $installText = ConvertTo-Json -InputObject $install -Depth 8 -Compress
+    $installBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($installText)
+
+    $sourceIntegrityModule = Join-Path $source 'scripts\windows\SecureLocalIntegrity.psm1'
     $sourceSecretsModule = Join-Path $source 'scripts\windows\SecureLocalSecrets.psm1'
+    Import-Module $sourceIntegrityModule -Force -ErrorAction Stop
     Import-Module $sourceSecretsModule -Force -ErrorAction Stop
-    if (-not [IO.Directory]::Exists($state)) {
+    $secretsPath = Join-Path $state 'secrets.dpapi'
+    if ([IO.Directory]::Exists($state)) {
+        $existingConfig = Assert-HmaStartupIntegrity -StateRoot $state
+        $existingInstallBytes = [IO.File]::ReadAllBytes((Join-Path $state 'install.json'))
+        try {
+            if (-not (Test-HmaBytesEqual `
+                    -Left $existingInstallBytes `
+                    -Right $installBytes)) {
+                throw 'The existing install configuration differs.'
+            }
+        } finally {
+            [Array]::Clear($existingInstallBytes, 0, $existingInstallBytes.Length)
+        }
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$existingConfig.appRoot) `
+                -Right $appRoot `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$existingConfig.stateRoot) `
+                -Right $state `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$existingConfig.nodePath) `
+                -Right $nodePath `
+                -IgnoreCase) -or
+            [int]$existingConfig.port -ne 37645 -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$existingConfig.upstreamBase) `
+                -Right $upstreamBase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$existingConfig.commit) `
+                -Right $head) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$existingConfig.manifestSha256) `
+                -Right $ExpectedManifestSha256 `
+                -IgnoreCase)) {
+            throw 'The existing install configuration differs.'
+        }
+        foreach ($hashName in @(
+                'start',
+                'open',
+                'connector',
+                'integrity',
+                'runtime',
+                'secrets'
+            )) {
+            if (-not (Test-HmaOrdinalEqual `
+                    -Left ([string]$existingConfig.bootstrapHashes.$hashName) `
+                    -Right ([string]$bootstrapHashes[$hashName]) `
+                    -IgnoreCase)) {
+                throw 'The existing install configuration differs.'
+            }
+        }
+        $bundle = Unprotect-HmaSecretBundle -Path $secretsPath
+    } else {
         [void][IO.Directory]::CreateDirectory($state)
     }
     Set-HmaPrivateAcl -LiteralPath $state
@@ -693,9 +775,6 @@ try {
         throw 'The state ACL is invalid.'
     }
 
-    $runtimeParent = Join-Path $state 'runtime'
-    $appRoot = Join-Path $runtimeParent $head
-    $bootstrapRoot = Join-Path $state 'bootstrap'
     foreach ($directory in @($runtimeParent, $appRoot, $bootstrapRoot)) {
         if (-not [IO.Directory]::Exists($directory)) {
             [void][IO.Directory]::CreateDirectory($directory)
@@ -729,27 +808,6 @@ try {
     }
     Set-HmaPrivateAcl -LiteralPath $state
 
-    $bootstrapHashes = [ordered]@{
-        start = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'start-secure-local.ps1'
-        open = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'open-secure-local.ps1'
-        connector = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'connect-secure-local.ps1'
-        integrity = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalIntegrity.psm1'
-        runtime = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalRuntime.psm1'
-        secrets = Get-HmaBootstrapHash -Entries $bootstrapEntries -FileName 'SecureLocalSecrets.psm1'
-    }
-    $install = [ordered]@{
-        version = 1
-        appRoot = $appRoot
-        stateRoot = $state
-        nodePath = $nodePath
-        port = 37645
-        upstreamBase = $upstreamBase
-        commit = $head
-        manifestSha256 = $ExpectedManifestSha256.ToLowerInvariant()
-        bootstrapHashes = $bootstrapHashes
-    }
-    $installText = ConvertTo-Json -InputObject $install -Depth 8 -Compress
-    $installBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($installText)
     try {
         Write-HmaAtomicExactBytes `
             -Destination (Join-Path $state 'install.json') `
@@ -761,11 +819,10 @@ try {
 
     $installedIntegrityModule = Join-Path $bootstrapRoot 'SecureLocalIntegrity.psm1'
     Import-Module $installedIntegrityModule -Force -ErrorAction Stop
-    $secretsPath = Join-Path $state 'secrets.dpapi'
-    if ([IO.File]::Exists($secretsPath)) {
-        $null = Assert-HmaStartupIntegrity -StateRoot $state
-        $bundle = Unprotect-HmaSecretBundle -Path $secretsPath
-    } else {
+    if ($null -eq $bundle) {
+        if ([IO.File]::Exists($secretsPath)) {
+            throw 'An unexpected secret bundle exists.'
+        }
         $bundle = [ordered]@{
             version = 1
             appPassword = New-HmaRandomSecret -ByteCount 32
@@ -778,6 +835,8 @@ try {
             throw 'The generated bundle is invalid.'
         }
         Protect-HmaSecretBundle -Bundle $bundle -Path $secretsPath
+    } elseif (-not [IO.File]::Exists($secretsPath)) {
+        throw 'The existing secret bundle is missing.'
     }
     Set-HmaPrivateAcl -LiteralPath $state
     $config = Assert-HmaStartupIntegrity -StateRoot $state
@@ -904,6 +963,9 @@ try {
 } finally {
     if ($null -ne $manifestBytes) {
         [Array]::Clear($manifestBytes, 0, $manifestBytes.Length)
+    }
+    if ($null -ne $installBytes) {
+        [Array]::Clear($installBytes, 0, $installBytes.Length)
     }
     $bundle = $null
 }

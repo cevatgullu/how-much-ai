@@ -175,13 +175,71 @@ function ConvertFrom-HmaWindowsCommandLine {
     return [Hma.NativeCommandLine]::Split($CommandLine)
 }
 
+function ConvertTo-HmaWindowsCommandLineArgument {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+
+    foreach ($character in $Value.ToCharArray()) {
+        if ([char]::IsControl($character)) {
+            throw 'The child argument is invalid.'
+        }
+    }
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.Append([char]34)
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq [char]34) {
+            [void]$builder.Append([char]92, ($backslashes * 2) + 1)
+            [void]$builder.Append([char]34)
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append([char]92, $backslashes)
+            $backslashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append([char]92, $backslashes * 2)
+    }
+    [void]$builder.Append([char]34)
+    return $builder.ToString()
+}
+
 function Test-HmaStableEdgePath {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$LiteralPath)
 
     try {
         $path = Get-HmaSafeAbsolutePath -LiteralPath $LiteralPath
-        return [bool]($path -match '^[A-Za-z]:\\Program Files(?: \(x86\))?\\Microsoft\\Edge\\Application\\msedge\.exe$')
+        foreach ($base in @(
+                [Environment]::GetFolderPath(
+                    [Environment+SpecialFolder]::ProgramFiles
+                ),
+                [Environment]::GetFolderPath(
+                    [Environment+SpecialFolder]::ProgramFilesX86
+                )
+            )) {
+            if ([string]::IsNullOrWhiteSpace($base)) {
+                continue
+            }
+            $expected = [IO.Path]::GetFullPath(
+                (Join-Path $base 'Microsoft\Edge\Application\msedge.exe')
+            )
+            if (Test-HmaOrdinalEqual -Left $path -Right $expected -IgnoreCase) {
+                return $true
+            }
+        }
+        return $false
     } catch {
         return $false
     }
@@ -377,14 +435,17 @@ function New-HmaEdgeLaunchPlan {
         throw 'The Edge launch URI is invalid.'
     }
 
+    $arguments = @(
+        ('--app=' + $LaunchUri),
+        ('--user-data-dir=' + (Join-Path $state 'edge-profile')),
+        '--no-first-run',
+        '--disable-background-mode'
+    )
     return [pscustomobject]@{
         FilePath = $edge
-        ArgumentList = @(
-            ('--app=' + $LaunchUri),
-            ('--user-data-dir=' + (Join-Path $state 'edge-profile')),
-            '--no-first-run',
-            '--disable-background-mode'
-        )
+        ArgumentList = @($arguments | ForEach-Object {
+                ConvertTo-HmaWindowsCommandLineArgument -Value ([string]$_)
+            })
         WindowStyle = 'Normal'
         Environment = New-HmaMinimalChildEnvironment
     }
@@ -415,7 +476,7 @@ function New-HmaTaskActionArguments {
 
     $command = "& { " +
         "`$scriptPath = '$ScriptPath'; " +
-        "if ((Get-FileHash -Algorithm SHA256 -LiteralPath `$scriptPath).Hash -cne '$ScriptHash') { throw 'Bootstrap verification failed.' }; " +
+        "if ((Get-FileHash -Algorithm SHA256 -LiteralPath `$scriptPath).Hash.ToLowerInvariant() -cne '$ScriptHash') { throw 'Bootstrap verification failed.' }; " +
         "& `$scriptPath -StateRoot '$StateRoot' -IntegrityModuleHash '$IntegrityHash' }"
     return '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
         $command.Replace('"', '\"') + '"'

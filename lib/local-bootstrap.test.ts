@@ -14,8 +14,13 @@ test("tickets are random 32-byte base64url capabilities and a newer ticket inval
   assert.match(first, /^[A-Za-z0-9_-]{43}$/);
   assert.match(second, /^[A-Za-z0-9_-]{43}$/);
   assert.notEqual(first, second);
-  assert.equal(store.consume(first, 1_002), false);
   assert.equal(store.consume(second, 1_002), true);
+
+  const invalidationStore = createLocalBootstrapStore();
+  const invalidated = invalidationStore.issue(2_000);
+  const live = invalidationStore.issue(2_001);
+  assert.equal(invalidationStore.consume(invalidated, 2_002), false);
+  assert.equal(invalidationStore.consume(live, 2_002), false);
 });
 
 test("a ticket expires at 20 seconds and is deleted before one-use success", () => {
@@ -28,22 +33,23 @@ test("a ticket expires at 20 seconds and is deleted before one-use success", () 
   assert.equal(store.consume(live, 10_000 + LOCAL_BOOTSTRAP_TTL_MS - 1), false);
 });
 
-test("malformed input is rejected without consuming the live ticket", () => {
-  const store = createLocalBootstrapStore();
-  const ticket = store.issue(20_000);
-
-  for (const malformed of [
+test("every failed consume attempt atomically invalidates the live ticket", () => {
+  for (const attemptedTicket of [
     "",
     "a".repeat(42),
     "a".repeat(44),
     "a".repeat(42) + "=",
     "a".repeat(42) + "!",
+    "b".repeat(43),
+    undefined,
     null,
     {},
   ]) {
-    assert.equal(store.consume(malformed, 20_001), false);
+    const store = createLocalBootstrapStore();
+    const liveTicket = store.issue(20_000);
+    assert.equal(store.consume(attemptedTicket, 20_001), false);
+    assert.equal(store.consume(liveTicket, 20_001), false);
   }
-  assert.equal(store.consume(ticket, 20_001), true);
 });
 
 test("the bounded store retains only ticket hashes and at most eight entries", () => {

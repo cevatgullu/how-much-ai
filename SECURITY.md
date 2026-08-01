@@ -46,10 +46,11 @@ Upstream vulnerabilities in Anthropic, OpenAI, Convex, Redis providers, browsers
 
 ## Deployment security requirements
 
-- Ordinary hosted and development login fails closed when `APP_PASSWORD` is missing. Configure it before starting either mode; never treat a missing password as an open-access setting.
+- Development login fails closed when `APP_PASSWORD` is missing. Every production mode fails closed unless `APP_PASSWORD`, `AUTH_SECRET`, and `VAULT_ENCRYPTION_SECRET` are independent and each has at least 32 characters after trimming.
 - Use HTTPS for every remote deployment.
 - Keep the vault and all environment values on private, persistent storage.
-- Use independent random values for `APP_PASSWORD`, `AUTH_SECRET`, `VAULT_ENCRYPTION_SECRET`, `VAULT_ACCESS_SECRET`, and `CRON_SECRET`.
+- Use independent random values for `APP_PASSWORD`, `AUTH_SECRET`, `VAULT_ENCRYPTION_SECRET`, `VAULT_ACCESS_SECRET`, and `CRON_SECRET`. Convex rejects `VAULT_ACCESS_SECRET` values shorter than 32 trimmed characters in every deployment. Production also requires each configured Redis token and `CRON_SECRET` to contain at least 32 trimmed characters. A Redis token cannot reuse `VAULT_ACCESS_SECRET`; `CRON_SECRET` cannot reuse any application or backend credential; only the two Redis token aliases may identify the same backend credential.
+- Production refuses credential ciphertext encrypted with the historical public fallback, `APP_PASSWORD`, or `VAULT_ACCESS_SECRET`. Preserve legacy ciphertext for controlled offline migration and rotate provider credentials if its old key may be public or guessable.
 - Leave `TRUST_PROXY_IP_HEADERS=0` unless a trusted reverse proxy overwrites forwarding headers.
 - Keep the reviewed strict-local device-notification path local. It requires no remote notification secret and must not be combined with the Convex/VAPID, Telegram, or webhook delivery paths.
 - Restrict outbound traffic where practical; Web Push and configured webhooks make server-side network requests.

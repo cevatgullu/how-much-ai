@@ -3,6 +3,11 @@ import path from "node:path";
 export type StrictLocalEnvironment = Readonly<Record<string, string | undefined>>;
 
 const REQUIRED_SECRETS = ["APP_PASSWORD", "AUTH_SECRET", "VAULT_ENCRYPTION_SECRET"] as const;
+const BACKEND_CREDENTIALS = [
+  "VAULT_ACCESS_SECRET",
+  "KV_REST_API_TOKEN",
+  "UPSTASH_REDIS_REST_TOKEN",
+] as const;
 const FORBIDDEN_REMOTE_VALUES = [
   "CONVEX_URL",
   "NEXT_PUBLIC_CONVEX_URL",
@@ -47,6 +52,58 @@ const FORBIDDEN_PROCESS_OVERRIDES = [
 
 function present(value: string | undefined): boolean {
   return Boolean(value?.trim());
+}
+
+export function productionSecretEnvironmentErrors(
+  env: StrictLocalEnvironment = process.env,
+): string[] {
+  if (env.NODE_ENV !== "production") return [];
+
+  const errors: string[] = [];
+  const values = REQUIRED_SECRETS.map((name) => {
+    const value = env[name]?.trim() ?? "";
+    if (value.length < 32) errors.push(`${name} must contain at least 32 non-whitespace characters`);
+    return value;
+  });
+  if (values.every((value) => value.length >= 32) && new Set(values).size !== values.length) {
+    errors.push("production security secrets must be independent");
+  }
+  const securitySecrets = new Set(values);
+  const backendCredentialValues: string[] = [];
+  for (const name of BACKEND_CREDENTIALS) {
+    const value = env[name]?.trim();
+    if (value) backendCredentialValues.push(value);
+    if (value && value.length < 32) {
+      errors.push(`${name} must contain at least 32 non-whitespace characters when configured`);
+    }
+    if (value && securitySecrets.has(value)) {
+      errors.push(`${name} must be independent from production security secrets`);
+    }
+  }
+  const vaultAccessSecret = env.VAULT_ACCESS_SECRET?.trim();
+  const redisCredentials = [env.KV_REST_API_TOKEN?.trim(), env.UPSTASH_REDIS_REST_TOKEN?.trim()];
+  if (vaultAccessSecret && redisCredentials.some((value) => value === vaultAccessSecret)) {
+    errors.push("VAULT_ACCESS_SECRET must be independent from Redis backend credentials");
+  }
+  const cronSecret = env.CRON_SECRET?.trim();
+  if (cronSecret) {
+    if (cronSecret.length < 32) {
+      errors.push("CRON_SECRET must contain at least 32 non-whitespace characters when configured");
+    }
+    if (new Set([...values, ...backendCredentialValues]).has(cronSecret)) {
+      errors.push("CRON_SECRET must be independent from application and backend security secrets");
+    }
+  }
+  return errors;
+}
+
+export function assertProductionSecretEnvironment(
+  env: StrictLocalEnvironment = process.env,
+): void {
+  const errors = productionSecretEnvironmentErrors(env);
+  if (errors.length > 0) {
+    throw new Error(`Production configuration refused to start: ${errors.join("; ")}`);
+  }
 }
 
 export function strictLocalModeEnabled(env: StrictLocalEnvironment = process.env): boolean {
@@ -104,6 +161,7 @@ export function assertStrictLocalEnvironment(env: StrictLocalEnvironment = proce
 export function sessionCookiePolicy(
   env: StrictLocalEnvironment = process.env,
 ): { secure: boolean; sameSite: "lax" | "strict" } {
+  assertProductionSecretEnvironment(env);
   if (strictLocalModeEnabled(env)) {
     assertStrictLocalEnvironment(env);
     return { secure: false, sameSite: "strict" };

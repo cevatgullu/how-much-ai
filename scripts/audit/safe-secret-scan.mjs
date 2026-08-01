@@ -132,7 +132,7 @@ const REVIEWED_SOURCE_FIXTURES = new Map([
   [
     "provider-token|lib/providers/anthropic-adapter.test.ts",
     {
-      fileSha256: "0dc6a5d2a45a783f0df1b3624b2d791c6423a2afe26a7ae1f75ba21b9b44831c",
+      fileSha256: "f6d840302a6f3bb54e8939eb7ebd977ef3cbbb546d44ebfd160122cac296ce66",
       matchCount: 1,
     },
   ],
@@ -195,8 +195,8 @@ const REVIEWED_SOURCE_FIXTURES = new Map([
   [
     "refresh-token-assignment|lib/vault.test.ts",
     {
-      fileSha256: "ad3cb23c133005550d3aadcd07d94104016f6b889cf696fb69a2e16d4368990f",
-      matchCount: 3,
+      fileSha256: "5fb3492148a590f1010c3ba41a4371bb677f93c8d894e8dd40755181e469597d",
+      matchCount: 12,
     },
   ],
   [
@@ -265,7 +265,7 @@ const REVIEWED_SOURCE_FIXTURES = new Map([
   [
     "strict-local-secret-assignment|lib/session.test.ts",
     {
-      fileSha256: "ff6272ae3872f2fe34bd0894400fdfc396b7b838254790b2ae8a0d360b5c119f",
+      fileSha256: "a9e543285a9ded25d7ec09e77b8e0538b5d9859e0ed280732b83023a9646a516",
       matchCount: 3,
     },
   ],
@@ -279,7 +279,7 @@ const REVIEWED_SOURCE_FIXTURES = new Map([
   [
     "strict-local-secret-assignment|lib/usage-redis-coordination.test.ts",
     {
-      fileSha256: "447188dd38143ee15ccc76c664d21d6ac6ac348bcc496e444a1c7b7093cb6c63",
+      fileSha256: "29c9f7dafc78f4c48447db34d80a3cc9e86a33f9170634911e51a18b4b2209c7",
       matchCount: 1,
     },
   ],
@@ -293,15 +293,15 @@ const REVIEWED_SOURCE_FIXTURES = new Map([
   [
     "strict-local-secret-assignment|lib/vault-recovery.test.ts",
     {
-      fileSha256: "6f4d77f21187665a5d9953767a060715a1302cb7eaf4ed69bcbf1961e5ff3ec8",
+      fileSha256: "c06f9b563b27032bae82c0d559014e29cb719c0cfd34aba00584bf77da931688",
       matchCount: 7,
     },
   ],
   [
     "strict-local-secret-assignment|lib/vault.test.ts",
     {
-      fileSha256: "ad3cb23c133005550d3aadcd07d94104016f6b889cf696fb69a2e16d4368990f",
-      matchCount: 8,
+      fileSha256: "5fb3492148a590f1010c3ba41a4371bb677f93c8d894e8dd40755181e469597d",
+      matchCount: 11,
     },
   ],
 ]);

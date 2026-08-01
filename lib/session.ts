@@ -3,7 +3,7 @@
 // there's one user (whoever knows APP_PASSWORD), so there's no per-user state to carry.
 
 // @ts-expect-error Node's native TypeScript test runner needs the extension.
-import { assertStrictLocalEnvironment, strictLocalModeEnabled } from "./strict-local-mode.ts";
+import { assertProductionSecretEnvironment, assertStrictLocalEnvironment, strictLocalModeEnabled } from "./strict-local-mode.ts";
 
 export const SESSION_COOKIE = "usage_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -37,13 +37,16 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
   ]);
 }
 
-// The secret that signs sessions. Defaults to APP_PASSWORD so there's one thing to configure;
-// set AUTH_SECRET separately if you want sessions to survive a password change.
+// Development keeps the historical convenience fallback. Production requires an independent
+// AUTH_SECRET so knowledge of the human login password can never forge a session token.
 export function authSecret(): string {
+  assertProductionSecretEnvironment();
+  if (process.env.NODE_ENV === "production") return process.env.AUTH_SECRET!;
   return process.env.AUTH_SECRET || process.env.APP_PASSWORD || "";
 }
 
 export function appPassword(): string | undefined {
+  assertProductionSecretEnvironment();
   const pw = process.env.APP_PASSWORD;
   return pw && pw.length > 0 ? pw : undefined;
 }
@@ -51,6 +54,7 @@ export function appPassword(): string | undefined {
 // Authentication stays closed in every environment. Strict-local mode additionally validates its
 // exact environment before the HMAC bootstrap or an ordinary password session can be accepted.
 export function authOpen(): boolean {
+  assertProductionSecretEnvironment();
   if (strictLocalModeEnabled()) assertStrictLocalEnvironment();
   return false;
 }

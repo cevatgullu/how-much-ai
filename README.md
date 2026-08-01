@@ -20,7 +20,7 @@ npm run dev
 
 Before starting, set `APP_PASSWORD` in `.env.local` to an independent strong value. Then open [http://localhost:3000](http://localhost:3000). The development command binds explicitly to `127.0.0.1` and stores accounts in an encrypted local vault under `.data/`.
 
-Development and production both fail closed when `APP_PASSWORD` is missing. Ordinary development and self-hosting never enter an unauthenticated open mode.
+Development fails closed when `APP_PASSWORD` is missing. Production fails closed unless `APP_PASSWORD`, `AUTH_SECRET`, and `VAULT_ENCRYPTION_SECRET` are independent and each contains at least 32 characters after trimming. No supported mode enters unauthenticated open access.
 
 ## Connect accounts
 
@@ -51,11 +51,11 @@ The server selects one backend from the environment:
 
 | Backend | Configuration | Best for | Hosted scheduled notifications |
 | --- | --- | --- | --- |
-| Encrypted file | No variables | One persistent machine | No |
-| Convex | `CONVEX_URL` + `VAULT_ACCESS_SECRET` | Durable or multi-instance hosting | Yes |
+| Encrypted file | Production: `VAULT_ENCRYPTION_SECRET`; development: none | One persistent machine | No |
+| Convex | `CONVEX_URL` + `VAULT_ACCESS_SECRET` + `VAULT_ENCRYPTION_SECRET` | Durable or multi-instance hosting | Yes |
 | Redis/KV REST | URL + token + `VAULT_ENCRYPTION_SECRET` | Durable hosting without Convex | No |
 
-Local file storage creates `.data/vault.enc` and `.data/vault.key`. Back up the whole `.data` directory; the encrypted vault cannot be recovered without its matching key or configured encryption secret.
+Development local-file storage can create `.data/vault.enc` and `.data/vault.key`. Production uses the required `VAULT_ENCRYPTION_SECRET`. Back up the whole `.data` directory; the encrypted vault cannot be recovered without its matching key.
 
 See [Self-hosting](docs/SELF_HOSTING.md) for complete Convex, Redis, notification, backup, reverse-proxy, and production instructions. Every supported variable is documented in [`.env.example`](.env.example).
 
@@ -67,13 +67,15 @@ Copy the example environment file and replace the blank values you need:
 cp .env.example .env.local
 ```
 
-At minimum, a networked deployment should set independent strong values for:
+Every production deployment must set independent values, each at least 32 characters after trimming, for:
 
 ```dotenv
 APP_PASSWORD=
 AUTH_SECRET=
 VAULT_ENCRYPTION_SECRET=
 ```
+
+Production vault generations encrypted by an older login password, Convex access secret, or the historical public fallback fail closed with a migration-required error. Preserve the ciphertext and use a controlled offline migration or rotate/reconnect the provider credentials; never downgrade the app to spend legacy-key credentials.
 
 Then verify and build:
 

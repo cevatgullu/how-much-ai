@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { authOpen, createSession, safeEqual, verifySession } from "./session.ts";
+import { authOpen, authSecret, createSession, safeEqual, verifySession } from "./session.ts";
 
 const originalPassword = process.env.APP_PASSWORD;
 const originalAuthSecret = process.env.AUTH_SECRET;
@@ -106,10 +106,23 @@ test("development without APP_PASSWORD never becomes unauthenticated open mode",
   assert.equal(authOpen(), false);
 });
 
-test("production without APP_PASSWORD fails closed", () => {
-  delete process.env.AUTH_MODE;
-  delete process.env.APP_PASSWORD;
+test("ordinary production session consumers reject incomplete or reused secrets without fallback", async () => {
+  delete process.env.HMC_STRICT_LOCAL_MODE;
   process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = "a".repeat(64);
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = "c".repeat(64);
+
+  delete process.env.AUTH_SECRET;
+  assert.throws(() => authOpen(), /production configuration refused to start/i);
+  assert.throws(() => authSecret(), /production configuration refused to start/i);
+  await assert.rejects(() => createSession(), /production configuration refused to start/i);
+
+  process.env.AUTH_SECRET = process.env.APP_PASSWORD;
+  assert.throws(() => authOpen(), /production configuration refused to start/i);
+
+  process.env.AUTH_SECRET = "b".repeat(64);
+  assert.equal(authSecret(), "b".repeat(64));
   assert.equal(authOpen(), false);
 });
 

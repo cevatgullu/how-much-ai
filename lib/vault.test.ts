@@ -123,6 +123,62 @@ function proofForSecret(secret: string): string {
   return crypto.createHmac("sha256", secret).update("how-much-claude:vault-key-proof:v1").digest("hex");
 }
 
+function inMemoryRedisFetch(
+  redis: Map<string, string>,
+  hooks: { afterAuxiliaryRead?: () => void } = {},
+): typeof fetch {
+  return async (_input, init) => {
+    const command = JSON.parse(String(init?.body)) as string[];
+    let result: unknown;
+    if (command[0] === "GET") {
+      result = redis.get(command[1]) ?? null;
+    } else if (command[0] === "EVAL" && command[2] === "3") {
+      const key = command[3];
+      const backupKey = command[4];
+      const proofKey = command[5];
+      const expected = command[6];
+      const next = command[7];
+      const proof = command[8];
+      const current = redis.get(key);
+      const matches =
+        (expected === "__HMC_VAULT_MISSING__" && current === undefined) || current === expected;
+      const storedProof = redis.get(proofKey);
+      if (!matches) result = 0;
+      else if (storedProof !== undefined && storedProof !== proof) result = -1;
+      else {
+        if (storedProof === undefined) redis.set(proofKey, proof);
+        redis.set(backupKey, next);
+        redis.set(key, next);
+        result = 1;
+      }
+    } else if (command[0] === "EVAL" && command[2] === "2") {
+      const key = command[3];
+      const proofKey = command[4];
+      const storedProof = redis.get(proofKey);
+      if (command.length === 6) {
+        const proof = command[5];
+        result = storedProof === proof ? (redis.get(key) ?? null) : -1;
+        hooks.afterAuxiliaryRead?.();
+      } else {
+        const expected = command[5];
+        const next = command[6];
+        const proof = command[7];
+        const current = redis.get(key);
+        const matches =
+          (expected === "__HMC_VAULT_MISSING__" && current === undefined) || current === expected;
+        if (storedProof !== proof) result = -1;
+        else {
+          if (matches) redis.set(key, next);
+          result = matches ? 1 : 0;
+        }
+      }
+    } else {
+      throw new Error(`Unexpected Redis command ${command[0]} ${command[2] ?? ""}`);
+    }
+    return Response.json({ result });
+  };
+}
+
 function restoreEnvironmentValue(name: string, previous: string | undefined): void {
   if (previous === undefined) delete process.env[name];
   else process.env[name] = previous;
@@ -136,6 +192,63 @@ function authenticatedRequest(input: string, init: RequestInit = {}): Request {
 
 test("a genuinely missing vault loads as an empty account list", async () => {
   assert.deepEqual(await loadAccounts("missing-user"), []);
+});
+
+test("production vault writes refuse to fall back to the human login password", async () => {
+  const userId = "production-missing-vault-secret";
+  const previousNodeEnvironment = process.env.NODE_ENV;
+  const previousPassword = process.env.APP_PASSWORD;
+  const previousAuthSecret = process.env.AUTH_SECRET;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = "a".repeat(64);
+  process.env.AUTH_SECRET = "b".repeat(64);
+  delete process.env.VAULT_ENCRYPTION_SECRET;
+
+  try {
+    await assert.rejects(
+      () => saveAccounts(userId, [storedAccount("must-not-persist")]),
+      /production configuration refused to start/i,
+    );
+    await assert.rejects(() => fs.stat(vaultFile(userId)), { code: "ENOENT" });
+    await assert.rejects(() => fs.stat(`${vaultFile(userId)}.last-good`), { code: "ENOENT" });
+  } finally {
+    restoreEnvironmentValue("NODE_ENV", previousNodeEnvironment);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    restoreEnvironmentValue("AUTH_SECRET", previousAuthSecret);
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    await fs.rm(vaultFile(userId), { force: true });
+    await fs.rm(`${vaultFile(userId)}.last-good`, { force: true });
+  }
+});
+
+test("production local vault reads refuse legacy APP_PASSWORD encryption without rewriting it", async () => {
+  const userId = "production-local-password-generation";
+  const previousNodeEnvironment = process.env.NODE_ENV;
+  const previousPassword = process.env.APP_PASSWORD;
+  const previousAuthSecret = process.env.AUTH_SECRET;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const password = "a".repeat(64);
+  const raw = encryptV2Payload(
+    JSON.stringify([storedAccount("local-password-account", "local-password-access-canary")]),
+    password,
+  );
+  await fs.writeFile(vaultFile(userId), raw, { mode: 0o600 });
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = password;
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = "c".repeat(64);
+
+  try {
+    await assert.rejects(() => loadAccounts(userId), /vault key migration required/i);
+    assert.equal(await fs.readFile(vaultFile(userId), "utf8"), raw);
+  } finally {
+    restoreEnvironmentValue("NODE_ENV", previousNodeEnvironment);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    restoreEnvironmentValue("AUTH_SECRET", previousAuthSecret);
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    await fs.rm(vaultFile(userId), { force: true });
+  }
 });
 
 test("storage configuration fails closed for partial remotes and ephemeral hosted files", () => {
@@ -866,7 +979,7 @@ test("direct saves share the queue and a failed mutation does not poison later w
   assert.equal((await loadAccounts(userId)).some((account) => account.id === "after-failure"), true);
 });
 
-test("remote vault reads never probe a local key file", async () => {
+test("a remote vault under the public legacy key returns no accounts and installs no proof", async () => {
   const originalFetch = globalThis.fetch;
   const previousDataDir = process.env.VAULT_DATA_DIR;
   const redis = new Map<string, string>();
@@ -875,29 +988,19 @@ test("remote vault reads never probe a local key file", async () => {
   const account = storedAccount("remote-readable");
   const legacyRemoteFallback = "usage-local-open-mode-key-v1";
   const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
-  const proof = crypto
-    .createHmac("sha256", legacyRemoteFallback)
-    .update("how-much-claude:vault-key-proof:v1")
-    .digest("hex");
   await fs.writeFile(poisonPath, "a file makes nested vault.key access fail with ENOTDIR");
   redis.set(`usage:vault:v1::${userId}`, encryptV2Payload(JSON.stringify([account]), legacyRemoteFallback));
-  redis.set(`usage:vault:key-proof:v1::${userId}`, proof);
+  const before = new Map(redis);
 
   process.env.VAULT_DATA_DIR = poisonPath;
-  delete process.env.VAULT_ENCRYPTION_SECRET;
+  process.env.VAULT_ENCRYPTION_SECRET = "configured-independent-migration-target-key";
   process.env.KV_REST_API_URL = "https://redis-local-probe.test";
   process.env.KV_REST_API_TOKEN = "test-token";
-  globalThis.fetch = async (_input, init) => {
-    const command = JSON.parse(String(init?.body)) as string[];
-    if (command[0] !== "GET") throw new Error(`Unexpected Redis command ${command[0]}`);
-    return new Response(JSON.stringify({ result: redis.get(command[1]) ?? null }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
+  globalThis.fetch = inMemoryRedisFetch(redis);
 
   try {
-    assert.deepEqual(await loadAccounts(userId), [account]);
+    await assert.rejects(() => loadAccounts(userId), /vault key migration required/i);
+    assert.deepEqual(redis, before);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousDataDir === undefined) delete process.env.VAULT_DATA_DIR;
@@ -907,6 +1010,479 @@ test("remote vault reads never probe a local key file", async () => {
     delete process.env.KV_REST_API_URL;
     delete process.env.KV_REST_API_TOKEN;
     await fs.rm(poisonPath, { force: true });
+  }
+});
+
+test("remote mutations cannot receive accounts or write while the public legacy key is authoritative", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const redis = new Map<string, string>();
+  const userId = "public-key-mutation";
+  const legacyRemoteFallback = "usage-local-open-mode-key-v1";
+  const mainKey = `usage:vault:v1::${userId}`;
+  const account = storedAccount("must-not-reach-mutator", "plaintext-access-canary");
+  redis.set(mainKey, encryptV2Payload(JSON.stringify([account]), legacyRemoteFallback));
+  redis.set(`usage:vault:key-proof:v1::${userId}`, proofForSecret(legacyRemoteFallback));
+  const before = new Map(redis);
+  let mutatorCalled = false;
+
+  process.env.VAULT_ENCRYPTION_SECRET = "configured-independent-migration-target-key";
+  process.env.KV_REST_API_URL = "https://redis-public-mutation.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  globalThis.fetch = inMemoryRedisFetch(redis);
+
+  try {
+    await assert.rejects(
+      () =>
+        mutateAccounts(userId, (accounts) => {
+          mutatorCalled = true;
+          assert.equal(accounts[0]?.tokens.accessToken, "plaintext-access-canary");
+          return [...accounts, storedAccount("must-not-write")];
+        }),
+      /vault key migration required/i,
+    );
+    assert.equal(mutatorCalled, false);
+    assert.deepEqual(redis, before);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("a public legacy proof cannot authorize creation of a new remote vault generation", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const redis = new Map<string, string>();
+  const userId = "public-key-proof-only";
+  const legacyRemoteFallback = "usage-local-open-mode-key-v1";
+  redis.set(`usage:vault:key-proof:v1::${userId}`, proofForSecret(legacyRemoteFallback));
+  const before = new Map(redis);
+
+  process.env.VAULT_ENCRYPTION_SECRET = "configured-independent-migration-target-key";
+  process.env.KV_REST_API_URL = "https://redis-public-proof.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  globalThis.fetch = inMemoryRedisFetch(redis);
+
+  try {
+    await assert.rejects(
+      () => saveAccounts(userId, [storedAccount("must-not-create")]),
+      /vault key migration required/i,
+    );
+    assert.deepEqual(redis, before);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("an empty production Redis vault validates every stored proof before load or mutation callbacks", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousNodeEnvironment = process.env.NODE_ENV;
+  const previousPassword = process.env.APP_PASSWORD;
+  const previousAuthSecret = process.env.AUTH_SECRET;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const previousAccessSecret = process.env.VAULT_ACCESS_SECRET;
+  const password = "a".repeat(64);
+  const vaultSecret = "c".repeat(64);
+
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = password;
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = vaultSecret;
+  delete process.env.VAULT_ACCESS_SECRET;
+  process.env.KV_REST_API_URL = "https://redis-empty-proof.test";
+  process.env.KV_REST_API_TOKEN = "strong-production-redis-token-0001";
+
+  try {
+    for (const proofCase of [
+      {
+        name: "public",
+        proof: proofForSecret("usage-local-open-mode-key-v1"),
+        error: /vault key migration required/i,
+      },
+      {
+        name: "APP_PASSWORD",
+        proof: proofForSecret(password),
+        error: /vault key migration required/i,
+      },
+      {
+        name: "unknown",
+        proof: proofForSecret("unknown-proof-secret-that-is-not-configured"),
+        error: /vault encryption key mismatch/i,
+      },
+    ]) {
+      for (const operationName of ["load", "no-op mutation", "writing mutation"] as const) {
+        await t.test(`${proofCase.name} ${operationName}`, async () => {
+          const userId = `empty-proof-${proofCase.name}-${operationName.replaceAll(" ", "-")}`;
+          const redis = new Map<string, string>([
+            [`usage:vault:key-proof:v1::${userId}`, proofCase.proof],
+          ]);
+          const before = new Map(redis);
+          let callbackCount = 0;
+          globalThis.fetch = inMemoryRedisFetch(redis);
+
+          const operation =
+            operationName === "load"
+              ? () => loadAccounts(userId)
+              : () =>
+                  mutateAccounts(userId, (accounts) => {
+                    callbackCount += 1;
+                    return operationName === "no-op mutation"
+                      ? accounts
+                      : [...accounts, storedAccount("must-not-reach-empty-proof-mutator")];
+                  });
+
+          await assert.rejects(operation, proofCase.error);
+          assert.equal(callbackCount, 0);
+          assert.deepEqual(redis, before);
+        });
+      }
+    }
+
+    await t.test("configured VAULT_ENCRYPTION_SECRET proof permits a genuinely empty vault", async () => {
+      const userId = "empty-proof-configured-ves";
+      const redis = new Map<string, string>([
+        [`usage:vault:key-proof:v1::${userId}`, proofForSecret(vaultSecret)],
+      ]);
+      const before = new Map(redis);
+      let callbackCount = 0;
+      globalThis.fetch = inMemoryRedisFetch(redis);
+
+      assert.deepEqual(await loadAccounts(userId), []);
+      assert.deepEqual(
+        await mutateAccounts(userId, (accounts) => {
+          callbackCount += 1;
+          return accounts;
+        }),
+        [],
+      );
+      assert.equal(callbackCount, 1);
+      assert.deepEqual(redis, before);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("NODE_ENV", previousNodeEnvironment);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    restoreEnvironmentValue("AUTH_SECRET", previousAuthSecret);
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    restoreEnvironmentValue("VAULT_ACCESS_SECRET", previousAccessSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("an empty production Convex vault rejects an access-secret proof before every mutator", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousNodeEnvironment = process.env.NODE_ENV;
+  const previousPassword = process.env.APP_PASSWORD;
+  const previousAuthSecret = process.env.AUTH_SECRET;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const previousConvexUrl = process.env.CONVEX_URL;
+  const previousAccessSecret = process.env.VAULT_ACCESS_SECRET;
+  const accessSecret = "d".repeat(64);
+  const rows = new Map<string, string>();
+
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = "a".repeat(64);
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = "c".repeat(64);
+  process.env.CONVEX_URL = "https://empty-proof.convex.cloud";
+  process.env.VAULT_ACCESS_SECRET = accessSecret;
+  delete process.env.KV_REST_API_URL;
+  delete process.env.KV_REST_API_TOKEN;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      path: string;
+      args: [Record<string, unknown>];
+    };
+    if (body.path !== "vault:get") throw new Error(`Unexpected Convex function ${body.path}`);
+    return Response.json({
+      status: "success",
+      value: rows.get(String(body.args[0].key)) ?? null,
+    });
+  };
+
+  try {
+    for (const operationName of ["load", "no-op mutation", "writing mutation"] as const) {
+      await t.test(operationName, async () => {
+        const userId = `convex-empty-access-proof-${operationName.replaceAll(" ", "-")}`;
+        rows.clear();
+        rows.set(`accounts-key-proof::${userId}`, proofForSecret(accessSecret));
+        const before = new Map(rows);
+        let callbackCount = 0;
+        const operation =
+          operationName === "load"
+            ? () => loadAccounts(userId)
+            : () =>
+                mutateAccounts(userId, (accounts) => {
+                  callbackCount += 1;
+                  return operationName === "no-op mutation"
+                    ? accounts
+                    : [...accounts, storedAccount("must-not-reach-convex-empty-proof-mutator")];
+                });
+
+        await assert.rejects(operation, /vault key migration required/i);
+        assert.equal(callbackCount, 0);
+        assert.deepEqual(rows, before);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("NODE_ENV", previousNodeEnvironment);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    restoreEnvironmentValue("AUTH_SECRET", previousAuthSecret);
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    restoreEnvironmentValue("CONVEX_URL", previousConvexUrl);
+    restoreEnvironmentValue("VAULT_ACCESS_SECRET", previousAccessSecret);
+  }
+});
+
+test("a configured public legacy key cannot create a fresh remote recovery journal", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const redis = new Map<string, string>();
+  const userId = "public-key-fresh-recovery";
+  const legacyRemoteFallback = "usage-local-open-mode-key-v1";
+  const account = storedAccount("fresh-public-recovery");
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "must-not-persist-access",
+      refreshToken: "must-not-persist-refresh",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_002_000,
+  };
+
+  process.env.VAULT_ENCRYPTION_SECRET = legacyRemoteFallback;
+  process.env.KV_REST_API_URL = "https://redis-public-fresh-recovery.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  globalThis.fetch = inMemoryRedisFetch(redis);
+
+  try {
+    await assert.rejects(
+      () => saveTokenRecovery(recovery, userId),
+      /vault key migration required/i,
+    );
+    assert.deepEqual(redis, new Map());
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("production remote main, backup, and recovery generations reject APP_PASSWORD encryption", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousNodeEnvironment = process.env.NODE_ENV;
+  const previousPassword = process.env.APP_PASSWORD;
+  const previousAuthSecret = process.env.AUTH_SECRET;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const password = "a".repeat(64);
+  const vaultSecret = "c".repeat(64);
+  const account = storedAccount("production-password-generation", "password-generation-access-canary");
+
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = password;
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = vaultSecret;
+  delete process.env.VAULT_ACCESS_SECRET;
+  process.env.KV_REST_API_URL = "https://redis-production-key-policy.test";
+  process.env.KV_REST_API_TOKEN = "strong-production-redis-token-0002";
+
+  try {
+    for (const scenario of ["main", "backup", "recovery"] as const) {
+      await t.test(scenario, async () => {
+        const redis = new Map<string, string>();
+        const userId = `production-password-${scenario}`;
+        const mainKey = `usage:vault:v1::${userId}`;
+        const backupKey = `usage:vault:last-good:v1::${userId}`;
+        const proofKey = `usage:vault:key-proof:v1::${userId}`;
+        const recoveryKey = `usage:token-recovery:v1:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+        const recovery = {
+          accountId: account.id,
+          expectedRefreshToken: account.tokens.refreshToken!,
+          tokens: {
+            accessToken: "password-recovery-access-canary",
+            refreshToken: "password-recovery-refresh-canary",
+            expiresAt: account.tokens.expiresAt + 60_000,
+          },
+          createdAt: 1_700_000_003_000,
+        };
+
+        if (scenario === "main") {
+          redis.set(mainKey, encryptV2Payload(JSON.stringify([account]), password));
+          redis.set(proofKey, proofForSecret(password));
+        } else if (scenario === "backup") {
+          redis.set(mainKey, "corrupt-main-generation");
+          redis.set(backupKey, encryptV2Payload(JSON.stringify([account]), password));
+          redis.set(proofKey, proofForSecret(password));
+        } else {
+          redis.set(mainKey, encryptV2Payload(JSON.stringify([account]), vaultSecret));
+          redis.set(proofKey, proofForSecret(vaultSecret));
+          redis.set(recoveryKey, encryptV2Payload(JSON.stringify(recovery), password));
+        }
+        const before = new Map(redis);
+        globalThis.fetch = inMemoryRedisFetch(redis);
+
+        const operation =
+          scenario === "recovery"
+            ? () => loadTokenRecovery(userId, account.id)
+            : () => loadAccounts(userId);
+        await assert.rejects(operation, /vault key migration required/i);
+        assert.deepEqual(redis, before);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("NODE_ENV", previousNodeEnvironment);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    restoreEnvironmentValue("AUTH_SECRET", previousAuthSecret);
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("production Convex rejects access-secret generations and creates fresh vaults with VAULT_ENCRYPTION_SECRET", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousNodeEnvironment = process.env.NODE_ENV;
+  const previousPassword = process.env.APP_PASSWORD;
+  const previousAuthSecret = process.env.AUTH_SECRET;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const previousConvexUrl = process.env.CONVEX_URL;
+  const previousAccessSecret = process.env.VAULT_ACCESS_SECRET;
+  const vaultSecret = "c".repeat(64);
+  const accessSecret = "d".repeat(64);
+  const rows = new Map<string, string>();
+
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = "a".repeat(64);
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = vaultSecret;
+  process.env.CONVEX_URL = "https://production-key-policy.convex.cloud";
+  process.env.VAULT_ACCESS_SECRET = accessSecret;
+  delete process.env.KV_REST_API_URL;
+  delete process.env.KV_REST_API_TOKEN;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      path: string;
+      args: [Record<string, unknown>];
+    };
+    const args = body.args[0];
+    if (body.path === "vault:get") {
+      return Response.json({ status: "success", value: rows.get(String(args.key)) ?? null });
+    }
+    if (body.path === "vault:compareAndSet") {
+      const key = String(args.key);
+      const expected = args.expected === null ? null : String(args.expected);
+      if ((rows.get(key) ?? null) !== expected) {
+        return Response.json({ status: "success", value: false });
+      }
+      const proofKey = String(args.proofKey);
+      const suppliedProof = String(args.keyProof);
+      const storedProof = rows.get(proofKey);
+      if (storedProof !== undefined && storedProof !== suppliedProof) {
+        return Response.json({ status: "error", errorMessage: "Vault encryption key mismatch" });
+      }
+      if (storedProof === undefined) rows.set(proofKey, suppliedProof);
+      rows.set(String(args.backupKey), String(args.data));
+      rows.set(key, String(args.data));
+      return Response.json({ status: "success", value: true });
+    }
+    throw new Error(`Unexpected Convex function ${body.path}`);
+  };
+
+  try {
+    await t.test("legacy access-secret generation", async () => {
+      const userId = "production-convex-access-generation";
+      const mainKey = `accounts::${userId}`;
+      const proofKey = `accounts-key-proof::${userId}`;
+      rows.set(mainKey, encryptV2Payload(JSON.stringify([storedAccount("access-secret-account")]), accessSecret));
+      rows.set(proofKey, proofForSecret(accessSecret));
+      const before = new Map(rows);
+
+      await assert.rejects(() => loadAccounts(userId), /vault key migration required/i);
+      assert.deepEqual(rows, before);
+    });
+
+    await t.test("fresh generation", async () => {
+      const userId = "production-convex-fresh-generation";
+      await saveAccounts(userId, [storedAccount("fresh-ves-account")]);
+      assert.equal(rows.get(`accounts-key-proof::${userId}`), proofForSecret(vaultSecret));
+      assert.notEqual(rows.get(`accounts-key-proof::${userId}`), proofForSecret(accessSecret));
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("NODE_ENV", previousNodeEnvironment);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    restoreEnvironmentValue("AUTH_SECRET", previousAuthSecret);
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    restoreEnvironmentValue("CONVEX_URL", previousConvexUrl);
+    restoreEnvironmentValue("VAULT_ACCESS_SECRET", previousAccessSecret);
+  }
+});
+
+test("remote public-key recovery journals cannot be returned, reused, or cleared", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const userId = "public-key-recovery";
+  const account = storedAccount("public-recovery-account");
+  const strongSecret = "proved-independent-remote-vault-secret";
+  const legacyRemoteFallback = "usage-local-open-mode-key-v1";
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "public-recovery-access-canary",
+      refreshToken: "public-recovery-refresh-canary",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_001_000,
+  };
+  const recoveryKey = `usage:token-recovery:v1:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+  const legacyCiphertext = encryptV2Payload(JSON.stringify(recovery), legacyRemoteFallback);
+
+  process.env.VAULT_ENCRYPTION_SECRET = strongSecret;
+  process.env.KV_REST_API_URL = "https://redis-public-recovery.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+
+  try {
+    for (const [name, operation] of [
+      ["load", () => loadTokenRecovery(userId, account.id)],
+      ["save", () => saveTokenRecovery(recovery, userId)],
+      [
+        "clear",
+        () =>
+          clearTokenRecovery(userId, account.id, {
+            record: recovery,
+            ciphertext: legacyCiphertext,
+          }),
+      ],
+    ] as const) {
+      await t.test(name, async () => {
+        const redis = new Map<string, string>();
+        redis.set(`usage:vault:v1::${userId}`, encryptV2Payload(JSON.stringify([account]), strongSecret));
+        redis.set(`usage:vault:key-proof:v1::${userId}`, proofForSecret(strongSecret));
+        redis.set(recoveryKey, legacyCiphertext);
+        const before = new Map(redis);
+        globalThis.fetch = inMemoryRedisFetch(redis);
+
+        await assert.rejects(operation, /vault key migration required/i);
+        assert.deepEqual(redis, before);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
   }
 });
 
@@ -1250,28 +1826,7 @@ test("remote refresh-token recovery records and tombstones stay on the proved va
   process.env.KV_REST_API_TOKEN = "test-token";
   process.env.APP_PASSWORD = stableSecret;
   process.env.VAULT_ENCRYPTION_SECRET = divergentPreferredSecret;
-  globalThis.fetch = async (_input, init) => {
-    const command = JSON.parse(String(init?.body)) as string[];
-    let result: unknown;
-    if (command[0] === "GET") {
-      result = redis.get(command[1]) ?? null;
-    } else if (command[0] === "EVAL") {
-      const key = command[3];
-      const expected = command[4];
-      const next = command[5];
-      const current = redis.get(key);
-      const matches =
-        (expected === "__HMC_VAULT_MISSING__" && current === undefined) || current === expected;
-      if (matches) redis.set(key, next);
-      result = matches ? 1 : 0;
-    } else {
-      throw new Error(`Unexpected Redis command ${command[0]}`);
-    }
-    return new Response(JSON.stringify({ result }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
+  globalThis.fetch = inMemoryRedisFetch(redis);
 
   try {
     await saveTokenRecovery(recovery, userId);
@@ -1289,6 +1844,510 @@ test("remote refresh-token recovery records and tombstones stay on the proved va
     delete process.env.APP_PASSWORD;
     delete process.env.KV_REST_API_URL;
     delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("remote recovery journals reject every credential operation under a non-authoritative key", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const previousPassword = process.env.APP_PASSWORD;
+  const authoritativeSecret = "authoritative-recovery-tenant-key-with-enough-entropy";
+  const journalSecret = "divergent-recovery-journal-key-with-enough-entropy";
+  const userId = "redis-recovery-exact-key";
+  const account = storedAccount("redis-recovery-exact-key-account");
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "must-never-return-divergent-access",
+      refreshToken: "must-never-return-divergent-refresh",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_020_000,
+  };
+  const mainKey = `usage:vault:v1::${userId}`;
+  const proofKey = `usage:vault:key-proof:v1::${userId}`;
+  const recoveryKey = `usage:token-recovery:v1:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+  const divergentCiphertext = encryptV2Payload(JSON.stringify(recovery), journalSecret);
+
+  process.env.KV_REST_API_URL = "https://redis-recovery-exact-key.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  process.env.VAULT_ENCRYPTION_SECRET = journalSecret;
+  process.env.APP_PASSWORD = authoritativeSecret;
+
+  try {
+    for (const [name, operation] of [
+      ["load", () => loadTokenRecovery(userId, account.id)],
+      ["save", () => saveTokenRecovery(recovery, userId)],
+      [
+        "clear",
+        () =>
+          clearTokenRecovery(userId, account.id, {
+            record: recovery,
+            ciphertext: divergentCiphertext,
+          }),
+      ],
+    ] as const) {
+      await t.test(name, async () => {
+        const redis = new Map<string, string>([
+          [mainKey, encryptV2Payload(JSON.stringify([account]), authoritativeSecret)],
+          [proofKey, proofForSecret(authoritativeSecret)],
+          [recoveryKey, divergentCiphertext],
+        ]);
+        const before = new Map(redis);
+        globalThis.fetch = inMemoryRedisFetch(redis);
+
+        await assert.rejects(operation, /wrong encryption secret|vault encryption key mismatch/i);
+        assert.deepEqual(redis, before);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("remote recovery operations cannot initialize a missing tenant proof", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const secret = "orphan-recovery-record-key-with-enough-entropy";
+  const userId = "redis-orphan-recovery-proof";
+  const account = storedAccount("redis-orphan-recovery-proof-account");
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "orphan-recovery-access",
+      refreshToken: "orphan-recovery-refresh",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_020_500,
+  };
+  const ciphertext = encryptV2Payload(JSON.stringify(recovery), secret);
+  const recoveryKey = `usage:token-recovery:v1:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+
+  process.env.KV_REST_API_URL = "https://redis-orphan-recovery-proof.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  process.env.VAULT_ENCRYPTION_SECRET = secret;
+  try {
+    for (const [name, operation] of [
+      ["load", () => loadTokenRecovery(userId, account.id)],
+      ["save", () => saveTokenRecovery(recovery, userId)],
+      [
+        "clear",
+        () => clearTokenRecovery(userId, account.id, { record: recovery, ciphertext }),
+      ],
+    ] as const) {
+      await t.test(name, async () => {
+        // The credential row exists, but no main, backup, or authoritative proof may be bootstrapped
+        // from it. Auxiliary operations are proof consumers only.
+        const redis = new Map<string, string>([[recoveryKey, ciphertext]]);
+        const before = new Map(redis);
+        globalThis.fetch = inMemoryRedisFetch(redis);
+        await assert.rejects(operation, /vault encryption key mismatch/i);
+        assert.deepEqual(redis, before);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("guarded Redis recovery load and clear fail if the proof changes after authoritative preflight", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const secret = "redis-recovery-preflight-key-with-enough-entropy";
+  const divergentSecret = "redis-recovery-post-preflight-key-with-enough-entropy";
+  const userId = "redis-recovery-preflight-race";
+  const account = storedAccount("redis-recovery-preflight-race-account");
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "must-not-return-after-proof-race",
+      refreshToken: "must-not-clear-after-proof-race",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_020_750,
+  };
+  const mainKey = `usage:vault:v1::${userId}`;
+  const proofKey = `usage:vault:key-proof:v1::${userId}`;
+  const recoveryKey = `usage:token-recovery:v1:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+  const ciphertext = encryptV2Payload(JSON.stringify(recovery), secret);
+
+  process.env.KV_REST_API_URL = "https://redis-recovery-preflight-race.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  process.env.VAULT_ENCRYPTION_SECRET = secret;
+  try {
+    for (const [name, operation] of [
+      ["load", () => loadTokenRecovery(userId, account.id)],
+      [
+        "clear",
+        () => clearTokenRecovery(userId, account.id, { record: recovery, ciphertext }),
+      ],
+    ] as const) {
+      await t.test(name, async () => {
+        const redis = new Map<string, string>([
+          [mainKey, encryptV2Payload(JSON.stringify([account]), secret)],
+          [proofKey, proofForSecret(secret)],
+          [recoveryKey, ciphertext],
+        ]);
+        let proofReads = 0;
+        globalThis.fetch = async (_input, init) => {
+          const command = JSON.parse(String(init?.body)) as string[];
+          let result: unknown;
+          if (command[0] === "GET") {
+            result = redis.get(command[1]) ?? null;
+            if (command[1] === proofKey && ++proofReads === 2) {
+              redis.set(proofKey, proofForSecret(divergentSecret));
+            }
+          } else if (command[0] === "EVAL" && command[2] === "2") {
+            assert.equal(command[3], recoveryKey);
+            assert.equal(command[4], proofKey);
+            const storedProof = redis.get(command[4]);
+            const suppliedProof = command.at(-1)!;
+            if (storedProof !== suppliedProof) result = -1;
+            else if (command.length === 6) result = redis.get(command[3]) ?? null;
+            else {
+              const current = redis.get(command[3]);
+              const matches = current === command[5];
+              if (matches) redis.set(command[3], command[6]);
+              result = matches ? 1 : 0;
+            }
+          } else {
+            throw new Error(`Unexpected Redis command ${command[0]} ${command[2] ?? ""}`);
+          }
+          return Response.json({ result });
+        };
+
+        await assert.rejects(operation, /vault encryption key mismatch/i);
+        assert.equal(proofReads, 2);
+        assert.equal(redis.get(recoveryKey), ciphertext);
+        assert.equal(redis.get(proofKey), proofForSecret(divergentSecret));
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("Redis recovery CAS fails without writing when the proof disappears after guarded read", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const secret = "redis-deleted-recovery-proof-key-with-enough-entropy";
+  const userId = "redis-deleted-recovery-proof";
+  const account = storedAccount("redis-deleted-recovery-proof-account");
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "must-not-write-with-deleted-proof",
+      refreshToken: "must-not-write-with-deleted-proof-refresh",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_020_875,
+  };
+  const mainKey = `usage:vault:v1::${userId}`;
+  const proofKey = `usage:vault:key-proof:v1::${userId}`;
+  const recoveryKey = `usage:token-recovery:v1:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+  const mainRaw = encryptV2Payload(JSON.stringify([account]), secret);
+  const redis = new Map<string, string>([
+    [mainKey, mainRaw],
+    [proofKey, proofForSecret(secret)],
+  ]);
+
+  process.env.KV_REST_API_URL = "https://redis-deleted-recovery-proof.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  process.env.VAULT_ENCRYPTION_SECRET = secret;
+  globalThis.fetch = inMemoryRedisFetch(redis, {
+    afterAuxiliaryRead: () => redis.delete(proofKey),
+  });
+  try {
+    await assert.rejects(() => saveTokenRecovery(recovery, userId), /vault encryption key mismatch/i);
+    assert.equal(redis.get(mainKey), mainRaw);
+    assert.equal(redis.has(proofKey), false);
+    assert.equal(redis.has(recoveryKey), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("Redis recovery CAS atomically fences an authoritative proof that changes after the read", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const previousPassword = process.env.APP_PASSWORD;
+  const authoritativeSecret = "redis-atomic-recovery-proof-key-with-enough-entropy";
+  const divergentSecret = "redis-raced-recovery-proof-key-with-enough-entropy";
+  const userId = "redis-recovery-proof-race";
+  const account = storedAccount("redis-recovery-proof-race-account");
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "must-not-win-raced-recovery-access",
+      refreshToken: "must-not-win-raced-recovery-refresh",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_021_000,
+  };
+  const mainKey = `usage:vault:v1::${userId}`;
+  const proofKey = `usage:vault:key-proof:v1::${userId}`;
+  const recoveryKey = `usage:token-recovery:v1:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+  const redis = new Map<string, string>([
+    [mainKey, encryptV2Payload(JSON.stringify([account]), authoritativeSecret)],
+    [proofKey, proofForSecret(authoritativeSecret)],
+  ]);
+  let proofRaced = false;
+
+  process.env.KV_REST_API_URL = "https://redis-recovery-proof-race.test";
+  process.env.KV_REST_API_TOKEN = "test-token";
+  process.env.VAULT_ENCRYPTION_SECRET = authoritativeSecret;
+  delete process.env.APP_PASSWORD;
+  globalThis.fetch = async (_input, init) => {
+    const command = JSON.parse(String(init?.body)) as string[];
+    let result: unknown;
+    if (command[0] === "GET") {
+      result = redis.get(command[1]) ?? null;
+      if (command[1] === recoveryKey) {
+        redis.set(proofKey, proofForSecret(divergentSecret));
+        proofRaced = true;
+      }
+    } else if (command[0] === "EVAL" && command[2] === "1") {
+      const current = redis.get(command[3]);
+      const matches =
+        (command[4] === "__HMC_VAULT_MISSING__" && current === undefined) || current === command[4];
+      if (matches) redis.set(command[3], command[5]);
+      result = matches ? 1 : 0;
+    } else if (command[0] === "EVAL" && command[2] === "2") {
+      const storedProof = redis.get(command[4]);
+      const suppliedProof = command.at(-1)!;
+      if (command.length === 6) {
+        result = storedProof === suppliedProof ? (redis.get(command[3]) ?? null) : -1;
+        redis.set(proofKey, proofForSecret(divergentSecret));
+        proofRaced = true;
+      } else if (storedProof !== suppliedProof) {
+        result = -1;
+      } else {
+        const current = redis.get(command[3]);
+        const matches =
+          (command[5] === "__HMC_VAULT_MISSING__" && current === undefined) ||
+          current === command[5];
+        if (matches) redis.set(command[3], command[6]);
+        result = matches ? 1 : 0;
+      }
+    } else {
+      throw new Error(`Unexpected Redis command ${command[0]} ${command[2] ?? ""}`);
+    }
+    return Response.json({ result });
+  };
+
+  try {
+    await assert.rejects(() => saveTokenRecovery(recovery, userId), /vault encryption key mismatch/i);
+    assert.equal(proofRaced, true);
+    assert.equal(redis.has(recoveryKey), false);
+    assert.equal(redis.get(proofKey), proofForSecret(divergentSecret));
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+    restoreEnvironmentValue("APP_PASSWORD", previousPassword);
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+  }
+});
+
+test("Convex recovery reads and writes carry the exact tenant proof", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousConvexUrl = process.env.CONVEX_URL;
+  const previousAccessSecret = process.env.VAULT_ACCESS_SECRET;
+  const previousEncryptionSecret = process.env.VAULT_ENCRYPTION_SECRET;
+  const authoritativeSecret = "convex-recovery-proof-key-with-enough-entropy";
+  const userId = "convex-recovery-proof-bound";
+  const account = storedAccount("convex-recovery-proof-bound-account");
+  const recovery = {
+    accountId: account.id,
+    expectedRefreshToken: account.tokens.refreshToken!,
+    tokens: {
+      accessToken: "convex-proof-bound-access",
+      refreshToken: "convex-proof-bound-refresh",
+      expiresAt: account.tokens.expiresAt + 60_000,
+    },
+    createdAt: 1_700_000_022_000,
+  };
+  const mainKey = `accounts::${userId}`;
+  const proofKey = `accounts-key-proof::${userId}`;
+  const recoveryKey = `token-recovery:${crypto.createHash("sha256").update(account.id).digest("hex")}::${userId}`;
+  const rows = new Map<string, string>([
+    [mainKey, encryptV2Payload(JSON.stringify([account]), authoritativeSecret)],
+    [proofKey, proofForSecret(authoritativeSecret)],
+    [recoveryKey, encryptV2Payload(JSON.stringify(recovery), authoritativeSecret)],
+  ]);
+  let guardedReads = 0;
+  let guardedWrites = 0;
+
+  process.env.CONVEX_URL = "https://recovery-proof-bound.convex.cloud";
+  process.env.VAULT_ACCESS_SECRET = "convex-backend-access-secret";
+  process.env.VAULT_ENCRYPTION_SECRET = authoritativeSecret;
+  delete process.env.KV_REST_API_URL;
+  delete process.env.KV_REST_API_TOKEN;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      path: string;
+      args: [Record<string, unknown>];
+    };
+    const args = body.args[0];
+    if (body.path === "vault:get") {
+      return Response.json({ status: "success", value: rows.get(String(args.key)) ?? null });
+    }
+    if (body.path === "vault:getAuxiliary") {
+      assert.equal(args.key, recoveryKey);
+      assert.equal(args.proofKey, proofKey);
+      assert.equal(args.keyProof, proofForSecret(authoritativeSecret));
+      guardedReads += 1;
+      return Response.json({ status: "success", value: rows.get(recoveryKey) ?? null });
+    }
+    if (body.path === "vault:compareAndSetAuxiliary") {
+      assert.equal(args.key, recoveryKey);
+      assert.equal(args.proofKey, proofKey);
+      assert.equal(args.keyProof, proofForSecret(authoritativeSecret));
+      guardedWrites += 1;
+      const expected = args.expected === null ? null : String(args.expected);
+      if ((rows.get(recoveryKey) ?? null) !== expected) {
+        return Response.json({ status: "success", value: false });
+      }
+      rows.set(recoveryKey, String(args.data));
+      return Response.json({ status: "success", value: true });
+    }
+    throw new Error(`Unexpected Convex function ${body.path}`);
+  };
+
+  try {
+    const loaded = await loadTokenRecovery(userId, account.id);
+    assert.deepEqual(loaded?.record, recovery);
+    assert.equal(await clearTokenRecovery(userId, account.id, loaded!), true);
+    assert.equal(await loadTokenRecovery(userId, account.id), null);
+    await saveTokenRecovery(recovery, userId);
+    assert.deepEqual((await loadTokenRecovery(userId, account.id))?.record, recovery);
+    assert.equal(guardedReads, 4);
+    assert.equal(guardedWrites, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironmentValue("CONVEX_URL", previousConvexUrl);
+    restoreEnvironmentValue("VAULT_ACCESS_SECRET", previousAccessSecret);
+    restoreEnvironmentValue("VAULT_ENCRYPTION_SECRET", previousEncryptionSecret);
+  }
+});
+
+test("Convex recovery handlers require matching existing tenant proof before any ciphertext write", async () => {
+  const source = await fs.readFile(path.join(projectRoot, "convex", "vault.ts"), "utf8");
+  const guardedReadStart = source.indexOf("export const getAuxiliary = query(");
+  const guardedWriteStart = source.indexOf("export const compareAndSetAuxiliary = mutation(");
+  const primaryWriteStart = source.indexOf("export const compareAndSet = mutation(");
+  assert.ok(guardedReadStart >= 0 && guardedWriteStart > guardedReadStart);
+  assert.ok(primaryWriteStart > guardedWriteStart);
+
+  const pairingGuard = source.slice(
+    source.indexOf("function assertRecoveryProofKey"),
+    source.indexOf("async function assertLegacyWriterNotFenced"),
+  );
+  assert.match(pairingGuard, /proofKeyForRecoveryKey\(key\)/u);
+  assert.match(pairingGuard, /proofKey !== expectedProofKey/u);
+
+  for (const handler of [
+    source.slice(guardedReadStart, guardedWriteStart),
+    source.slice(guardedWriteStart, primaryWriteStart),
+  ]) {
+    assert.match(handler, /proofKey:\s*v\.string\(\)/u);
+    assert.match(handler, /keyProof:\s*v\.string\(\)/u);
+    assert.match(handler, /assertRecoveryProofKey\(key, proofKey\)/u);
+    assert.match(handler, /!proof\s*\|\|\s*proof\.data\s*!==\s*keyProof/u);
+  }
+
+  const guardedWrite = source.slice(guardedWriteStart, primaryWriteStart);
+  const exactProofCheck = guardedWrite.indexOf("!proof || proof.data !== keyProof");
+  const ciphertextPatch = guardedWrite.indexOf("ctx.db.patch");
+  const ciphertextInsert = guardedWrite.indexOf("ctx.db.insert");
+  assert.ok(exactProofCheck >= 0);
+  assert.ok(ciphertextPatch > exactProofCheck);
+  assert.ok(ciphertextInsert > exactProofCheck);
+  assert.doesNotMatch(
+    guardedWrite.slice(0, Math.min(ciphertextPatch, ciphertextInsert)),
+    /insert\("vault",\s*\{\s*key:\s*proofKey/u,
+  );
+});
+
+test("Convex generic get refuses recovery ciphertext while retaining ordinary vault reads", async () => {
+  const source = await fs.readFile(path.join(projectRoot, "convex", "vault.ts"), "utf8");
+  const genericGetStart = source.indexOf("export const get = query(");
+  const guardedGetStart = source.indexOf("export const getAuxiliary = query(");
+  assert.ok(genericGetStart >= 0 && guardedGetStart > genericGetStart);
+  const genericGet = source.slice(genericGetStart, guardedGetStart);
+  assert.match(genericGet, /proofKeyForRecoveryKey\(key\)\s*!==\s*null/u);
+  assert.match(genericGet, /recovery.*guarded query/is);
+  assert.match(genericGet, /q\.eq\("key", key\)/u);
+  assert.doesNotMatch(genericGet, /isPrimaryAccountKey\(key\)|isAccountBackupKey\(key\)|isAccountProofKey\(key\)/u);
+});
+
+test("Convex primary mutations reject proof, backup, recovery, and other non-primary keys before writes", async () => {
+  const source = await fs.readFile(path.join(projectRoot, "convex", "vault.ts"), "utf8");
+  const casStart = source.indexOf("export const compareAndSet = mutation(");
+  const restoreStart = source.indexOf("export const restoreBackup = mutation(");
+  const restoreEnd = source.indexOf("// Primary account-vault keys only.");
+  assert.ok(casStart >= 0 && restoreStart > casStart && restoreEnd > restoreStart);
+
+  const cas = source.slice(casStart, restoreStart);
+  const restore = source.slice(restoreStart, restoreEnd);
+  for (const handler of [cas, restore]) {
+    const suffix = handler.indexOf("const suffix = accountKeySuffix(key)");
+    const reject = handler.indexOf("suffix === null");
+    const firstRowRead = handler.indexOf("rowForKey(ctx, key)");
+    const firstWrite = Math.min(
+      ...[handler.indexOf("ctx.db.patch"), handler.indexOf("ctx.db.insert"), handler.indexOf("upsertData")]
+        .filter((index) => index >= 0),
+    );
+    assert.ok(suffix >= 0 && reject > suffix);
+    assert.ok(firstRowRead > reject);
+    assert.ok(firstWrite > reject);
+  }
+  assert.match(cas, /backupKey !== undefined && backupKey !== `\$\{ACCOUNT_BACKUP_KEY\}\$\{suffix\}`/u);
+  assert.match(restore, /backupKey !== `\$\{ACCOUNT_BACKUP_KEY\}\$\{suffix\}`/u);
+});
+
+test("Convex legacy generic recovery set honors the default tenant global proof only", async () => {
+  const source = await fs.readFile(path.join(projectRoot, "convex", "vault.ts"), "utf8");
+  const setStart = source.indexOf("export const set = mutation(");
+  const auxiliaryStart = source.indexOf("export const compareAndSetAuxiliary = mutation(");
+  const setHandler = source.slice(setStart, auxiliaryStart);
+  assert.match(
+    setHandler,
+    /assertLegacyWriterNotFenced\([\s\S]*recoveryProofKey\s*===\s*ACCOUNT_PROOF_KEY[\s\S]*\)/u,
+  );
+});
+
+test("Convex backend authentication rejects short configured access secrets", async () => {
+  for (const [file, endMarker] of [
+    ["vault.ts", "async function rowForKey"],
+    ["usageCache.ts", "const REFRESH_LOCK_MS"],
+    ["notify.ts", "// Defaults mirror"],
+    ["pairings.ts", "const PAIRING_CODE_PATTERN"],
+  ] as const) {
+    const source = await fs.readFile(path.join(projectRoot, "convex", file), "utf8");
+    const auth = source.slice(source.indexOf("function assertSecret"), source.indexOf(endMarker));
+    assert.match(auth, /process\.env\.VAULT_ACCESS_SECRET\?\.trim\(\)/u, file);
+    assert.match(auth, /expected\.length\s*<\s*32/u, file);
+    assert.match(auth, /const supplied = secret\.trim\(\)/u, file);
+    assert.match(auth, /supplied !== expected/u, file);
   }
 });
 

@@ -23,7 +23,8 @@ const ACCOUNT_PROOF_KEY_PREFIX = "accounts-key-proof::";
 // historical bare `accounts` key; the broader validator preserves readability of imported rows.
 function assertSecret(secret: string) {
   const expected = process.env.VAULT_ACCESS_SECRET?.trim();
-  if (!expected || !secret.trim() || secret.trim() !== expected) {
+  const supplied = secret.trim();
+  if (!expected || expected.length < 32 || !supplied || supplied !== expected) {
     throw new Error("Unauthorized");
   }
 }
@@ -73,6 +74,13 @@ function proofKeyForRecoveryKey(key: string): string | null {
     : ACCOUNT_PROOF_KEY;
 }
 
+function assertRecoveryProofKey(key: string, proofKey: string): void {
+  const expectedProofKey = proofKeyForRecoveryKey(key);
+  if (expectedProofKey === null || proofKey !== expectedProofKey) {
+    throw new Error("Vault encryption proof key does not match the recovery key");
+  }
+}
+
 async function assertLegacyWriterNotFenced(
   ctx: MutationCtx,
   tenantProofKey: string,
@@ -94,12 +102,6 @@ function assertGenericSetKey(key: string): void {
   if (isPrimaryAccountKey(key) || isAccountBackupKey(key) || isAccountProofKey(key)) {
     throw new Error("Primary, backup, and proof account vault rows require a guarded mutation");
   }
-}
-
-function assertBackupKey(key: string, backupKey: string): void {
-  assertOrdinaryStorageKey(key);
-  assertOrdinaryStorageKey(backupKey);
-  if (key === backupKey) throw new Error("Vault backup key must differ from the primary key");
 }
 
 // Called only after the mutation has established that its CAS expectations still match. Convex
@@ -129,10 +131,37 @@ export const get = query({
   args: { secret: v.string(), key: v.string() },
   handler: async (ctx, { secret, key }) => {
     assertSecret(secret);
+    if (proofKeyForRecoveryKey(key) !== null) {
+      throw new Error("Recovery ciphertext requires a guarded query");
+    }
     const row = await ctx.db
       .query("vault")
       .withIndex("by_key", (q) => q.eq("key", key))
       .unique();
+    return row?.data ?? null;
+  },
+});
+
+// Recovery ciphertext is useful only together with the exact key that owns the tenant's main
+// vault. Convex queries read a transactional snapshot, so the proof cannot change between this
+// check and the auxiliary row read.
+export const getAuxiliary = query({
+  args: {
+    secret: v.string(),
+    key: v.string(),
+    proofKey: v.string(),
+    keyProof: v.string(),
+  },
+  handler: async (ctx, { secret, key, proofKey, keyProof }) => {
+    assertSecret(secret);
+    assertGenericSetKey(key);
+    assertRecoveryProofKey(key, proofKey);
+    if (!keyProof) throw new Error("Vault encryption key proof is invalid");
+    const [row, proof] = await Promise.all([
+      ctx.db.query("vault").withIndex("by_key", (q) => q.eq("key", key)).unique(),
+      ctx.db.query("vault").withIndex("by_key", (q) => q.eq("key", proofKey)).unique(),
+    ]);
+    if (!proof || proof.data !== keyProof) throw new Error(KEY_PROOF_MISMATCH_ERROR);
     return row?.data ?? null;
   },
 });
@@ -150,7 +179,7 @@ export const set = mutation({
         ctx,
         recoveryProofKey,
         "Rotated-token recovery records require exact compare-and-set",
-        false,
+        recoveryProofKey === ACCOUNT_PROOF_KEY,
       );
     }
     await upsertData(ctx, key, data);
@@ -167,10 +196,18 @@ export const compareAndSetAuxiliary = mutation({
     key: v.string(),
     expected: v.union(v.string(), v.null()),
     data: v.string(),
+    proofKey: v.string(),
+    keyProof: v.string(),
   },
-  handler: async (ctx, { secret, key, expected, data }) => {
+  handler: async (ctx, { secret, key, expected, data, proofKey, keyProof }) => {
     assertSecret(secret);
     assertGenericSetKey(key);
+    assertRecoveryProofKey(key, proofKey);
+    if (!keyProof) throw new Error("Vault encryption key proof is invalid");
+    const proof = await rowForKey(ctx, proofKey);
+    // Auxiliary operations never initialize ownership. Only a successful guarded main-vault write
+    // may establish the tenant proof; otherwise an orphan recovery record could claim a tenant.
+    if (!proof || proof.data !== keyProof) throw new Error(KEY_PROOF_MISMATCH_ERROR);
     const row = await rowForKey(ctx, key);
     if ((row?.data ?? null) !== expected) return false;
     if (row) await ctx.db.patch(row._id, { data });
@@ -201,24 +238,24 @@ export const compareAndSet = mutation({
   handler: async (ctx, { secret, key, expected, data, backupKey, proofKey, keyProof }) => {
     assertSecret(secret);
     assertOrdinaryStorageKey(key);
-    if (backupKey !== undefined) assertBackupKey(key, backupKey);
+    const suffix = accountKeySuffix(key);
+    if (suffix === null) throw new Error("Primary vault compare-and-set requires an account key");
+    if (backupKey !== undefined && backupKey !== `${ACCOUNT_BACKUP_KEY}${suffix}`) {
+      throw new Error("Vault backup key does not match the primary account key");
+    }
     if (proofKey !== undefined) {
-      const suffix = accountKeySuffix(key);
-      if (suffix === null || proofKey !== `${ACCOUNT_PROOF_KEY}${suffix}`) {
+      if (proofKey !== `${ACCOUNT_PROOF_KEY}${suffix}`) {
         throw new Error("Vault encryption proof key does not match the primary account key");
       }
       if (backupKey !== `${ACCOUNT_BACKUP_KEY}${suffix}`) {
         throw new Error("Vault backup key does not match the primary account key");
       }
     } else {
-      const suffix = accountKeySuffix(key);
-      if (suffix !== null) {
-        await assertLegacyWriterNotFenced(
-          ctx,
-          `${ACCOUNT_PROOF_KEY}${suffix}`,
-          KEY_PROOF_REQUIRED_ERROR,
-        );
-      }
+      await assertLegacyWriterNotFenced(
+        ctx,
+        `${ACCOUNT_PROOF_KEY}${suffix}`,
+        KEY_PROOF_REQUIRED_ERROR,
+      );
     }
 
     const row = await rowForKey(ctx, key);
@@ -254,25 +291,23 @@ export const restoreBackup = mutation({
   },
   handler: async (ctx, { secret, key, backupKey, expectedMain, expectedBackup, keyProof, proofKey }) => {
     assertSecret(secret);
-    assertBackupKey(key, backupKey);
+    const suffix = accountKeySuffix(key);
+    if (suffix === null) throw new Error("Vault restore requires a primary account key");
+    if (backupKey !== `${ACCOUNT_BACKUP_KEY}${suffix}`) {
+      throw new Error("Vault backup key does not match the primary account key");
+    }
     if (proofKey !== undefined) {
-      const suffix = accountKeySuffix(key);
       if (
-        suffix === null ||
-        backupKey !== `${ACCOUNT_BACKUP_KEY}${suffix}` ||
         proofKey !== `${ACCOUNT_PROOF_KEY}${suffix}`
       ) {
         throw new Error("Vault recovery keys do not match the primary account key");
       }
     } else {
-      const suffix = accountKeySuffix(key);
-      if (suffix !== null) {
-        await assertLegacyWriterNotFenced(
-          ctx,
-          `${ACCOUNT_PROOF_KEY}${suffix}`,
-          KEY_PROOF_REQUIRED_ERROR,
-        );
-      }
+      await assertLegacyWriterNotFenced(
+        ctx,
+        `${ACCOUNT_PROOF_KEY}${suffix}`,
+        KEY_PROOF_REQUIRED_ERROR,
+      );
     }
 
     const main = await rowForKey(ctx, key);

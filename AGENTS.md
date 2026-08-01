@@ -30,6 +30,8 @@ npm run dev
 
 Set an independent strong `APP_PASSWORD` in `.env.local` before starting. The default development URL is [http://localhost:3000](http://localhost:3000). `npm run dev` binds explicitly to `127.0.0.1` and uses the encrypted local vault under `.data/`; development and production both fail closed without `APP_PASSWORD`. The secure Windows launcher instead creates the session through challenge/server-proof/client-proof HMAC with the DPAPI-protected `AUTH_SECRET` and never transmits the password.
 
+Every production mode also requires independent `AUTH_SECRET` and `VAULT_ENCRYPTION_SECRET` values; all three production secrets must contain at least 32 characters after trimming.
+
 Copy `.env.example` to `.env.local` only when a task needs explicit configuration. Use placeholder/test values, never credentials from another project or a production service.
 
 ## Required validation

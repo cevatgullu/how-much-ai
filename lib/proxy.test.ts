@@ -90,28 +90,30 @@ test("strict proxy returns a static 421 for every non-exact Host on public and p
   }
 });
 
-test("strict Host rejection occurs before invalid strict environment handling", async () => {
-  process.env = { HMC_STRICT_LOCAL_MODE: "1" };
+test("proxy rejects an invalid production secret environment before any route handling", async () => {
+  process.env = { HMC_STRICT_LOCAL_MODE: "1", NODE_ENV: "production" };
 
-  const response = await proxy(proxyRequest("/api/usage", "attacker.example"));
-  assert.equal(response.status, 421);
-  assert.deepEqual(await response.json(), { error: "Bad request" });
+  await assert.rejects(
+    () => proxy(proxyRequest("/api/usage", "attacker.example")),
+    /production configuration refused to start/i,
+  );
   await assert.rejects(
     () => proxy(proxyRequest("/api/usage", "127.0.0.1:37645")),
-    /configuration refused to start/i,
+    /production configuration refused to start/i,
   );
 });
 
 test("non-strict production ignores Host but fails closed without APP_PASSWORD", async () => {
   process.env = { NODE_ENV: "production" };
 
-  const publicResponse = await proxy(proxyRequest("/api/auth/login", "attacker.example"));
-  assert.equal(publicResponse.status, 200);
-  assert.equal(publicResponse.headers.get("x-middleware-next"), "1");
-
-  const protectedResponse = await proxy(proxyRequest("/api/usage", "attacker.example"));
-  assert.equal(protectedResponse.status, 401);
-  assert.deepEqual(await protectedResponse.json(), { error: "Not signed in" });
+  await assert.rejects(
+    () => proxy(proxyRequest("/api/auth/login", "attacker.example")),
+    /production configuration refused to start/i,
+  );
+  await assert.rejects(
+    () => proxy(proxyRequest("/api/usage", "attacker.example")),
+    /production configuration refused to start/i,
+  );
 });
 
 test("strict login emits a host-only HttpOnly SameSite=Strict cookie usable on loopback HTTP", async () => {

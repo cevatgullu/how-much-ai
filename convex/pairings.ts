@@ -15,8 +15,11 @@ import {
 // TTL + the single-use claim below mirror lib/pairing-core by hand (Convex modules and the Next app
 // don't share a module graph), so the tested rule and this transactional claim agree.
 function assertSecret(secret: string) {
-  const expected = process.env.VAULT_ACCESS_SECRET;
-  if (!expected || secret !== expected) throw new Error("Unauthorized");
+  const expected = process.env.VAULT_ACCESS_SECRET?.trim();
+  const supplied = secret.trim();
+  if (!expected || expected.length < 32 || !supplied || supplied !== expected) {
+    throw new Error("Unauthorized");
+  }
 }
 
 const PAIRING_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{12}$/;

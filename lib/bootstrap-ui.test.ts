@@ -107,6 +107,15 @@ function validStrictEnvironment(): NodeJS.ProcessEnv {
   };
 }
 
+function validOrdinaryProductionEnvironment(): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: "production",
+    APP_PASSWORD: "p".repeat(64),
+    AUTH_SECRET: "s".repeat(64),
+    VAULT_ENCRYPTION_SECRET: "v".repeat(64),
+  };
+}
+
 test("bootstrap fragment removal is synchronous even when the fragment is malformed", async () => {
   const events: string[] = [];
   const location = {
@@ -145,7 +154,7 @@ test("strict login renders launcher guidance without a password input while ordi
   assert.match(strictMarkup, /open how much ai from its secure launcher/i);
   assert.doesNotMatch(strictMarkup, /<input/i);
 
-  process.env = { NODE_ENV: "production", APP_PASSWORD: "ordinary-password" };
+  process.env = validOrdinaryProductionEnvironment();
   const ordinaryPage = LoginPage() as { props: { strictLocal: boolean } };
   assert.equal(ordinaryPage.props.strictLocal, false);
   const ordinaryMarkup = renderToStaticMarkup(PasswordLogin(ordinaryPage.props));
@@ -154,7 +163,7 @@ test("strict login renders launcher guidance without a password input while ordi
 });
 
 test("the bootstrap page renders its consumer only in validated strict-local mode", () => {
-  process.env = { NODE_ENV: "production", APP_PASSWORD: "ordinary-password" };
+  process.env = validOrdinaryProductionEnvironment();
   assert.throws(
     () => BootstrapPage(),
     (error: unknown) =>
@@ -168,7 +177,7 @@ test("the bootstrap page renders its consumer only in validated strict-local mod
 });
 
 test("the OAuth callback page is strict-only and renders only generic completion state", () => {
-  process.env = { NODE_ENV: "production", APP_PASSWORD: "ordinary-password" };
+  process.env = validOrdinaryProductionEnvironment();
   assert.throws(
     () => OAuthCallbackPage(),
     (error: unknown) =>

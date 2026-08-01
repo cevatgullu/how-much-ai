@@ -1,5 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import { registerHooks } from "node:module";
 import os from "node:os";
@@ -29,6 +30,7 @@ const moduleHooks = registerHooks({
 const ENV_KEYS = [
   "APP_PASSWORD",
   "AUTH_SECRET",
+  "NODE_ENV",
   "VAULT_ENCRYPTION_SECRET",
   "VAULT_DATA_DIR",
   "CONVEX_URL",
@@ -74,6 +76,7 @@ beforeEach(async () => {
   await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
   process.env.APP_PASSWORD = "vault-recovery-test-password";
   process.env.AUTH_SECRET = "vault-recovery-test-auth-secret";
+  process.env.NODE_ENV = "development";
   delete process.env.CONVEX_URL;
   delete process.env.NEXT_PUBLIC_CONVEX_URL;
   delete process.env.VAULT_ACCESS_SECRET;
@@ -108,6 +111,14 @@ function account(): StoredAccount {
   };
 }
 
+function encryptV2Payload(plaintext: string, secret: string): string {
+  const key = crypto.scryptSync(secret, "usage.vault.salt.v1", 32);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  return `v2:${iv.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${encrypted.toString("base64")}`;
+}
+
 test("recovery requires authentication when the local app is password protected", async () => {
   process.env.APP_PASSWORD = "local-login-password";
   const response = await recoverPost(request(JSON.stringify({ confirmation: VAULT_RECOVERY_CONFIRMATION }), false));
@@ -132,6 +143,97 @@ test("recovery requires the exact explicit confirmation object and leaves the va
     assert.equal(await fs.readFile(source, "utf8"), corrupt);
   }
   assert.deepEqual((await fs.readdir(dataDir)).filter((name) => name.startsWith("vault-unreadable-")), []);
+});
+
+test("migration classification never chmods an existing local key for main or backup", async (t) => {
+  const source = path.join(dataDir, "vault.enc");
+  const backup = `${source}.last-good`;
+  const keyFile = path.join(dataDir, "vault.key");
+  const legacyPassword = "a".repeat(64);
+  const keyBytes = "existing-local-key-metadata-must-stay-observational-1234567890";
+
+  for (const scenario of ["main", "backup"] as const) {
+    await t.test(scenario, async () => {
+      await fs.rm(dataDir, { recursive: true, force: true });
+      await fs.mkdir(dataDir, { recursive: true, mode: 0o755 });
+      const mainRaw =
+        scenario === "main"
+          ? encryptV2Payload(JSON.stringify([account()]), legacyPassword)
+          : "genuinely-corrupt-main-for-key-metadata";
+      const backupRaw = encryptV2Payload(JSON.stringify([account()]), legacyPassword);
+      const keyMode = scenario === "main" || process.platform === "win32" ? 0o444 : 0o666;
+      await fs.writeFile(source, mainRaw, { mode: 0o644 });
+      await fs.writeFile(backup, backupRaw, { mode: 0o640 });
+      await fs.writeFile(keyFile, keyBytes, { mode: keyMode });
+      await fs.chmod(dataDir, 0o755);
+      await fs.chmod(keyFile, keyMode);
+
+      process.env.NODE_ENV = "production";
+      process.env.APP_PASSWORD = legacyPassword;
+      process.env.AUTH_SECRET = "b".repeat(64);
+      process.env.VAULT_ENCRYPTION_SECRET = "c".repeat(64);
+      const beforeNames = (await fs.readdir(dataDir)).sort();
+      const beforeStats = await Promise.all([
+        fs.stat(dataDir),
+        fs.stat(source),
+        fs.stat(backup),
+        fs.stat(keyFile),
+      ]);
+      const isolatedVault = await import(`./vault.ts?recovery-key-metadata-${scenario}`);
+
+      await assert.rejects(
+        () => isolatedVault.recoverUnreadableLocalVault("default"),
+        /vault key migration required/i,
+      );
+      assert.equal(await fs.readFile(source, "utf8"), mainRaw);
+      assert.equal(await fs.readFile(backup, "utf8"), backupRaw);
+      assert.equal(await fs.readFile(keyFile, "utf8"), keyBytes);
+      assert.deepEqual((await fs.readdir(dataDir)).sort(), beforeNames);
+      const afterStats = await Promise.all([
+        fs.stat(dataDir),
+        fs.stat(source),
+        fs.stat(backup),
+        fs.stat(keyFile),
+      ]);
+      assert.deepEqual(afterStats.map(({ mode }) => mode), beforeStats.map(({ mode }) => mode));
+    });
+  }
+  process.env.NODE_ENV = "development";
+});
+
+test("missing main with a legacy-key backup rejects before creating lock metadata", async () => {
+  const source = path.join(dataDir, "vault.enc");
+  const backup = `${source}.last-good`;
+  const keyFile = path.join(dataDir, "vault.key");
+  const legacyPassword = "a".repeat(64);
+  const backupRaw = encryptV2Payload(JSON.stringify([account()]), legacyPassword);
+  const keyBytes = "backup-only-local-key-must-remain-observational-1234567890";
+  await fs.writeFile(backup, backupRaw, { mode: 0o640 });
+  await fs.writeFile(keyFile, keyBytes, { mode: 0o444 });
+  await fs.chmod(dataDir, 0o755);
+  await fs.chmod(keyFile, 0o444);
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = legacyPassword;
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = "c".repeat(64);
+  const beforeNames = (await fs.readdir(dataDir)).sort();
+  const beforeStats = await Promise.all([fs.stat(dataDir), fs.stat(backup), fs.stat(keyFile)]);
+  const isolatedVault = await import("./vault.ts?recovery-key-metadata-missing-main");
+
+  try {
+    await assert.rejects(
+      () => isolatedVault.recoverUnreadableLocalVault("default"),
+      /vault key migration required/i,
+    );
+    await assert.rejects(() => fs.lstat(source), { code: "ENOENT" });
+    assert.equal(await fs.readFile(backup, "utf8"), backupRaw);
+    assert.equal(await fs.readFile(keyFile, "utf8"), keyBytes);
+    assert.deepEqual((await fs.readdir(dataDir)).sort(), beforeNames);
+    const afterStats = await Promise.all([fs.stat(dataDir), fs.stat(backup), fs.stat(keyFile)]);
+    assert.deepEqual(afterStats.map(({ mode }) => mode), beforeStats.map(({ mode }) => mode));
+  } finally {
+    process.env.NODE_ENV = "development";
+  }
 });
 
 test("recovery atomically archives an unreadable local vault, preserves vault.key, and starts empty", async () => {
@@ -201,6 +303,157 @@ test("recovery archives both unreadable generations so the stale backup cannot r
   assert.equal(await fs.readFile(path.join(dataDir, result.archive), "utf8"), corruptMain);
   assert.equal(await fs.readFile(path.join(dataDir, result.backupArchive!), "utf8"), corruptBackup);
   assert.deepEqual(await loadAccounts("default"), []);
+});
+
+test("recovery never chmods a replacement inode introduced before permission hardening", async () => {
+  const source = path.join(dataDir, "vault.enc");
+  const corrupt = "corrupt-generation-before-path-swap";
+  const foreignDir = await fs.mkdtemp(path.join(os.tmpdir(), "usage-vault-foreign-target-"));
+  const foreign = path.join(foreignDir, "foreign.enc");
+  const foreignBytes = "foreign-target-must-remain-byte-and-mode-identical";
+  await fs.writeFile(source, corrupt, { mode: 0o644 });
+  await fs.writeFile(foreign, foreignBytes, { mode: 0o444 });
+  await fs.chmod(foreign, 0o444);
+  const foreignMode = (await fs.stat(foreign)).mode;
+  const originalOpen = fs.open;
+  let swapped = false;
+  fs.open = (async (target, flags, mode) => {
+    if (!swapped && path.resolve(String(target)) === path.resolve(dataDir)) {
+      await fs.unlink(source);
+      await fs.link(foreign, source);
+      swapped = true;
+    }
+    return originalOpen(target, flags, mode);
+  }) as typeof fs.open;
+
+  try {
+    await assert.rejects(
+      () => recoverUnreadableLocalVault("default"),
+      /vault changed while recovery was being prepared/i,
+    );
+  } finally {
+    fs.open = originalOpen;
+  }
+  try {
+    assert.equal(swapped, true);
+    assert.equal(await fs.readFile(foreign, "utf8"), foreignBytes);
+    assert.equal((await fs.stat(foreign)).mode, foreignMode);
+    assert.deepEqual(
+      (await fs.readdir(dataDir)).filter((name) => name.startsWith("vault-unreadable-")),
+      [],
+    );
+  } finally {
+    await fs.rm(foreignDir, { recursive: true, force: true });
+  }
+});
+
+test("recovery rejects a replaced directory handle without chmodding the foreign directory", async () => {
+  const source = path.join(dataDir, "vault.enc");
+  const foreignDir = await fs.mkdtemp(path.join(os.tmpdir(), "usage-vault-foreign-directory-"));
+  const marker = path.join(foreignDir, "marker.txt");
+  await fs.writeFile(source, "corrupt-generation-before-directory-swap", { mode: 0o644 });
+  await fs.writeFile(marker, "foreign-directory-marker", { mode: 0o444 });
+  await fs.chmod(foreignDir, 0o555);
+  const foreignMode = (await fs.stat(foreignDir)).mode;
+  const originalOpen = fs.open;
+  let redirected = false;
+  fs.open = (async (target, flags, mode) => {
+    if (!redirected && path.resolve(String(target)) === path.resolve(dataDir)) {
+      redirected = true;
+      return originalOpen(foreignDir, flags, mode);
+    }
+    return originalOpen(target, flags, mode);
+  }) as typeof fs.open;
+
+  try {
+    await assert.rejects(
+      () => recoverUnreadableLocalVault("default"),
+      /vault changed while recovery was being prepared/i,
+    );
+  } finally {
+    fs.open = originalOpen;
+  }
+  try {
+    assert.equal(redirected, true);
+    assert.equal((await fs.stat(foreignDir)).mode, foreignMode);
+    assert.equal(await fs.readFile(marker, "utf8"), "foreign-directory-marker");
+    assert.deepEqual(
+      (await fs.readdir(dataDir)).filter((name) => name.startsWith("vault-unreadable-")),
+      [],
+    );
+  } finally {
+    await fs.chmod(foreignDir, 0o700).catch(() => {});
+    await fs.rm(foreignDir, { recursive: true, force: true });
+  }
+});
+
+test("recovery leaves every byte, path, and mode untouched when the vault needs key migration", async () => {
+  const source = path.join(dataDir, "vault.enc");
+  const backup = `${source}.last-good`;
+  const legacyPassword = "a".repeat(64);
+  const mainRaw = encryptV2Payload(JSON.stringify([account()]), legacyPassword);
+  const backupAccount = { ...account(), id: "legacy-backup", email: "legacy-backup@example.com" };
+  const backupRaw = encryptV2Payload(JSON.stringify([backupAccount]), legacyPassword);
+  await fs.chmod(dataDir, 0o755);
+  await fs.writeFile(source, mainRaw, { mode: 0o644 });
+  await fs.writeFile(backup, backupRaw, { mode: 0o640 });
+
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = legacyPassword;
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = "c".repeat(64);
+  const beforeNames = (await fs.readdir(dataDir)).sort();
+  const beforeDirectoryMode = (await fs.stat(dataDir)).mode;
+  const beforeMainMode = (await fs.stat(source)).mode;
+  const beforeBackupMode = (await fs.stat(backup)).mode;
+
+  try {
+    await assert.rejects(
+      () => recoverUnreadableLocalVault("default"),
+      /vault key migration required/i,
+    );
+    assert.equal(await fs.readFile(source, "utf8"), mainRaw);
+    assert.equal(await fs.readFile(backup, "utf8"), backupRaw);
+    assert.deepEqual((await fs.readdir(dataDir)).sort(), beforeNames);
+    assert.equal((await fs.stat(dataDir)).mode, beforeDirectoryMode);
+    assert.equal((await fs.stat(source)).mode, beforeMainMode);
+    assert.equal((await fs.stat(backup)).mode, beforeBackupMode);
+    assert.deepEqual(beforeNames.filter((name) => name.startsWith("vault-unreadable-")), []);
+  } finally {
+    process.env.NODE_ENV = "development";
+  }
+});
+
+test("recovery also stays observational when only the backup needs key migration", async () => {
+  const source = path.join(dataDir, "vault.enc");
+  const backup = `${source}.last-good`;
+  const legacyPassword = "a".repeat(64);
+  const mainRaw = "genuinely-corrupt-main-generation";
+  const backupRaw = encryptV2Payload(JSON.stringify([account()]), legacyPassword);
+  await fs.chmod(dataDir, 0o755);
+  await fs.writeFile(source, mainRaw, { mode: 0o644 });
+  await fs.writeFile(backup, backupRaw, { mode: 0o640 });
+
+  process.env.NODE_ENV = "production";
+  process.env.APP_PASSWORD = legacyPassword;
+  process.env.AUTH_SECRET = "b".repeat(64);
+  process.env.VAULT_ENCRYPTION_SECRET = "c".repeat(64);
+  const beforeNames = (await fs.readdir(dataDir)).sort();
+  const beforeModes = await Promise.all([fs.stat(dataDir), fs.stat(source), fs.stat(backup)]);
+
+  try {
+    await assert.rejects(
+      () => recoverUnreadableLocalVault("default"),
+      /vault key migration required/i,
+    );
+    assert.equal(await fs.readFile(source, "utf8"), mainRaw);
+    assert.equal(await fs.readFile(backup, "utf8"), backupRaw);
+    assert.deepEqual((await fs.readdir(dataDir)).sort(), beforeNames);
+    const afterModes = await Promise.all([fs.stat(dataDir), fs.stat(source), fs.stat(backup)]);
+    assert.deepEqual(afterModes.map(({ mode }) => mode), beforeModes.map(({ mode }) => mode));
+  } finally {
+    process.env.NODE_ENV = "development";
+  }
 });
 
 test("recovery refuses missing, readable, and non-file local vault paths without changing them", async () => {

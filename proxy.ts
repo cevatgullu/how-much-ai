@@ -15,13 +15,16 @@ function bounceToLogin(req: NextRequest): NextResponse {
 }
 
 export default async function proxy(req: NextRequest): Promise<NextResponse> {
+  // Validate production secrets before any public-path or Host-specific response is selected. This
+  // keeps a misconfigured deployment wholly unavailable instead of leaving selected routes live.
+  const authenticationOpen = authOpen();
   if (!strictLocalRequestHostAllowed(req.headers.get("host"))) {
     return NextResponse.json({ error: "Bad request" }, { status: 421 });
   }
 
   const { pathname } = req.nextUrl;
 
-  if (authOpen()) {
+  if (authenticationOpen) {
     if (pathname === "/login") {
       const url = req.nextUrl.clone();
       url.pathname = "/";

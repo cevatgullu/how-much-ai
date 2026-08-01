@@ -47,7 +47,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The development command binds explicitly to `127.0.0.1`, but the dashboard and APIs still require the password session. Development and production both fail closed when `APP_PASSWORD` is missing.
+Open [http://localhost:3000](http://localhost:3000). The development command binds explicitly to `127.0.0.1`, but the dashboard and APIs still require the password session. Development fails closed without `APP_PASSWORD`; production additionally requires independent `AUTH_SECRET` and `VAULT_ENCRYPTION_SECRET` values.
 
 ## 3. Configure secrets
 
@@ -65,7 +65,8 @@ openssl rand -hex 32
 
 Repeat that command for each value; do not reuse one output everywhere. Put secrets in `.env.local` for a private machine or in the hosting platform's encrypted environment settings.
 
-Recommended baseline:
+Production requires all three values below. Each must contain at least 32
+characters after trimming, and the values must be generated independently:
 
 ```dotenv
 APP_PASSWORD=<a strong login password>
@@ -75,10 +76,24 @@ TRUST_PROXY_IP_HEADERS=0
 ```
 
 - `APP_PASSWORD` is required for ordinary development and self-hosting login.
-- `AUTH_SECRET` signs the 30-day session cookie. Keeping it independent allows password changes without immediately invalidating every session.
-- `VAULT_ENCRYPTION_SECRET` separates credential encryption from the login password. It is mandatory for Redis and strongly recommended for any networked install.
+- `AUTH_SECRET` signs the 30-day session cookie. Production never falls back to
+  the login password for session signatures.
+- `VAULT_ENCRYPTION_SECRET` encrypts connected-account credentials. Every
+  production mode requires it, including local-file, Convex, and Redis storage.
 
-Do not rotate or delete vault key sources casually. Existing remote generations stay pinned to the exact key that encrypted them.
+Every configured production backend credential (`VAULT_ACCESS_SECRET`,
+`KV_REST_API_TOKEN`, or `UPSTASH_REDIS_REST_TOKEN`) must also contain at least
+32 characters after trimming and must not reuse any of those three application
+secrets. `VAULT_ACCESS_SECRET` must also differ from both Redis tokens; only the
+two Redis token aliases may contain the same backend credential. A
+configured production `CRON_SECRET` must be at least 32 characters and distinct
+from every application and backend credential.
+
+Do not rotate or delete `VAULT_ENCRYPTION_SECRET` casually. Production accepts
+credential ciphertext only under that exact configured value. Older production
+generations encrypted with `APP_PASSWORD`, `VAULT_ACCESS_SECRET`, or the
+historical public fallback stop with a migration-required error before any
+account or token is returned.
 
 ## 4. Connect provider accounts
 
@@ -125,11 +140,12 @@ For every row, the provider-native **used** percentage is primary and the progre
 
 ## 5. Storage option A: encrypted local file
 
-No storage variables are required. The default files are:
+Development local-file storage needs no storage variable. Production local-file
+storage requires `VAULT_ENCRYPTION_SECRET`. The default files are:
 
 - `.data/vault.enc` — AES-256-GCM encrypted account data;
 - `.data/vault.enc.last-good` — previous readable generation, when present;
-- `.data/vault.key` — generated local key when no configured secret supplies encryption;
+- `.data/vault.key` — development-only generated key when no configured secret supplies encryption;
 - `.data/token-recovery/` — encrypted crash-recovery journals for rotating tokens.
 
 You may place them on another persistent volume:
@@ -162,7 +178,7 @@ Start the Convex setup and follow its project prompts:
 npx convex dev
 ```
 
-The CLI normally writes `CONVEX_DEPLOYMENT` and `NEXT_PUBLIC_CONVEX_URL` into `.env.local`. Add a strong `VAULT_ACCESS_SECRET` to the same file, then set the identical value in that Convex deployment without putting it in shell history:
+The CLI normally writes `CONVEX_DEPLOYMENT` and `NEXT_PUBLIC_CONVEX_URL` into `.env.local`. Add a random `VAULT_ACCESS_SECRET` containing at least 32 characters after trimming to the same file, then set the identical value in that Convex deployment without putting it in shell history. Convex functions enforce this minimum in development and production because both deployments are internet-reachable:
 
 ```bash
 npx convex env set VAULT_ACCESS_SECRET
@@ -173,6 +189,7 @@ Omitting the value makes the CLI prompt for it. The app accepts the generated `N
 ```dotenv
 CONVEX_URL=https://your-deployment.convex.cloud
 VAULT_ACCESS_SECRET=<same value stored in Convex>
+VAULT_ENCRYPTION_SECRET=<independent stable random value>
 ```
 
 Never prefix the access secret with `NEXT_PUBLIC_`.
@@ -191,7 +208,10 @@ Set the production backend secret interactively:
 npx convex env set --prod VAULT_ACCESS_SECRET
 ```
 
-Copy the production deployment URL from the CLI or Convex dashboard into the Next.js host as `CONVEX_URL`, and put the same access secret in the host as `VAULT_ACCESS_SECRET`.
+Copy the production deployment URL from the CLI or Convex dashboard into the
+Next.js host as `CONVEX_URL`, put the same access secret in the host as
+`VAULT_ACCESS_SECRET`, and configure a separate `VAULT_ENCRYPTION_SECRET` only
+in the Next.js host.
 
 The URL is not a credential; `VAULT_ACCESS_SECRET` is. Anyone with both can call the secret-gated backend functions, so use a deployment-specific value and do not share a production Convex deployment with an untrusted app.
 
@@ -205,15 +225,25 @@ npx convex run migrations:backfillNotifyUserIds --prod
 
 The migration is idempotent.
 
-### Access-secret rotation
+### Access-secret and encryption-key rotation
 
-A fresh Convex vault uses `VAULT_ACCESS_SECRET` as its first server-consistent encryption key and records a proof of that key. Before changing the Convex access secret, preserve the old value as a supported decryption source, deploy and verify the app, and only then update the secret in both the app and Convex.
+Fresh Convex vaults use `VAULT_ENCRYPTION_SECRET` for credential encryption;
+`VAULT_ACCESS_SECRET` only authorizes calls to the Convex deployment. Rotate the
+access secret in the app and Convex together without changing the encryption
+secret.
 
-If you are not certain which key encrypted the current generation, do not rotate it. Back up the ciphertext and test the migration on a copy first.
+Changing `VAULT_ENCRYPTION_SECRET` requires a controlled offline migration of
+the main vault, last-known-good backup, key proof, and outstanding token-recovery
+records. Back up the ciphertext and test the migration on a copy first. The app
+fails closed instead of attempting a partial online migration.
 
 ## 7. Storage option C: Redis/KV REST
 
 The Redis implementation expects an Upstash-compatible REST API, not a `redis://` TCP URL.
+
+In production the configured REST token must contain at least 32 characters
+after trimming, be independent from the three application secrets, and remain
+private. Development retains provider-issued token compatibility.
 
 Configure either pair:
 
@@ -251,7 +281,7 @@ In the app environment:
 
 ```dotenv
 APP_URL=https://your-app.example
-CRON_SECRET=<independent random value>
+CRON_SECRET=<independent random value of at least 32 characters>
 ```
 
 In the production Convex deployment:
@@ -261,7 +291,7 @@ npx convex env set --prod APP_URL https://your-app.example
 npx convex env set --prod CRON_SECRET
 ```
 
-`APP_URL` must be the public HTTPS origin that reaches this app. The Convex cron runs every five minutes and calls `/api/cron/check`; that route rejects requests without the matching `CRON_SECRET`.
+`APP_URL` must be the public HTTPS origin that reaches this app. The Convex cron runs every five minutes and calls `/api/cron/check`; that route rejects requests without the matching `CRON_SECRET`. In production this secret must contain at least 32 characters after trimming and must not reuse an application or backend credential.
 
 ### Browser Web Push
 
@@ -384,7 +414,11 @@ Set a stable `VAULT_ENCRYPTION_SECRET` before saving any account.
 
 ### The vault is unreadable
 
-Do not overwrite it with an empty vault. Restore the exact previous encryption/access/password source and the matching last-known-good backup. Use the in-app archive/recovery action only after preserving the unreadable ciphertext for investigation.
+Do not overwrite it with an empty vault or downgrade the app. Preserve the main
+ciphertext, last-known-good backup, key proof, and recovery records. A production
+generation under an old password, access secret, or public fallback requires a
+controlled offline migration to the configured `VAULT_ENCRYPTION_SECRET`; rotate
+and reconnect provider credentials if the old key may be public or guessable.
 
 ### Notifications are unavailable
 
@@ -402,8 +436,13 @@ Reconnect the selected account. Do not repeatedly retry a shared rotating CLI cr
 
 ## 12. Final exposure checklist
 
-- [ ] `APP_PASSWORD` is set and tested.
-- [ ] `AUTH_SECRET` and vault secrets are independent and backed up.
+- [ ] `APP_PASSWORD`, `AUTH_SECRET`, and `VAULT_ENCRYPTION_SECRET` are each at
+      least 32 characters after trimming, independent, and backed up.
+- [ ] Every configured backend credential is at least 32 characters where
+      required, does not reuse an application secret, and Convex uses a strong
+      access secret even for development deployments.
+- [ ] A configured production `CRON_SECRET` is at least 32 characters and is
+      independent from all application and backend credentials.
 - [ ] The vault backend is durable for the chosen host.
 - [ ] The app is reachable only over HTTPS.
 - [ ] `TRUST_PROXY_IP_HEADERS` matches the real proxy boundary.

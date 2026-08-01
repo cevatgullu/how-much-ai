@@ -13,7 +13,7 @@ You need Node.js 22.18.0 or newer.
 ```bash
 git clone https://github.com/SeraphKc/how-much-ai.git
 cd how-much-ai
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 cp .env.example .env.local
 npm run dev
 ```
@@ -78,7 +78,7 @@ VAULT_ENCRYPTION_SECRET=
 Then verify and build:
 
 ```bash
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 npm test
 npm run typecheck
 npm run build
@@ -106,7 +106,7 @@ Outside reviewed Windows strict-local mode, Redis-only and file-only installs st
 Run all checks from the repository root:
 
 ```bash
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 npm test
 npm run typecheck
 npm run build

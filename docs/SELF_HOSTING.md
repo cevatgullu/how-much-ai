@@ -36,7 +36,7 @@ Clone and install exactly from the lockfile:
 ```bash
 git clone https://github.com/SeraphKc/how-much-ai.git
 cd how-much-ai
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 ```
 
 Create the local configuration and set `APP_PASSWORD` to an independent strong
@@ -303,7 +303,7 @@ The app sends JSON containing `source`, human-readable `text`, and structured `e
 Verify the exact checkout before deployment:
 
 ```bash
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 npm test
 npm run typecheck
 npm run build
@@ -341,7 +341,7 @@ Upgrade:
 
 ```bash
 git pull --ff-only
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 npm test
 npm run typecheck
 npm run build

@@ -650,8 +650,26 @@ test(
   },
 );
 
+test("documented and automated npm installs never enable lifecycle scripts", async () => {
+  for (const documentPath of [
+    "README.md",
+    "docs/SELF_HOSTING.md",
+    "AGENTS.md",
+    ".github/workflows/ci.yml",
+  ]) {
+    const document = await readFile(path.resolve(documentPath), "utf8");
+    const installs = (document.match(/^\s*(?:run:\s*)?npm ci.*$/gmu) ?? [])
+      .map((line) => line.trim().replace(/^run:\s*/u, ""));
+    assert.ok(installs.length > 0, `${documentPath} must document npm ci`);
+    assert.deepEqual(
+      [...new Set(installs)],
+      ["npm ci --ignore-scripts --include=dev --audit=false --fund=false"],
+    );
+  }
+});
+
 test(
-  "the pinned sbom operation invokes only npm sbom with the CycloneDX format",
+  "the pinned ci installs reviewed dev tools and sbom uses only CycloneDX",
   { skip: process.platform !== "win32" },
   async () => {
     const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-pinned-sbom-"));
@@ -736,6 +754,30 @@ test(
     );
 
     try {
+      const acceptedCi = run(["ci"]);
+      assert.equal(acceptedCi.error, undefined);
+      assert.equal(acceptedCi.status, 0);
+      assert.equal(acceptedCi.stderr, "");
+      assert.deepEqual(JSON.parse(acceptedCi.stdout), {
+        ok: true,
+        operation: "ci",
+        output: '{"bomFormat":"CycloneDX","specVersion":"1.6"}',
+      });
+      assert.deepEqual(
+        (await readFile(invocationMarker, "utf8")).trim().split("\n").map((line) => JSON.parse(line)),
+        [{
+          args: [
+            "ci",
+            "--ignore-scripts",
+            "--include=dev",
+            "--audit=false",
+            "--fund=false",
+          ],
+          hasCanary: false,
+        }],
+      );
+      await rm(invocationMarker);
+
       const accepted = run(["sbom"]);
       assert.equal(accepted.error, undefined);
       assert.equal(accepted.status, 0);
@@ -747,7 +789,10 @@ test(
       });
       assert.deepEqual(
         (await readFile(invocationMarker, "utf8")).trim().split("\n").map((line) => JSON.parse(line)),
-        [{ args: ["sbom", "--sbom-format", "cyclonedx"], hasCanary: false }],
+        [{
+          args: ["sbom", "--include=dev", "--sbom-format", "cyclonedx"],
+          hasCanary: false,
+        }],
       );
 
       for (const rejectedArguments of [

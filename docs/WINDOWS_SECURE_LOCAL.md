@@ -643,9 +643,17 @@ if ($gitStatusExitCode -ne 0 -or $gitStatusLines.Count -ne 0) {
 ```
 
 Establish the trusted launcher below before parsing the npm lockfile or
-executing `ci`, `ls`, `audit`, or the CycloneDX `sbom` operation. Windows PowerShell 5.1 cannot safely
-materialize every valid npm lockfile as a case-insensitive object, so the
-reviewed Node entrypoint creates the lifecycle-script inventory instead.
+executing `ci`, `ls`, `audit`, or the CycloneDX `sbom` operation. Windows
+PowerShell 5.1 cannot safely materialize every valid npm lockfile as a
+case-insensitive object, so the reviewed Node entrypoint creates the
+lifecycle-script inventory instead.
+The pinned install is exactly `npm ci --ignore-scripts --include=dev
+--audit=false --fund=false`: development tools needed for the reviewed test,
+typecheck, build, and complete on-disk SBOM are installed, while dependency
+lifecycle scripts remain disabled.
+The retained SBOM is exactly `npm sbom --include=dev --sbom-format
+cyclonedx`, so production and development dependencies both appear in the
+CycloneDX evidence.
 
 Run the repository validation through the reviewed minimal-environment
 launcher:

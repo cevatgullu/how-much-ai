@@ -30,7 +30,7 @@ jobs:
           cache: npm
 
       - name: Install locked dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts --include=dev --audit=false --fund=false
 
       - name: Run tests
         run: npm test

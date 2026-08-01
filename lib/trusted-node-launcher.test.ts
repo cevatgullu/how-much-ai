@@ -366,6 +366,7 @@ test("the secure Windows guide binds audit entrypoints and the installer never e
   assert.match(guide, /\$manifest\.installerSha256/u);
   assert.match(guide, /--expected-package-json-sha256/u);
   assert.match(guide, /--expected-lockfile-sha256/u);
+  assert.match(guide, /--include=dev/u);
   assert.match(guide, /CycloneDX/u);
   assert.match(
     guide,

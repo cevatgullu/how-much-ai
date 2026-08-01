@@ -23,7 +23,7 @@ It must not add hosted identity, payments, paid-account limits, marketing pages,
 Use Node.js 22.18.0 or newer. Run commands from the repository root.
 
 ```bash
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 cp .env.example .env.local
 npm run dev
 ```

@@ -1044,10 +1044,16 @@ function runPinnedNpmOperation({
     { offline: false },
   );
   const argumentsByOperation = {
-    ci: ["ci", "--ignore-scripts", "--audit=false", "--fund=false"],
+    ci: [
+      "ci",
+      "--ignore-scripts",
+      "--include=dev",
+      "--audit=false",
+      "--fund=false",
+    ],
     ls: ["ls", "--all"],
     audit: ["audit", "--json"],
-    sbom: ["sbom", "--sbom-format", "cyclonedx"],
+    sbom: ["sbom", "--include=dev", "--sbom-format", "cyclonedx"],
   };
   try {
     assertPinnedProjectMetadata({

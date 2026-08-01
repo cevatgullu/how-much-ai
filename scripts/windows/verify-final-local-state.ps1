@@ -734,6 +734,17 @@ function New-HmaFinalDefaultOperations {
                 -Plan $Plan `
                 -Values @($Values))
         }
+        NormalizeGeneratedProfileAcl = {
+            param($RequestedStateRoot)
+            $profileRoot = Join-Path `
+                ([string]$RequestedStateRoot) `
+                'edge-profile'
+            if (Test-HmaPrivateAcl -LiteralPath $profileRoot -Recurse) {
+                return $true
+            }
+            Set-HmaPrivateAcl -LiteralPath $profileRoot
+            return $true
+        }
         TestPrivateState = {
             param($RequestedStateRoot)
             return [bool](Test-HmaPrivateAcl `
@@ -1178,6 +1189,13 @@ function Invoke-HmaFinalLocalStateCore {
             -not [bool]$shutdown.edgeClosed -or
             [int]$shutdown.taskStopCount -ne 2 -or
             -not [bool]$shutdown.listenerStopped) {
+            throw 'Final local state verification failed.'
+        }
+
+        if (-not (Invoke-HmaFinalBooleanOperation `
+                -Operations $Operations `
+                -Name 'NormalizeGeneratedProfileAcl' `
+                -Arguments @($StateRoot))) {
             throw 'Final local state verification failed.'
         }
 

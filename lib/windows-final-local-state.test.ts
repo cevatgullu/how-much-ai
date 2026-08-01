@@ -27,7 +27,7 @@ const vaultSecretCanary = `VAULT-VALUE-CANARY-${"c".repeat(32)}`;
 const processMetadataCanary = "PROCESS-METADATA-CANARY";
 const listenerPidCanary = "424242";
 const reviewedVerifierHash =
-  "5f73cfcc5794cc74d12326ef470f4efaa48e70cae0e1600d72bd9ce6425508c7";
+  "bda0ff9eb5ebbda8d6240df5ae43ffe0162d9be0aac8246b7be48490a54fce13";
 const reviewedManifest =
   `{"commit":"${"d".repeat(40)}","nodeSha256":"${"e".repeat(64)}",` +
   `"installerSha256":"${"f".repeat(64)}",` +
@@ -35,7 +35,7 @@ const reviewedManifest =
   `{"path":"scripts/windows/SecureLocalIntegrity.psm1","size":1,"sha256":"${integrityHash}"},` +
   `{"path":"scripts/windows/SecureLocalRuntime.psm1","size":1,"sha256":"${runtimeHash}"},` +
   `{"path":"scripts/windows/SecureLocalSecrets.psm1","size":1,"sha256":"${secretsHash}"},` +
-  `{"path":"scripts/windows/verify-final-local-state.ps1","size":42107,"sha256":"${reviewedVerifierHash}"}` +
+  `{"path":"scripts/windows/verify-final-local-state.ps1","size":42794,"sha256":"${reviewedVerifierHash}"}` +
   "]}";
 const reviewedManifestSha256 = createHash("sha256")
   .update(reviewedManifest)
@@ -236,6 +236,11 @@ const syntheticHarness = [
   "      Add-TestEvent 'terminate-listener'",
   `      return ([int]$ListenerPid -eq ${listenerPidCanary} -and $null -ne $Plan -and @($Values).Count -eq 3)`,
   "    }",
+  "    NormalizeGeneratedProfileAcl = {",
+  "      param($StateRoot)",
+  "      Add-TestEvent 'normalize-generated-profile-acl'",
+  "      return $true",
+  "    }",
   "    TestPrivateState = {",
   "      param($StateRoot)",
   "      Add-TestEvent 'acl-scan'",
@@ -270,6 +275,7 @@ const syntheticHarness = [
   "  $firstImport = $script:events.IndexOf('import-runtime')",
   "  $lastHash = $script:events.IndexOf('hash-SecureLocalSecrets.psm1')",
   "  $firstScan = $script:events.IndexOf('acl-scan')",
+  "  $profileAclNormalization = $script:events.IndexOf('normalize-generated-profile-acl')",
   "  $lastTaskWait = [Math]::Max($script:events.IndexOf('wait-task-HowMuchAI-Window'), $script:events.IndexOf('wait-task-HowMuchAI-Service'))",
   "  $lastListenerWait = [Math]::Max($script:events.LastIndexOf('wait-listener'), [Math]::Max($script:events.LastIndexOf('wait-exact-listener'), $script:events.LastIndexOf('wait-port-listeners')))",
   "  $lastShutdown = [Math]::Max($script:events.LastIndexOf('wait-edge-exit'), [Math]::Max($lastTaskWait, $lastListenerWait))",
@@ -296,6 +302,7 @@ const syntheticHarness = [
   "    targetSelected = $script:targetSelected",
   "    hashesBeforeImport = ($firstImport -gt $lastHash -and $lastHash -ge 0)",
   "    cleanupBeforeScan = ($firstScan -lt 0 -or $lastShutdown -lt $firstScan)",
+  "    profileAclNormalizedBeforeScan = ($profileAclNormalization -ge 0 -and $profileAclNormalization -lt $firstScan)",
   "  }",
   "}",
 ];
@@ -457,6 +464,7 @@ test(
         targetSelected: boolean;
         hashesBeforeImport: boolean;
         cleanupBeforeScan: boolean;
+        profileAclNormalizedBeforeScan: boolean;
       }>
     >(stdout);
 
@@ -484,6 +492,7 @@ test(
       targetSelected: true,
       hashesBeforeImport: true,
       cleanupBeforeScan: true,
+      profileAclNormalizedBeforeScan: true,
     });
     assert.deepEqual(records[1], {
       ...records[0],

@@ -503,14 +503,27 @@ function Test-HmaWindowContainsPattern {
         [Parameter(Mandatory)][byte[]]$Pattern
     )
 
-    if ($Pattern.Length -eq 0 -or $Pattern.Length -gt $Count) {
+    if ($Count -lt 0 -or
+        $Count -gt $Buffer.Length -or
+        $Pattern.Length -eq 0 -or
+        $Pattern.Length -gt $Count) {
         return $false
     }
 
     $lastStart = $Count - $Pattern.Length
-    for ($start = 0; $start -le $lastStart; $start += 1) {
+    $searchStart = 0
+    while ($searchStart -le $lastStart) {
+        $start = [Array]::IndexOf(
+            $Buffer,
+            [byte]$Pattern[0],
+            $searchStart,
+            $lastStart - $searchStart + 1
+        )
+        if ($start -lt 0) {
+            return $false
+        }
         $matched = $true
-        for ($offset = 0; $offset -lt $Pattern.Length; $offset += 1) {
+        for ($offset = 1; $offset -lt $Pattern.Length; $offset += 1) {
             if ($Buffer[$start + $offset] -ne $Pattern[$offset]) {
                 $matched = $false
                 break
@@ -519,6 +532,7 @@ function Test-HmaWindowContainsPattern {
         if ($matched) {
             return $true
         }
+        $searchStart = $start + 1
     }
     return $false
 }

@@ -284,3 +284,30 @@ test(
     }
   },
 );
+
+test(
+  "byte-pattern scanning keeps exact boundary behavior without a PowerShell byte-by-byte hot path",
+  windowsOnly,
+  async () => {
+    const { stdout, stderr } = await runPowerShell([
+      ` $module = Import-Module ${psLiteral(modulePath)} -Force -PassThru`,
+      "& $module {",
+      "  $buffer = New-Object byte[] (8 * 1024 * 1024)",
+      "  $pattern = [byte[]](1..32)",
+      "  $stopwatch = [Diagnostics.Stopwatch]::StartNew()",
+      "  $absent = Test-HmaWindowContainsPattern -Buffer $buffer -Count $buffer.Length -Pattern $pattern",
+      "  [Buffer]::BlockCopy($pattern, 0, $buffer, $buffer.Length - $pattern.Length, $pattern.Length)",
+      "  $atBoundary = Test-HmaWindowContainsPattern -Buffer $buffer -Count $buffer.Length -Pattern $pattern",
+      "  $stopwatch.Stop()",
+      "  [pscustomobject]@{ absent = (-not $absent); boundary = $atBoundary; fast = ($stopwatch.ElapsedMilliseconds -lt 1500) } | ConvertTo-Json -Compress",
+      "}",
+    ]);
+
+    assert.deepEqual(parseSafeRecord(stdout), {
+      absent: true,
+      boundary: true,
+      fast: true,
+    });
+    assert.equal(stderr, "");
+  },
+);

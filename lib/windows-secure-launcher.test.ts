@@ -364,7 +364,7 @@ test(
 );
 
 test(
-  "task plans reject unsafe inputs and registered-task verification requires the exact SID, trigger, action, settings, and XML",
+  "task verification accepts only current-user identity equivalents and exact limited XML",
   windowsOnly,
   async () => {
     const { stdout, stderr } = await runPowerShell([
@@ -379,18 +379,26 @@ test(
       "try { Set-HmaExactProcessEnvironment -Environment ([ordered]@{ SYSTEMROOT = $env:SystemRoot; PATH = 'C:\\attacker' }) } catch { $invalidEnvironmentRejected = $true }",
       "$expected = $plans[0]",
       "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+      "$account = [Security.Principal.WindowsIdentity]::GetCurrent().Name",
+      "$shortAccount = @($account.Split('\\'))[-1]",
+      "$escapedAccount = [Security.SecurityElement]::Escape($account)",
       "$escapedCommand = [Security.SecurityElement]::Escape([string]$expected.FilePath)",
       "$escapedArguments = [Security.SecurityElement]::Escape([string]$expected.ActionArguments)",
       "$xml = '<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Triggers><LogonTrigger><UserId>' + $sid + '</UserId></LogonTrigger></Triggers><Principals><Principal><UserId>' + $sid + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions><Exec><Command>' + $escapedCommand + '</Command><Arguments>' + $escapedArguments + '</Arguments></Exec></Actions></Task>'",
       "$task = [pscustomobject]@{ TaskName = $expected.Name; Principal = [pscustomobject]@{ UserId = $sid; LogonType = 'InteractiveToken'; RunLevel = 'Limited' }; Actions = @([pscustomobject]@{ Execute = $expected.FilePath; Arguments = $expected.ActionArguments }); Triggers = @([pscustomobject]@{ UserId = $sid; TriggerType = 'Logon' }); Settings = [pscustomobject]@{ MultipleInstances = 'IgnoreNew'; StartWhenAvailable = $true; ExecutionTimeLimit = 'PT0S'; RestartCount = 3; RestartInterval = 'PT1M' }; Xml = $xml }",
       "$configForTask = [pscustomobject]@{ bootstrapHashes = $hashes }",
       "$valid = Test-HmaRegisteredTaskPlan -Task $task -Config $configForTask -StateRoot 'C:\\private-state'",
+      "$normalizedXml = $xml.Replace('<LogonTrigger><UserId>' + $sid + '</UserId>', '<LogonTrigger><UserId>' + $escapedAccount + '</UserId>').Replace('<RunLevel>LeastPrivilege</RunLevel>', '')",
+      "$normalizedTask = $task.PSObject.Copy(); $normalizedTask.Principal = [pscustomobject]@{ UserId = $shortAccount; LogonType = 'Interactive'; RunLevel = 'Limited' }; $normalizedTask.Triggers = @([pscustomobject]@{ UserId = $account; TriggerType = 'MSFT_TaskLogonTrigger' }); $normalizedTask.Xml = $normalizedXml",
+      "$normalizedValid = Test-HmaRegisteredTaskPlan -Task $normalizedTask -Config $configForTask -StateRoot 'C:\\private-state'",
       "$wrongSidTask = $task.PSObject.Copy(); $wrongSidTask.Principal = [pscustomobject]@{ UserId = 'S-1-5-18'; LogonType = 'InteractiveToken'; RunLevel = 'Limited' }",
       "$wrongTriggerTask = $task.PSObject.Copy(); $wrongTriggerTask.Triggers = @([pscustomobject]@{ UserId = $sid; TriggerType = 'Daily' })",
       "$wrongSettingsTask = $task.PSObject.Copy(); $wrongSettingsTask.Settings = [pscustomobject]@{ MultipleInstances = 'Parallel'; StartWhenAvailable = $true; ExecutionTimeLimit = 'PT0S'; RestartCount = 3; RestartInterval = 'PT1M' }",
       "$wrongXmlTask = $task.PSObject.Copy(); $wrongXmlTask.Xml = $xml.Replace('<Count>3</Count>', '<Count>2</Count>')",
       "$wrongActionTask = $task.PSObject.Copy(); $wrongActionTask.Actions = @([pscustomobject]@{ Execute = $expected.FilePath; Arguments = ($expected.ActionArguments + ' extra') })",
-      "$checks = @($valid, (-not (Test-HmaRegisteredTaskPlan -Task $wrongSidTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongTriggerTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongSettingsTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongXmlTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongActionTask -Config $configForTask -StateRoot 'C:\\private-state')))",
+      "$highestWithoutXmlRunLevelTask = $normalizedTask.PSObject.Copy(); $highestWithoutXmlRunLevelTask.Principal = [pscustomobject]@{ UserId = $shortAccount; LogonType = 'Interactive'; RunLevel = 'Highest' }",
+      "$duplicateRunLevelTask = $task.PSObject.Copy(); $duplicateRunLevelTask.Xml = $xml.Replace('<RunLevel>LeastPrivilege</RunLevel>', '<RunLevel>LeastPrivilege</RunLevel><RunLevel>HighestAvailable</RunLevel>')",
+      "$checks = @($valid, $normalizedValid, (-not (Test-HmaRegisteredTaskPlan -Task $wrongSidTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongTriggerTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongSettingsTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongXmlTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $wrongActionTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $highestWithoutXmlRunLevelTask -Config $configForTask -StateRoot 'C:\\private-state')), (-not (Test-HmaRegisteredTaskPlan -Task $duplicateRunLevelTask -Config $configForTask -StateRoot 'C:\\private-state')))",
       "[pscustomobject]@{ unsafeRejected = $unsafeRejected; unsafeTotal = @($unsafeCases).Count; invalidEnvironmentRejected = $invalidEnvironmentRejected; checks = [bool[]]$checks; plansExact = ($plans.Count -eq 2) } | ConvertTo-Json -Compress",
     ]);
 
@@ -405,7 +413,7 @@ test(
       unsafeRejected: 4,
       unsafeTotal: 4,
       invalidEnvironmentRejected: true,
-      checks: [true, true, true, true, true, true],
+      checks: [true, true, true, true, true, true, true, true, true],
       plansExact: true,
     });
     assert.equal(stderr.length, 0);

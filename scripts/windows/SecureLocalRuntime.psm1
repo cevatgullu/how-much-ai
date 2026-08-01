@@ -741,6 +741,35 @@ function New-HmaTaskPlans {
     }
 }
 
+function Test-HmaCurrentUserTaskIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$CurrentSid
+    )
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($Value) -or
+            $Value.Length -gt 256 -or
+            $Value -cne $Value.Trim() -or
+            $Value.IndexOfAny([char[]](0..31 + 127)) -ge 0) {
+            return $false
+        }
+        if (Test-HmaOrdinalEqual -Left $Value -Right $CurrentSid) {
+            return $true
+        }
+        $account = New-Object Security.Principal.NTAccount($Value)
+        $resolved = $account.Translate(
+            [Security.Principal.SecurityIdentifier]
+        )
+        return Test-HmaOrdinalEqual `
+            -Left ([string]$resolved.Value) `
+            -Right $CurrentSid
+    } catch {
+        return $false
+    }
+}
+
 function Test-HmaRegisteredTaskPlan {
     [CmdletBinding()]
     param(
@@ -778,9 +807,9 @@ function Test-HmaRegisteredTaskPlan {
 
         $principal = Get-HmaPropertyValue -InputObject $Task -Name 'Principal'
         $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        if (-not (Test-HmaOrdinalEqual `
-                -Left ([string](Get-HmaPropertyValue -InputObject $principal -Name 'UserId')) `
-                -Right $currentSid) -or
+        if (-not (Test-HmaCurrentUserTaskIdentity `
+                -Value ([string](Get-HmaPropertyValue -InputObject $principal -Name 'UserId')) `
+                -CurrentSid $currentSid) -or
             [string](Get-HmaPropertyValue -InputObject $principal -Name 'LogonType') -cnotin @(
                 'Interactive',
                 'InteractiveToken'
@@ -819,9 +848,9 @@ function Test-HmaRegisteredTaskPlan {
             -not (Test-HmaOrdinalEqual `
                 -Left ([string](Get-HmaPropertyValue -InputObject $actions[0] -Name 'Arguments')) `
                 -Right ([string]$expectedPlan.ActionArguments)) -or
-            -not (Test-HmaOrdinalEqual `
-                -Left ([string](Get-HmaPropertyValue -InputObject $triggers[0] -Name 'UserId')) `
-                -Right $currentSid) -or
+            -not (Test-HmaCurrentUserTaskIdentity `
+                -Value ([string](Get-HmaPropertyValue -InputObject $triggers[0] -Name 'UserId')) `
+                -CurrentSid $currentSid) -or
             -not [bool](Get-HmaPropertyValue -InputObject $settings -Name 'StartWhenAvailable') -or
             -not (Test-HmaOrdinalEqual `
                 -Left ([string](Get-HmaPropertyValue -InputObject $settings -Name 'MultipleInstances')) `
@@ -849,10 +878,37 @@ function Test-HmaRegisteredTaskPlan {
             $xml.SelectNodes('//t:Actions/t:Exec', $namespace).Count -ne 1) {
             return $false
         }
+        foreach ($requiredPath in @(
+                '//t:Principals/t:Principal/t:UserId',
+                '//t:Principals/t:Principal/t:LogonType',
+                '//t:Triggers/t:LogonTrigger/t:UserId',
+                '//t:Actions/t:Exec/t:Command',
+                '//t:Actions/t:Exec/t:Arguments',
+                '//t:Settings/t:MultipleInstancesPolicy',
+                '//t:Settings/t:StartWhenAvailable',
+                '//t:Settings/t:ExecutionTimeLimit',
+                '//t:Settings/t:RestartOnFailure/t:Interval',
+                '//t:Settings/t:RestartOnFailure/t:Count'
+            )) {
+            if ($xml.SelectNodes($requiredPath, $namespace).Count -ne 1) {
+                return $false
+            }
+        }
+        $runLevelNodes = $xml.SelectNodes(
+            '//t:Principals/t:Principal/t:RunLevel',
+            $namespace
+        )
+        if ($runLevelNodes.Count -gt 1) {
+            return $false
+        }
         $xmlValues = @{
             PrincipalUser = [string]$xml.SelectSingleNode('//t:Principals/t:Principal/t:UserId', $namespace).InnerText
             LogonType = [string]$xml.SelectSingleNode('//t:Principals/t:Principal/t:LogonType', $namespace).InnerText
-            RunLevel = [string]$xml.SelectSingleNode('//t:Principals/t:Principal/t:RunLevel', $namespace).InnerText
+            RunLevel = if ($runLevelNodes.Count -eq 0) {
+                'LeastPrivilege'
+            } else {
+                [string]$runLevelNodes[0].InnerText
+            }
             TriggerUser = [string]$xml.SelectSingleNode('//t:Triggers/t:LogonTrigger/t:UserId', $namespace).InnerText
             Command = [string]$xml.SelectSingleNode('//t:Actions/t:Exec/t:Command', $namespace).InnerText
             Arguments = [string]$xml.SelectSingleNode('//t:Actions/t:Exec/t:Arguments', $namespace).InnerText
@@ -862,10 +918,10 @@ function Test-HmaRegisteredTaskPlan {
             RestartInterval = [string]$xml.SelectSingleNode('//t:Settings/t:RestartOnFailure/t:Interval', $namespace).InnerText
             RestartCount = [string]$xml.SelectSingleNode('//t:Settings/t:RestartOnFailure/t:Count', $namespace).InnerText
         }
-        if (-not (Test-HmaOrdinalEqual -Left $xmlValues.PrincipalUser -Right $currentSid) -or
+        if (-not (Test-HmaCurrentUserTaskIdentity -Value $xmlValues.PrincipalUser -CurrentSid $currentSid) -or
             -not (Test-HmaOrdinalEqual -Left $xmlValues.LogonType -Right 'InteractiveToken') -or
             -not (Test-HmaOrdinalEqual -Left $xmlValues.RunLevel -Right 'LeastPrivilege') -or
-            -not (Test-HmaOrdinalEqual -Left $xmlValues.TriggerUser -Right $currentSid) -or
+            -not (Test-HmaCurrentUserTaskIdentity -Value $xmlValues.TriggerUser -CurrentSid $currentSid) -or
             -not (Test-HmaOrdinalEqual -Left $xmlValues.Command -Right ([string]$expectedPlan.FilePath) -IgnoreCase) -or
             -not (Test-HmaOrdinalEqual -Left $xmlValues.Arguments -Right ([string]$expectedPlan.ActionArguments)) -or
             -not (Test-HmaOrdinalEqual -Left $xmlValues.MultipleInstances -Right 'IgnoreNew') -or

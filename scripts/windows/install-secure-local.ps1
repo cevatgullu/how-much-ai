@@ -1062,11 +1062,19 @@ function Install-HmaStartMenuLauncher {
             [IO.Directory]::Exists($destination)) {
             throw 'The Start-menu launcher destination is occupied.'
         }
+        $candidateIdentity = Get-HmaLauncherFileIdentity `
+            -LiteralPath ([string]$candidatePlan.Path)
         [IO.File]::Move([string]$candidatePlan.Path, $destination)
-        $script:launcherCreatedIdentity = Get-HmaLauncherFileIdentity `
-            -LiteralPath $destination
+        $script:launcherCreatedIdentity = $candidateIdentity
         $script:launcherCreatedByThisRun = $true
         if (-not (Test-HmaStartMenuLauncherPlan -Plan $Plan)) {
+            throw 'The installed Start-menu launcher is invalid.'
+        }
+        $currentIdentity = Get-HmaLauncherFileIdentity `
+            -LiteralPath $destination
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$currentIdentity) `
+                -Right ([string]$candidateIdentity))) {
             throw 'The installed Start-menu launcher is invalid.'
         }
     } finally {

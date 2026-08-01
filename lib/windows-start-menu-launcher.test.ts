@@ -338,11 +338,88 @@ test("installer and final verifier expose candidate-first rollback-safe shortcut
     readFile(installerScriptPath, "utf8"),
     readFile(verifierScriptPath, "utf8"),
   ]);
-  const candidate = installer.indexOf("CreateShortcut");
-  const reopen = installer.indexOf("Test-HmaStartMenuLauncherFields", candidate);
-  const acl = installer.indexOf("Set-HmaPrivateAcl", reopen);
-  const move = installer.indexOf("[IO.File]::Move", acl);
-  assert.ok(candidate >= 0 && reopen > candidate && acl > reopen && move > acl);
+
+  const installFunctionStart = installer.indexOf("function Install-HmaStartMenuLauncher {");
+  const addIdentityType = installer.indexOf(
+    "if ($null -eq ('HmaInstaller.FileIdentity' -as [type]))",
+    installFunctionStart,
+  );
+  const installFunctionEnd = installer.lastIndexOf("try {", addIdentityType);
+  assert.ok(
+    installFunctionStart >= 0 && installFunctionEnd > installFunctionStart,
+    "installer function boundary must remain discoverable",
+  );
+  const installFunction = installer.slice(installFunctionStart, installFunctionEnd);
+  const candidate = installFunction.indexOf(
+    "New-HmaStartMenuShortcutCandidate -Plan $candidatePlan",
+  );
+  const reopen = installFunction.indexOf("Test-HmaStartMenuLauncherFields", candidate);
+  const acl = installFunction.indexOf(
+    "Set-HmaPrivateAcl -LiteralPath $candidatePlan.Path",
+    reopen,
+  );
+  const candidateValidation = installFunction.indexOf(
+    "Test-HmaStartMenuLauncherPlan -Plan $candidatePlan",
+    acl,
+  );
+  const candidateIdentity = installFunction.indexOf(
+    "$candidateIdentity = Get-HmaLauncherFileIdentity",
+    candidateValidation,
+  );
+  const candidateIdentityPath = installFunction.indexOf(
+    "-LiteralPath ([string]$candidatePlan.Path)",
+    candidateIdentity,
+  );
+  const move = installFunction.indexOf(
+    "[IO.File]::Move([string]$candidatePlan.Path, $destination)",
+    candidateIdentityPath,
+  );
+  const createdIdentity = installFunction.indexOf(
+    "$script:launcherCreatedIdentity = $candidateIdentity",
+    move,
+  );
+  const markCreated = installFunction.indexOf(
+    "$script:launcherCreatedByThisRun = $true",
+    createdIdentity,
+  );
+  const installedValidation = installFunction.indexOf(
+    "Test-HmaStartMenuLauncherPlan -Plan $Plan",
+    markCreated,
+  );
+  const currentIdentity = installFunction.indexOf(
+    "$currentIdentity = Get-HmaLauncherFileIdentity",
+    installedValidation,
+  );
+  const currentIdentityPath = installFunction.indexOf(
+    "-LiteralPath $destination",
+    currentIdentity,
+  );
+  const identityComparison = installFunction.indexOf(
+    "-Right ([string]$candidateIdentity)",
+    currentIdentityPath,
+  );
+
+  assert.ok(
+    candidate >= 0 &&
+      reopen > candidate &&
+      acl > reopen &&
+      candidateValidation > acl &&
+      candidateIdentity > candidateValidation &&
+      candidateIdentityPath > candidateIdentity &&
+      move > candidateIdentityPath &&
+      createdIdentity > move &&
+      markCreated > createdIdentity &&
+      installedValidation > markCreated &&
+      currentIdentity > installedValidation &&
+      currentIdentityPath > currentIdentity &&
+      identityComparison > currentIdentityPath,
+    "candidate identity must be captured before the move and rechecked after final validation",
+  );
+  assert.equal(
+    installFunction.slice(move, markCreated).includes("Get-HmaLauncherFileIdentity"),
+    false,
+    "the move-to-mark interval must not sample destination identity",
+  );
   assert.match(installer, /launcherCreatedByThisRun/u);
   assert.match(installer, /Test-HmaStartMenuLauncherPlan/u);
   assert.match(verifier, /Test-HmaRegisteredTaskPlan/u);

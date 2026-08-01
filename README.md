@@ -35,13 +35,21 @@ Same-machine CLI discovery is automatic in development. In a production-mode loc
 
 ## Secure Windows local mode
 
-For the reviewed, authenticated, loopback-only Windows installation and its exact threat boundary, see [Secure Windows local mode](docs/WINDOWS_SECURE_LOCAL.md). The installer adds a verified **How Much AI** Start-menu launcher whose hash-bound arguments contain only the state root and public hashes, never a URL, secret, ticket, account, provider, or credential. It validates both exact scheduled tasks before reopening the dashboard: a `Ready` service starts Service then Window, while a `Running` service starts Window only; any mismatch or other state refuses to start either task. The browser session is established with challenge/server-proof/client-proof HMAC using the protected `AUTH_SECRET`; it never transmits `APP_PASSWORD`. Complete the pre-credential security gate before connecting any real provider account.
+For the reviewed, authenticated, loopback-only Windows installation and its exact threat boundary, see [Secure Windows local mode](docs/WINDOWS_SECURE_LOCAL.md). The installer records ten exact bootstrap hashes, registers exactly two tasks (`HowMuchAI-Service` and `HowMuchAI-Window`), and creates the current user's verified `Programs\How Much AI.lnk`. The shortcut contains only the state root and public hashes, never a URL, secret, ticket, account, provider, or credential.
+
+Before reopening the dashboard, the launcher verifies its own hash, the runtime/integrity anchors, and both exact task plans. A `Ready` service starts Service then Window; a `Running` service starts Window only; any missing, foreign, or mutated task or any other state starts neither. Installation verifies the shortcut path, all fields through a Windows Shell COM round trip, its private ACL, and non-reparse path boundaries. An exact shortcut is idempotently accepted, while a mismatch is refused rather than overwritten. Creation uses candidate-first validation and identity-aware rollback; the final verifier repeats the checks and scans installed state for secret material. Removal likewise deletes the shortcut and exactly two tasks only after their ownership plans verify. The browser session uses challenge/server-proof/client-proof HMAC with the protected `AUTH_SECRET`; it never transmits `APP_PASSWORD`.
+
+## Usage dashboard
+
+The dashboard is available regardless of whether any notification channel is configured. Each provider-returned limit is its own row. Claude can return the five-hour row, the overall weekly row, connected-app limits, and model-scoped weekly rows such as Opus or Sonnet. OpenAI rows are shown only when its usage response returns them; a returned session row is labeled **Codex · 5 saatlik limit**. This does not claim that every ChatGPT account has a universal five-hour limit.
+
+The provider-native **used** percentage is the primary number and the progress fill grows from 0% to 100% used. Remaining percentage is secondary. Remaining alone controls the urgency badge/color and the strict-local notification thresholds, so a full fill means fully used rather than fully available. Reset countdown/exact time and stale/error status are shown when the provider supplies enough information.
 
 ## Choose a storage mode
 
 The server selects one backend from the environment:
 
-| Backend | Configuration | Best for | Notifications |
+| Backend | Configuration | Best for | Hosted scheduled notifications |
 | --- | --- | --- | --- |
 | Encrypted file | No variables | One persistent machine | No |
 | Convex | `CONVEX_URL` + `VAULT_ACCESS_SECRET` | Durable or multi-instance hosting | Yes |
@@ -81,13 +89,17 @@ Terminate TLS at a trusted reverse proxy or hosting platform. Keep `TRUST_PROXY_
 
 ## Notifications
 
-Notifications require Convex because their configuration, detector state, subscriptions, lease, and five-minute scheduler are stored there. Available delivery channels are:
+The reviewed Windows strict-local installation has a separate on-device notification path. It uses the current dashboard refresh stream, privacy-minimized browser storage, Web Locks, and the same-origin service worker. It requires no notification environment variable and does not import or call Convex, VAPID, Telegram, webhook, or other hosted delivery paths. It works only while the reviewed local browser/app process is open or minimized; closing it stops live device notifications until the app is opened again.
+
+Strict-local permission is requested only after the user presses the permission button. Denied, unavailable, or revoked permission fails closed, does not advance an undelivered event, and is surfaced without repeated prompts. Automatic refresh must remain enabled for live notifications; manual refresh uses the same rules. The first fresh observation seeds state silently, stale or failed readings never alert, and each limit is tracked independently. Remaining allowance thresholds are exactly 50%, 40%, 30%, 20%, 15%, 10%, 5%, and 0%; the reset message contains the exact text `limit sıfırlandı`. If one reading crosses several thresholds, only the tightest newly crossed threshold is delivered.
+
+Hosted scheduled notifications are a separate, Convex-only topology: their configuration, detector state, subscriptions, lease, and five-minute scheduler are stored in Convex. Available hosted channels are:
 
 - browser Web Push;
 - Telegram;
 - a generic JSON webhook.
 
-Redis-only and file-only installs still provide the complete dashboard, provider tracking, encrypted credentials, refresh coordination, and local countdowns; the notification panel will explain that Convex is required for alerts.
+Outside reviewed Windows strict-local mode, Redis-only and file-only installs still provide the complete visual dashboard, provider tracking, encrypted credentials, refresh coordination, and local countdowns, but no scheduled notification channel. Their notification panel explains that Convex is required for hosted alerts.
 
 ## Development
 

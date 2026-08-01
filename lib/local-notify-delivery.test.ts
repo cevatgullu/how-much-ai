@@ -292,11 +292,18 @@ test("delivery ignores malformed, mismatched, and negative acknowledgements with
     ok: true,
   };
   Object.defineProperty(hiddenExtraAcknowledgement, "body", { value: "hidden", enumerable: false });
+  const symbolicAcknowledgement = {
+    type: LOCAL_NOTIFICATION_ACK,
+    requestId: "000102030405060708090a0b0c0d0e0f",
+    ok: true,
+  };
+  Object.defineProperty(symbolicAcknowledgement, Symbol("private"), { value: "hidden" });
   const acknowledgements = [
     { type: LOCAL_NOTIFICATION_ACK, requestId: "f".repeat(32), ok: true },
     { type: LOCAL_NOTIFICATION_ACK, requestId: "000102030405060708090a0b0c0d0e0f", ok: true, body: "extra" },
     { type: LOCAL_NOTIFICATION_ACK, requestId: "000102030405060708090a0b0c0d0e0f", ok: "true" },
     hiddenExtraAcknowledgement,
+    symbolicAcknowledgement,
     { type: LOCAL_NOTIFICATION_ACK, requestId: "000102030405060708090a0b0c0d0e0f", ok: false },
   ];
 

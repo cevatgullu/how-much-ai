@@ -152,9 +152,10 @@ namespace Hma
 
     public sealed class TrustedNativeProcess : IDisposable
     {
+        private const int MaximumCapturedBytes = 1024 * 1024;
         private SafeKernelHandle process;
-        private StreamReader standardOutput;
-        private StreamReader standardError;
+        private FileStream standardOutput;
+        private FileStream standardError;
         private bool exited;
         private int exitCode;
 
@@ -165,29 +166,79 @@ namespace Hma
         )
         {
             process = new SafeKernelHandle(processHandle);
-            UTF8Encoding strictUtf8 = new UTF8Encoding(false, true);
-            standardOutput = new StreamReader(
-                new FileStream(outputRead, FileAccess.Read, 4096, false),
-                strictUtf8,
-                false,
-                4096
+            standardOutput = new FileStream(
+                outputRead,
+                FileAccess.Read,
+                4096,
+                false
             );
-            standardError = new StreamReader(
-                new FileStream(errorRead, FileAccess.Read, 4096, false),
-                strictUtf8,
-                false,
-                4096
+            standardError = new FileStream(
+                errorRead,
+                FileAccess.Read,
+                4096,
+                false
             );
+        }
+
+        private static async Task<string> ReadToEndBoundedAsync(
+            FileStream stream
+        )
+        {
+            byte[] buffer = new byte[4096];
+            MemoryStream captured = new MemoryStream();
+            bool oversized = false;
+            try
+            {
+                int count;
+                while ((count = await stream.ReadAsync(
+                        buffer,
+                        0,
+                        buffer.Length
+                    )) > 0)
+                {
+                    if (oversized)
+                    {
+                        continue;
+                    }
+                    if (captured.Length > MaximumCapturedBytes - count)
+                    {
+                        oversized = true;
+                        continue;
+                    }
+                    captured.Write(buffer, 0, count);
+                }
+                if (oversized)
+                {
+                    throw new InvalidDataException();
+                }
+                UTF8Encoding strictUtf8 = new UTF8Encoding(false, true);
+                return strictUtf8.GetString(
+                    captured.GetBuffer(),
+                    0,
+                    checked((int)captured.Length)
+                );
+            }
+            finally
+            {
+                Array.Clear(buffer, 0, buffer.Length);
+                byte[] capturedBuffer = captured.GetBuffer();
+                Array.Clear(
+                    capturedBuffer,
+                    0,
+                    capturedBuffer.Length
+                );
+                captured.Dispose();
+            }
         }
 
         public Task<string> ReadStandardOutputToEndAsync()
         {
-            return standardOutput.ReadToEndAsync();
+            return ReadToEndBoundedAsync(standardOutput);
         }
 
         public Task<string> ReadStandardErrorToEndAsync()
         {
-            return standardError.ReadToEndAsync();
+            return ReadToEndBoundedAsync(standardError);
         }
 
         public void WaitForExit()
@@ -1730,7 +1781,7 @@ try {
         $pinnedOperation = (
             $ScriptArguments.Count -eq 16 -and
             $ScriptArguments[0] -ceq '--run-pinned-npm' -and
-            $ScriptArguments[1] -cin @('ci', 'ls', 'audit') -and
+            @('ci', 'ls', 'audit', 'sbom') -ccontains $ScriptArguments[1] -and
             $ScriptArguments[2] -ceq '--npm' -and
             $ScriptArguments[4] -ceq '--expected-npm-cli-sha256' -and
             $ScriptArguments[5] -cmatch '^[a-fA-F0-9]{64}$' -and
@@ -1946,8 +1997,24 @@ try {
         -JobHandle $processJob `
         -Process $process
     $processJob = $null
-    $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
-    $standardError = $standardErrorTask.GetAwaiter().GetResult()
+    $streamReadFailed = $false
+    try {
+        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
+    }
+    catch {
+        $streamReadFailed = $true
+    }
+    try {
+        $standardError = $standardErrorTask.GetAwaiter().GetResult()
+    }
+    catch {
+        $streamReadFailed = $true
+    }
+    if ($streamReadFailed) {
+        $standardOutput = $null
+        $standardError = $null
+        Throw-HmaTrustedNodeFailure
+    }
 
     if ($null -ne $lockfileLock) {
         $lockfileSha256 = Get-HmaLockedStreamSha256 `

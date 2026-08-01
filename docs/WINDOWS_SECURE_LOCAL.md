@@ -90,6 +90,46 @@ The application is unofficial and reads provider usage only. Provider endpoint
 or response-format changes can make a connection or refresh fail and require a
 new reviewed revision.
 
+## Visual dashboard and device notifications
+
+The dashboard remains available independently of notification configuration.
+It renders each provider-returned limit as a separate row. Claude responses can
+include the five-hour row, the overall weekly row, connected-app usage, and
+model-scoped weekly rows such as Opus or Sonnet. OpenAI rows appear only when
+OpenAI returns them; a returned session row is labeled
+**Codex · 5 saatlik limit**. This is not a claim that ChatGPT accounts have a
+universal five-hour limit.
+
+Each row treats the provider-native **used** percentage as primary. The visual
+fill grows from 0% to 100% used. Remaining is secondary, and remaining alone
+drives urgency badges/colors and the device-notification thresholds. Reset
+countdown/exact time and freshness are displayed when available; stale/error
+readings stay visibly marked.
+
+Strict-local notifications are a separate on-device path. They use only the
+fresh dashboard refresh stream, privacy-minimized local browser state, an
+exclusive Web Lock, and the same-origin service worker. They require no new
+environment variable and never import or call Convex, VAPID, Telegram,
+webhook, or another hosted notification path. The hosted Convex scheduler and
+its Web Push, Telegram, and webhook channels remain a distinct topology and
+are absent from this installation.
+
+Permission is requested only after an explicit press of the notification
+permission button. Denied, unavailable, or revoked permission fails closed,
+does not advance an undelivered event, and is surfaced without repeated
+prompts. Automatic refresh must remain enabled for live alerts; manual refresh
+uses the same detector. The first successful observation seeds state silently,
+and stale or failed readings are suppressed. Each account and limit is tracked
+independently at exactly 50%, 40%, 30%, 20%, 15%, 10%, 5%, and 0% remaining. A
+confirmed later reset timestamp produces copy containing exactly
+`limit sıfırlandı`; crossing several thresholds in one refresh emits only the
+tightest newly crossed threshold.
+
+This delivery path runs only while the reviewed local Edge app/browser process
+is open or minimized. Closing it stops live device notifications. The two-task
+autostart model opens the app again at the next sign-in; there is no background
+notifier and no third scheduled task.
+
 ## Child environments
 
 The service and Edge launchers replace the entire inherited process
@@ -169,6 +209,15 @@ The installer registers exactly two current-user Task Scheduler tasks:
 - `HowMuchAI-Window` runs the hash-verified private
   `open-secure-local.ps1`.
 
+There is no notification task or third scheduled task. `install.json` records
+exactly ten bootstrap hashes: `start-secure-local.ps1`,
+`open-secure-local.ps1`, `connect-claude-secure.ps1`,
+`launch-secure-local.ps1`, `SecureLocalIntegrity.psm1`,
+`SecureLocalRuntime.psm1`, `SecureLocalSecrets.psm1`,
+`verify-final-local-state.ps1`, `oauth-handoff-extension/manifest.json`, and
+`oauth-handoff-extension/callback.js`. Startup and final verification reject a
+missing, extra, malformed, or mismatched bootstrap-hash entry.
+
 Both tasks use Windows PowerShell 5.1, an interactive current-user principal,
 and `Limited` run level. Their reviewed settings use a current-user logon
 trigger, `IgnoreNew`, `StartWhenAvailable`, no execution time limit, and three
@@ -201,7 +250,13 @@ The installer reopens the shortcut through the Windows Shell COM interface and
 verifies every reviewed field, its private current-user/`SYSTEM` ACL, and its
 ordinary non-reparse leaf and ancestors. An exact existing shortcut is accepted
 idempotently. Any mismatch is refused: the installer does not overwrite,
-repair, delete, or weaken an existing shortcut.
+repair, delete, or weaken an existing shortcut. New creation is candidate-first:
+the installer performs the COM field round trip, ACL and reparse checks before
+the atomic move, then verifies the destination again. Rollback removes it only
+when the same shortcut identity was created by that installer run; a raced-in
+or replaced file is preserved. The fail-safe final verifier repeats the exact
+task and shortcut checks, rejects secret names or values in their arguments,
+and is followed by the bounded installed-state secret scan.
 
 ## Browser bootstrap
 
@@ -588,7 +643,7 @@ if ($gitStatusExitCode -ne 0 -or $gitStatusLines.Count -ne 0) {
 ```
 
 Establish the trusted launcher below before parsing the npm lockfile or
-executing `ci`, `ls`, or `audit`. Windows PowerShell 5.1 cannot safely
+executing `ci`, `ls`, `audit`, or the CycloneDX `sbom` operation. Windows PowerShell 5.1 cannot safely
 materialize every valid npm lockfile as a case-insensitive object, so the
 reviewed Node entrypoint creates the lifecycle-script inventory instead.
 
@@ -828,7 +883,7 @@ function Invoke-HmaPinnedNpmCommand {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('ci', 'ls', 'audit')]
+        [ValidateSet('ci', 'ls', 'audit', 'sbom')]
         [string]$Operation
     )
 
@@ -893,12 +948,20 @@ function Invoke-HmaPinnedNpmCommand {
                 (New-Object Text.UTF8Encoding($false))
             )
         }
+        'sbom' {
+            [IO.File]::WriteAllText(
+                (Join-Path (Resolve-Path 'audit\final').Path 'npm-sbom.cdx.json'),
+                $operationOutput,
+                (New-Object Text.UTF8Encoding($false))
+            )
+        }
     }
 }
 
 Invoke-HmaPinnedNpmCommand -Operation 'ci'
 Invoke-HmaPinnedNpmCommand -Operation 'ls'
 Invoke-HmaPinnedNpmCommand -Operation 'audit'
+Invoke-HmaPinnedNpmCommand -Operation 'sbom'
 & $git `
     --no-pager `
     -c core.fsmonitor=false `

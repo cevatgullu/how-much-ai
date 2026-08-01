@@ -3,9 +3,18 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 import "./providers/_resolve-ts.mjs";
 
-const [{ dispatch }, { assertStrictLocalEnvironment }] = await Promise.all([
+const [
+  { dispatch },
+  { assertStrictLocalEnvironment },
+  { REMAINING_BOUNDARIES, diffLocalLimit, formatLocalLimitNotification },
+  { processLocalNotificationSnapshot },
+  { LOCAL_NOTIFICATION_ACK, localNotificationPermission },
+] = await Promise.all([
   import("./notify.ts"),
   import("./strict-local-mode.ts"),
+  import("./local-notify-detect.ts"),
+  import("./local-notify-coordinator.ts"),
+  import("./local-notify-delivery.ts"),
 ]);
 
 const strictEnvironmentNames = [
@@ -60,6 +69,47 @@ const strictEnvironmentNames = [
 ] as const;
 const originalEnvironment = new Map(strictEnvironmentNames.map((name) => [name, process.env[name]]));
 const originalFetch = globalThis.fetch;
+const browserGlobalNames = ["Notification", "navigator", "MessageChannel", "PushManager"] as const;
+const originalBrowserGlobals = new Map(
+  browserGlobalNames.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+);
+
+class RuntimeStorage implements Storage {
+  readonly values = new Map<string, string>();
+  get length(): number { return this.values.size; }
+  clear(): void { this.values.clear(); }
+  getItem(key: string): string | null { return this.values.get(key) ?? null; }
+  key(index: number): string | null { return [...this.values.keys()][index] ?? null; }
+  removeItem(key: string): void { this.values.delete(key); }
+  setItem(key: string, value: string): void { this.values.set(key, value); }
+}
+
+class RuntimePort {
+  peer?: RuntimePort;
+  readonly listeners = new Set<(event: MessageEvent) => void>();
+  addEventListener(_type: "message", listener: (event: MessageEvent) => void): void {
+    this.listeners.add(listener);
+  }
+  removeEventListener(_type: "message", listener: (event: MessageEvent) => void): void {
+    this.listeners.delete(listener);
+  }
+  start(): void {}
+  close(): void {}
+  postMessage(data: unknown): void {
+    queueMicrotask(() => {
+      for (const listener of this.peer?.listeners ?? []) listener({ data } as MessageEvent);
+    });
+  }
+}
+
+class RuntimeMessageChannel {
+  readonly port1 = new RuntimePort();
+  readonly port2 = new RuntimePort();
+  constructor() {
+    this.port1.peer = this.port2;
+    this.port2.peer = this.port1;
+  }
+}
 
 const events = [{
   accountLabel: "Claude 1",
@@ -106,11 +156,206 @@ function setValidStrictEnvironment(): void {
 afterEach(() => {
   restoreEnvironment();
   globalThis.fetch = originalFetch;
+  for (const name of browserGlobalNames) {
+    const descriptor = originalBrowserGlobals.get(name);
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete (globalThis as Record<string, unknown>)[name];
+  }
 });
 
-test("notifications make no network, storage, or Web Push attempt in the valid strict-local shape", async () => {
+test("the strict-local contract is exact, runs only in the active local browser, suppresses stale data, and never uses hosted channels", async () => {
   setValidStrictEnvironment();
   assert.doesNotThrow(() => assertStrictLocalEnvironment());
+  assert.deepEqual(REMAINING_BOUNDARIES, [50, 40, 30, 20, 15, 10, 5, 0]);
+
+  const first = diffLocalLimit(undefined, {
+    limitKey: "session",
+    usedPercent: 49,
+    remainingPercent: 51,
+    resetsAt: "2026-08-01T00:00:00.000Z",
+  }, { remainingWarnings: true, resetNotifications: true });
+  assert.equal(first.kind, "seed");
+  assert.equal(first.event, null);
+  assert.notEqual(first.nextState, null);
+
+  const expectedThresholds = [
+    [50, "Claude 1 • 5 saatlik limit: %50 kaldı."],
+    [40, "Claude 1 • 5 saatlik limit: %40 kaldı."],
+    [30, "Claude 1 • 5 saatlik limit: %30 kaldı."],
+    [20, "Claude 1 • 5 saatlik limit: %20 kaldı."],
+    [15, "Claude 1 • 5 saatlik limit: %15 kaldı."],
+    [10, "Claude 1 • 5 saatlik limit: %10 kaldı."],
+    [5, "Claude 1 • 5 saatlik limit: %5 kaldı."],
+    [0, "Claude 1 • 5 saatlik limit: limit bitti."],
+  ] as const;
+  let state = first.nextState!;
+  for (const [boundary, expectedBody] of expectedThresholds) {
+    const diff = diffLocalLimit(state, {
+      limitKey: "session",
+      usedPercent: 100 - boundary,
+      remainingPercent: boundary,
+      resetsAt: "2026-08-01T00:00:00.000Z",
+    }, { remainingWarnings: true, resetNotifications: true });
+    assert.equal(diff.kind, "event");
+    assert.deepEqual(diff.event, { type: "threshold", boundary });
+    assert.deepEqual(formatLocalLimitNotification(diff.event!, "Claude 1", "5 saatlik limit"), {
+      title: "How Much AI",
+      body: expectedBody,
+    });
+    state = diff.nextState!;
+  }
+
+  const firstAtFive = diffLocalLimit(undefined, {
+    limitKey: "weekly_all",
+    usedPercent: 95,
+    remainingPercent: 5,
+    resetsAt: "2026-08-01T00:00:00.000Z",
+  }, { remainingWarnings: true, resetNotifications: true });
+  assert.equal(firstAtFive.kind, "seed");
+  assert.equal(firstAtFive.event, null);
+
+  const reset = diffLocalLimit(state, {
+    limitKey: "session",
+    usedPercent: 0,
+    remainingPercent: 100,
+    resetsAt: "2026-08-02T00:00:00.000Z",
+  }, { remainingWarnings: true, resetNotifications: true });
+  assert.deepEqual(reset.event, { type: "reset" });
+  assert.deepEqual(formatLocalLimitNotification(reset.event!, "Claude 1", "5 saatlik limit"), {
+    title: "How Much AI",
+    body: "Claude 1 • 5 saatlik limit: limit sıfırlandı.",
+  });
+
+  const storage = new RuntimeStorage();
+  const lockCalls: Array<{ name: string; options: unknown }> = [];
+  const registrations: string[] = [];
+  const workerRequests: Array<Record<string, unknown>> = [];
+  let localFetchCalls = 0;
+  const worker = {
+    postMessage(data: unknown, ports: readonly RuntimePort[]) {
+      const request = data as Record<string, unknown>;
+      workerRequests.push(request);
+      ports[0]?.postMessage({
+        type: LOCAL_NOTIFICATION_ACK,
+        requestId: request.requestId,
+        ok: true,
+      });
+    },
+  };
+  const registration = { active: worker };
+  const browserLocks = { request: async () => undefined };
+  Object.defineProperty(globalThis, "Notification", {
+    configurable: true,
+    value: { permission: "granted", requestPermission: async () => "granted" },
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      locks: browserLocks,
+      serviceWorker: {
+        controller: null,
+        register: async (url: string) => { registrations.push(url); return registration; },
+        ready: Promise.resolve(registration),
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "MessageChannel", {
+    configurable: true,
+    value: RuntimeMessageChannel,
+  });
+  Object.defineProperty(globalThis, "PushManager", {
+    configurable: true,
+    get: () => { throw new Error("Strict-local delivery must not inspect PushManager"); },
+  });
+  globalThis.fetch = (async () => {
+    localFetchCalls += 1;
+    throw new Error("Strict-local delivery must remain on-device");
+  }) as typeof fetch;
+  assert.equal(localNotificationPermission(), "granted");
+  const localDependencies = {
+    locks: {
+      request: async (
+        name: string,
+        options: { mode: "exclusive"; ifAvailable: true },
+        callback: (lock: unknown) => Promise<unknown>,
+      ) => {
+        lockCalls.push({ name, options });
+        return await callback({ name });
+      },
+    },
+    storage,
+    hashAccountId: async () => "a".repeat(64),
+    notificationTag: async () => "hma:" + "b".repeat(32),
+  };
+  const localSnapshot = (remainingPercent: number) => ({
+    accountId: "private-account",
+    accountLabel: "Claude 1",
+    bars: [{
+      key: "session",
+      kind: "session",
+      label: "5 saatlik limit",
+      usedPercent: 100 - remainingPercent,
+      remainingPercent,
+      resetsAt: "2026-08-01T00:00:00.000Z",
+      severity: "normal",
+      isActive: false,
+    }],
+    activeAccountIds: ["private-account"],
+    rules: { remainingWarnings: true, resetNotifications: true },
+    stale: false,
+  });
+
+  assert.deepEqual(
+    await processLocalNotificationSnapshot(localSnapshot(51), localDependencies),
+    { status: "idle", delivered: 0 },
+  );
+  assert.deepEqual(
+    await processLocalNotificationSnapshot(localSnapshot(50), localDependencies),
+    { status: "delivered", delivered: 1 },
+  );
+  assert.deepEqual(lockCalls, [
+    { name: "hma-local-notifications-v1", options: { mode: "exclusive", ifAvailable: true } },
+    { name: "hma-local-notifications-v1", options: { mode: "exclusive", ifAvailable: true } },
+  ]);
+  assert.deepEqual(registrations, ["/sw.js"]);
+  assert.equal(workerRequests.length, 1);
+  assert.deepEqual({
+    type: workerRequests[0]?.type,
+    title: workerRequests[0]?.title,
+    body: workerRequests[0]?.body,
+    tag: workerRequests[0]?.tag,
+  }, {
+    type: "hma-local-limit-v1",
+    title: "How Much AI",
+    body: "Claude 1 • 5 saatlik limit: %50 kaldı.",
+    tag: "hma:" + "b".repeat(32),
+  });
+  assert.match(String(workerRequests[0]?.requestId), /^[a-f0-9]{32}$/u);
+  assert.equal(
+    storage.values.get("hma:local-notify-state:v1"),
+    `{"version":1,"records":[{"accountHash":"${"a".repeat(64)}","limitKey":"session",` +
+      '"lastResetAt":"2026-08-01T00:00:00.000Z","nextBoundaryIndex":1,"lastObservedUtilization":50}]}',
+  );
+  assert.equal(localFetchCalls, 0);
+  Object.defineProperty(globalThis, "Notification", { configurable: true, value: undefined });
+  assert.equal(localNotificationPermission(), "unsupported");
+
+  const staleCalls: string[] = [];
+  assert.deepEqual(await processLocalNotificationSnapshot({
+    accountId: "private-account",
+    accountLabel: "Claude 1",
+    bars: [],
+    activeAccountIds: ["private-account"],
+    rules: { remainingWarnings: true, resetNotifications: true },
+    stale: true,
+  }, {
+    locks: { request: async () => { staleCalls.push("lock"); return undefined; } },
+    storage: null,
+    hashAccountId: async () => { staleCalls.push("hash"); return "a".repeat(64); },
+    notificationTag: async () => { staleCalls.push("tag"); return "hma:" + "a".repeat(32); },
+    deliver: async () => { staleCalls.push("deliver"); return { ok: true }; },
+  }), { status: "idle", delivered: 0 });
+  assert.deepEqual(staleCalls, []);
 
   let fetchCalls = 0;
   let subscriptionLoads = 0;

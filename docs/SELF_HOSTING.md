@@ -6,7 +6,7 @@ This guide covers the open-source, single-tenant edition. It does not require or
 
 Pick one storage path before connecting the first account:
 
-| Topology | Vault | Shared refresh coordination | Scheduled notifications | Device pairing |
+| Topology | Vault | Shared refresh coordination | Hosted scheduled notifications | Device pairing |
 | --- | --- | --- | --- | --- |
 | One persistent machine | Encrypted file | Local file lock/cache | No | No |
 | Durable Convex deployment | Convex | Convex lease/cache | Yes | Yes |
@@ -20,7 +20,7 @@ The selection is automatic:
 
 A partial Convex or Redis configuration is an error. If both remote backends are complete, Convex takes precedence.
 
-Notifications require Convex. Configuring Convex for notifications also makes Convex the vault and usage-coordination backend.
+Hosted scheduled notifications require Convex. Configuring Convex for those channels also makes Convex the vault and usage-coordination backend. The reviewed Windows strict-local installation has a separate, on-device notification path described below; it does not change the storage selection.
 
 ## 2. Requirements
 
@@ -116,6 +116,12 @@ When the app runs on the same computer as Codex, it can read `~/.codex/auth.json
 “Connect from this machine” always means the machine running the Next.js server. On a remote server it cannot inspect a visitor's laptop.
 
 With Convex configured, the Claude dialog can generate a short-lived, single-use pairing code and an exact command for the computer holding the Claude Code login. Copy the generated command rather than constructing a target manually. The helper shows the destination and asks for confirmation before it transmits a credential.
+
+### Provider-returned usage rows
+
+The visual dashboard does not depend on notification configuration. It renders every normalized limit returned by the selected provider. Claude responses can include a five-hour row, an overall weekly row, connected-app usage, and model-scoped weekly rows such as Opus or Sonnet. OpenAI rows are rendered only when OpenAI returns them; a returned session row is labeled **Codex · 5 saatlik limit**. Do not interpret that conditional label as a universal five-hour ChatGPT allowance.
+
+For every row, the provider-native **used** percentage is primary and the progress fill runs from 0% to 100% used. Remaining is secondary and is the only value that controls urgency badges/colors and strict-local notification thresholds. When available, the row also shows the reset countdown, exact reset time, and reading freshness; stale/error data remains visibly marked.
 
 ## 5. Storage option A: encrypted local file
 
@@ -231,7 +237,15 @@ Redis provides durable vault storage and distributed refresh coordination. It do
 
 ## 8. Configure notifications
 
-First complete the Convex setup. Then give both the Next.js app and Convex the same scheduler secret.
+### Reviewed Windows strict-local device notifications
+
+Strict-local device notifications are independent of the hosted topology. They require no new environment variable and never import or call Convex, VAPID, Telegram, webhook, or other remote-notification paths. Delivery uses privacy-minimized state in the dedicated browser profile, an exclusive Web Lock, and the same-origin service worker. It operates only while the reviewed local browser/app process is open or minimized; closing the process stops live notifications until it is reopened.
+
+The browser asks permission only after an explicit press of **Bildirim izni ver**. Denied, unavailable, or revoked permission fails closed, does not advance an undelivered event, and is surfaced without repeated prompts. Keep automatic refresh enabled for live notifications; a manual refresh runs the same detector. The first successful observation seeds state without an alert. Stale or failed provider readings are suppressed. Each provider-returned account/limit row is tracked independently at exactly 50%, 40%, 30%, 20%, 15%, 10%, 5%, and 0% remaining. A confirmed later reset timestamp produces copy containing exactly `limit sıfırlandı`. A jump across several thresholds emits only the tightest newly crossed threshold and does not replay the skipped thresholds later.
+
+### Convex-hosted channels
+
+For scheduled delivery while no local app process is running, first complete the Convex setup. Then give both the Next.js app and Convex the same scheduler secret.
 
 In the app environment:
 
@@ -374,7 +388,9 @@ Do not overwrite it with an empty vault. Restore the exact previous encryption/a
 
 ### Notifications are unavailable
 
-Confirm that the app has a complete Convex URL/access-secret pair. For scheduled checks, also verify that production Convex has `APP_URL` and `CRON_SECRET`, and that the app has the matching `CRON_SECRET`. Web Push additionally needs a valid VAPID pair and HTTPS.
+In reviewed Windows strict-local mode, use the notification panel's explicit permission button, verify browser permission is granted, keep automatic refresh enabled, and leave the local app open or minimized. The first observation is intentionally silent, and stale readings are intentionally suppressed. No Convex or remote notification variable is required for this path.
+
+For hosted channels, confirm that the app has a complete Convex URL/access-secret pair. For scheduled checks, also verify that production Convex has `APP_URL` and `CRON_SECRET`, and that the app has the matching `CRON_SECRET`. Web Push additionally needs a valid VAPID pair and HTTPS. Redis-only and file-only ordinary self-hosting have no scheduled delivery.
 
 ### “Connect from this machine” finds the wrong account
 
@@ -394,5 +410,6 @@ Reconnect the selected account. Do not repeatedly retry a shared rotating CLI cr
 - [ ] `.env*`, `.data/`, provider credentials, and backups are absent from Git and build artifacts.
 - [ ] `npm test`, `npm run typecheck`, and `npm run build` pass.
 - [ ] Both provider paths needed by the operator have been exercised.
-- [ ] Convex cron and notification channels have been verified, if enabled.
+- [ ] Strict-local permission, automatic refresh, and open/minimized limitation have been verified, if that mode is used.
+- [ ] Convex cron and hosted notification channels have been verified, if enabled.
 - [ ] Recovery and rollback copies can be located without relying on the running server.

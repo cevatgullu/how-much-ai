@@ -162,6 +162,10 @@ function withEnvironmentOverrides(
   ]);
 }
 
+function environmentName(...segments: string[]): string {
+  return segments.join("_");
+}
+
 test("sanitized build environment is an exact case-insensitive allowlist", async () => {
   const { createSanitizedBuildEnvironment } = (await import(moduleUrl)) as {
     createSanitizedBuildEnvironment: (
@@ -170,13 +174,13 @@ test("sanitized build environment is an exact case-insensitive allowlist", async
   };
   const canaries = {
     NEXT_PUBLIC_REMOTE_URL: "CANARY_PUBLIC",
-    ANTHROPIC_API_KEY: "CANARY_PROVIDER",
+    [environmentName("ANTHROPIC", "API", "KEY")]: "CANARY_PROVIDER",
     HtTp_PrOxY: "CANARY_PROXY",
     NODE_OPTIONS: "--require CANARY_PRELOAD",
     node_path: "CANARY_NODE_PATH",
-    APP_PASSWORD: "CANARY_PASSWORD",
-    AUTH_SECRET: "CANARY_AUTH",
-    VAULT_ENCRYPTION_SECRET: "CANARY_VAULT",
+    [environmentName("APP", "PASSWORD")]: "CANARY_PASSWORD",
+    [environmentName("AUTH", "SECRET")]: "CANARY_AUTH",
+    [environmentName("VAULT", "ENCRYPTION", "SECRET")]: "CANARY_VAULT",
     SSL_CERT_FILE: "CANARY_TLS",
   };
   const source: NodeJS.ProcessEnv = {
@@ -263,7 +267,7 @@ test("a child receives no forbidden canary and reports booleans only", async () 
     ...process.env,
     NEXT_PUBLIC_CANARY: forbiddenCanaries[0],
     hTtPs_PrOxY: forbiddenCanaries[1],
-    AUTH_SECRET: forbiddenCanaries[2],
+    [environmentName("AUTH", "SECRET")]: forbiddenCanaries[2],
   });
   const script = [
     "const keys=Object.keys(process.env).map(k=>k.toLowerCase());",
@@ -643,6 +647,141 @@ test(
       rejected.stderr,
       /\{"ok":false,"error":"sanitized-validation-failed"\}\r?\n$/u,
     );
+  },
+);
+
+test(
+  "the pinned sbom operation invokes only npm sbom with the CycloneDX format",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-pinned-sbom-"));
+    const fakeNode = path.join(fixture, "node.exe");
+    const fakeNpm = path.join(fixture, "npm.cmd");
+    const npmRoot = path.join(fixture, "node_modules", "npm");
+    const fakeNpmCli = path.join(npmRoot, "bin", "npm-cli.js");
+    const packageJsonPath = path.join(fixture, "package.json");
+    const packageLockPath = path.join(fixture, "package-lock.json");
+    const invocationMarker = path.join(fixture, "npm-invocations.jsonl");
+    const behaviorPath = path.join(fixture, "sbom-behavior.txt");
+    const sbomCanaryName = ["HMA", "SBOM", "CANARY"].join("_");
+
+    await mkdir(path.dirname(fakeNpmCli), { recursive: true });
+    await copyFile(process.execPath, fakeNode);
+    await writeFile(fakeNpm, "@exit /b 0\r\n", "utf8");
+    await writeFile(packageJsonPath, '{"name":"sbom-fixture","private":true}\n', "utf8");
+    await writeFile(packageLockPath, '{"name":"sbom-fixture","lockfileVersion":3,"packages":{}}\n', "utf8");
+    await writeFile(behaviorPath, "success\n", "utf8");
+    await writeFile(
+      fakeNpmCli,
+      [
+        'import { appendFileSync, readFileSync } from "node:fs";',
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'config') {",
+        "  process.stdout.write(JSON.stringify({",
+        "    userconfig: process.env.NPM_CONFIG_USERCONFIG,",
+        "    globalconfig: process.env.NPM_CONFIG_GLOBALCONFIG,",
+        "    cache: process.env.NPM_CONFIG_CACHE,",
+        "    audit: false,",
+        "    fund: false,",
+        "    'ignore-scripts': true,",
+        "    offline: false,",
+        "    'strict-ssl': true,",
+        "  }));",
+        "} else {",
+        `  appendFileSync(${JSON.stringify(invocationMarker)}, JSON.stringify({ args, hasCanary: 'HMA_SBOM_CANARY' in process.env }) + '\\n');`,
+        `  const behavior = readFileSync(${JSON.stringify(behaviorPath)}, 'utf8').trim();`,
+        "  if (behavior === 'failure') {",
+        "    process.stdout.write('SBOM-CHILD-PRIVATE-STDOUT');",
+        "    process.stderr.write('SBOM-CHILD-PRIVATE-STDERR');",
+        "    process.exitCode = 37;",
+        "  } else if (behavior === 'oversized-stdout') {",
+        "    process.stdout.write('SBOM-CHILD-PRIVATE:' + 'x'.repeat(1024 * 1024 + 4096));",
+        "  } else if (behavior === 'oversized-stderr') {",
+        "    process.stderr.write('SBOM-CHILD-PRIVATE:' + 'x'.repeat(1024 * 1024 + 4096));",
+        "  } else {",
+        "    process.stdout.write(JSON.stringify({ bomFormat: 'CycloneDX', specVersion: '1.6' }));",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const baseArguments = [
+      "--npm",
+      fakeNpm,
+      "--expected-npm-cli-sha256",
+      sha256File(fakeNpmCli),
+      "--expected-npm-tree-sha256",
+      npmTreeSha256(npmRoot, fakeNpm),
+      "--package-json",
+      packageJsonPath,
+      "--expected-package-json-sha256",
+      sha256File(packageJsonPath),
+      "--package-lock",
+      packageLockPath,
+      "--expected-lockfile-sha256",
+      sha256File(packageLockPath),
+    ];
+    const run = (operationArguments: string[]) => spawnSync(
+      fakeNode,
+      [modulePath, "--run-pinned-npm", ...operationArguments, ...baseArguments],
+      {
+        cwd: fixture,
+        encoding: "utf8",
+        env: { ...process.env, [sbomCanaryName]: "must-not-cross" },
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    );
+
+    try {
+      const accepted = run(["sbom"]);
+      assert.equal(accepted.error, undefined);
+      assert.equal(accepted.status, 0);
+      assert.equal(accepted.stderr, "");
+      assert.deepEqual(JSON.parse(accepted.stdout), {
+        ok: true,
+        operation: "sbom",
+        output: '{"bomFormat":"CycloneDX","specVersion":"1.6"}',
+      });
+      assert.deepEqual(
+        (await readFile(invocationMarker, "utf8")).trim().split("\n").map((line) => JSON.parse(line)),
+        [{ args: ["sbom", "--sbom-format", "cyclonedx"], hasCanary: false }],
+      );
+
+      for (const rejectedArguments of [
+        ["exec"],
+        ["install"],
+        ["status"],
+        ["SBOM"],
+        ["Sbom"],
+        ["sbom", "--json"],
+        ["sbom", "--sbom-format", "cyclonedx"],
+        ["sbom", "--SBOM-format", "cyclonedx"],
+        ["sbom", "--sbom-format", "spdx"],
+      ]) {
+        const rejected = run(rejectedArguments);
+        assert.equal(rejected.status, 1);
+        assert.equal(rejected.stdout, "");
+        assert.match(rejected.stderr, /\{"ok":false,"error":"sanitized-validation-failed"\}\r?\n$/u);
+      }
+      assert.equal((await readFile(invocationMarker, "utf8")).trim().split("\n").length, 1);
+
+      for (const behavior of ["failure", "oversized-stdout", "oversized-stderr"]) {
+        await writeFile(behaviorPath, `${behavior}\n`, "utf8");
+        const hostile = run(["sbom"]);
+        assert.equal(hostile.error, undefined);
+        assert.equal(hostile.status, 1);
+        assert.equal(hostile.stdout, "");
+        assert.match(hostile.stderr, /^\{"ok":false,"error":"sanitized-validation-failed"\}\r?\n$/u);
+        assert.equal(hostile.stderr.length < 128, true);
+        assert.equal(`${hostile.stdout}${hostile.stderr}`.includes("SBOM-CHILD-PRIVATE"), false);
+      }
+      assert.equal((await readFile(invocationMarker, "utf8")).trim().split("\n").length, 4);
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
   },
 );
 

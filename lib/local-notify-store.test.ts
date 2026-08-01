@@ -32,6 +32,10 @@ function rawDocument(records: unknown[], version: unknown = 1): string {
   return JSON.stringify({ version, records });
 }
 
+function syntheticProviderToken(...segments: string[]): string {
+  return segments.join("-");
+}
+
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
   readonly reads: string[] = [];
@@ -299,7 +303,7 @@ test("saves one canonical field order and deterministic account/key sort", () =>
 });
 
 test("save ignores an inherited Object.prototype.toJSON credential injector", () => {
-  const injectedCredential = "sk-ant-api03-object-hook-private";
+  const injectedCredential = syntheticProviderToken("sk", "ant", "api03", "object", "hook", "private");
   const storage = new MemoryStorage();
   let hookCalls = 0;
   let result: ReturnType<typeof saveLocalNotifyDocument> | undefined;
@@ -343,7 +347,7 @@ test("save ignores an inherited Object.prototype.toJSON credential injector", ()
 });
 
 test("save ignores an inherited Array.prototype.toJSON credential injector", () => {
-  const injectedCredential = "sk-ant-ort01-array-hook-private";
+  const injectedCredential = syntheticProviderToken("sk", "ant", "ort01", "array", "hook", "private");
   const storage = new MemoryStorage();
   let hookCalls = 0;
   let result: ReturnType<typeof saveLocalNotifyDocument> | undefined;
@@ -397,7 +401,7 @@ test("load and save use only the fixed non-identifying storage key", () => {
 });
 
 test("storage exceptions fail closed without throwing or exposing stored content", () => {
-  const secret = "sk-ant-api03-storage-secret";
+  const secret = syntheticProviderToken("sk", "ant", "api03", "storage", "secret");
   const unavailableRead = {
     getItem(): string {
       throw new Error(secret);
@@ -483,6 +487,64 @@ test("save rejects malformed runtime objects and oversized output before storage
   assert.deepEqual(storage.writes, []);
 });
 
+test("save rejects sparse, decorated, symbolic, and accessor-backed runtime state", () => {
+  const storage = new MemoryStorage();
+  let accessorCalls = 0;
+  const sparseRecords = new Array<LocalNotifyRecord>(1);
+  const decoratedRecords = [record()];
+  Object.defineProperty(decoratedRecords, "private", { value: "must-not-persist" });
+  const symbolicRecords = [record()];
+  Object.defineProperty(symbolicRecords, Symbol("private"), { value: true });
+  const symbolicDocument = { version: 1, records: [record()] } as LocalNotifyDocument;
+  Object.defineProperty(symbolicDocument, Symbol("private"), { value: true });
+  const symbolicRecord = record();
+  Object.defineProperty(symbolicRecord, Symbol("private"), { value: true });
+  const accessorRecord = record();
+  Object.defineProperty(accessorRecord, "limitKey", {
+    enumerable: true,
+    get() {
+      accessorCalls += 1;
+      return "session";
+    },
+  });
+  const accessorDocument = { version: 1 } as LocalNotifyDocument;
+  Object.defineProperty(accessorDocument, "records", {
+    enumerable: true,
+    get() {
+      accessorCalls += 1;
+      return [record()];
+    },
+  });
+  const accessorRecords = [record()];
+  Object.defineProperty(accessorRecords, "0", {
+    enumerable: true,
+    get() {
+      accessorCalls += 1;
+      return record();
+    },
+  });
+
+  const candidates = [
+    { version: 1, records: sparseRecords },
+    { version: 1, records: decoratedRecords },
+    { version: 1, records: symbolicRecords },
+    symbolicDocument,
+    { version: 1, records: [symbolicRecord] },
+    { version: 1, records: [accessorRecord] },
+    accessorDocument,
+    { version: 1, records: accessorRecords },
+  ] as LocalNotifyDocument[];
+
+  for (const candidate of candidates) {
+    assert.deepEqual(saveLocalNotifyDocument(storage, candidate), {
+      ok: false,
+      error: "unavailable",
+    });
+  }
+  assert.equal(accessorCalls, 0);
+  assert.deepEqual(storage.writes, []);
+});
+
 test("hashes account IDs with browser SHA-256 and emits only lowercase hex", async () => {
   assert.equal(
     await hashLocalAccountId("abc"),
@@ -504,8 +566,8 @@ test("serialized state and tags never retain account metadata or credentials", a
   const privateFixture = {
     email: "alice.private@example.com",
     accountId: "acct-private-0123456789",
-    accessToken: "sk-ant-api03-access-private",
-    refreshToken: "sk-ant-ort01-refresh-private",
+    accessToken: syntheticProviderToken("sk", "ant", "api03", "access", "private"),
+    refreshToken: syntheticProviderToken("sk", "ant", "ort01", "refresh", "private"),
     label: "Personal Claude account",
     fullName: "Alice Private Person",
   };

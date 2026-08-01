@@ -366,6 +366,19 @@ test("the secure Windows guide binds audit entrypoints and the installer never e
   assert.match(guide, /\$manifest\.installerSha256/u);
   assert.match(guide, /--expected-package-json-sha256/u);
   assert.match(guide, /--expected-lockfile-sha256/u);
+  assert.match(guide, /CycloneDX/u);
+  assert.match(
+    guide,
+    /\[ValidateSet\('ci', 'ls', 'audit', 'sbom'\)\]/u,
+  );
+  assert.match(
+    guide,
+    /'sbom'\s*\{[\s\S]*?npm-sbom\.cdx\.json/u,
+  );
+  assert.match(
+    guide,
+    /Invoke-HmaPinnedNpmCommand -Operation 'sbom'/u,
+  );
   assert.match(guide, /GIT_CONFIG_NOSYSTEM/u);
   assert.match(guide, /--no-ext-diff/u);
   assert.match(guide, /--no-textconv/u);
@@ -655,6 +668,92 @@ test(
 );
 
 test(
+  "oversized reviewed child output is drained but exposed only as a bounded generic failure",
+  windowsOnly,
+  async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-trusted-node-oversized-"));
+    const auditDirectory = path.join(fixture, "scripts", "audit");
+    const fixtureScript = path.join(auditDirectory, "oversized-output.mjs");
+    const secretCanary = "TRUSTED-NODE-OVERSIZED-PRIVATE";
+    await mkdir(auditDirectory, { recursive: true });
+    await writeFile(
+      fixtureScript,
+      [
+        "const [stream] = process.argv.slice(2);",
+        `const output = ${JSON.stringify(secretCanary + ":")} + "\\u0800".repeat(400_000);`,
+        "if (stream === 'both') {",
+        "  process.stdout.write(output);",
+        "  process.stderr.write(output);",
+        "} else {",
+        "  process[stream].write(output);",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      for (const stream of ["stdout", "stderr", "both"]) {
+        const result = runLauncher({
+          nodePath: process.execPath,
+          expectedNodeSha256: await fileSha256(process.execPath),
+          scriptPath: fixtureScript,
+          expectedScriptSha256: await fileSha256(fixtureScript),
+          scriptArguments: [stream],
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1);
+        assert.equal(result.stdout, "");
+        assert.match(result.stderr, /^Trusted Node launch failed\.\r?\n$/u);
+        assert.equal(result.stderr.length < 64, true);
+        assert.equal(`${result.stdout}${result.stderr}`.includes(secretCanary), false);
+      }
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "invalid UTF-8 cannot stop pipe draining or expose reviewed child output",
+  windowsOnly,
+  async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-trusted-node-invalid-utf8-"));
+    const auditDirectory = path.join(fixture, "scripts", "audit");
+    const fixtureScript = path.join(auditDirectory, "invalid-utf8-output.mjs");
+    const secretCanary = "TRUSTED-NODE-INVALID-UTF8-PRIVATE";
+    await mkdir(auditDirectory, { recursive: true });
+    await writeFile(
+      fixtureScript,
+      [
+        `const output = Buffer.concat([Buffer.from([0xff]), Buffer.from(${JSON.stringify(secretCanary + ":")} + "x".repeat(300_000))]);`,
+        "process.stdout.write(output);",
+        "process.stderr.write(output);",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const result = runLauncher({
+        nodePath: process.execPath,
+        expectedNodeSha256: await fileSha256(process.execPath),
+        scriptPath: fixtureScript,
+        expectedScriptSha256: await fileSha256(fixtureScript),
+        timeoutMs: 5_000,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /^Trusted Node launch failed\.\r?\n$/u);
+      assert.equal(`${result.stdout}${result.stderr}`.includes(secretCanary), false);
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "the trusted launcher runs the reviewed validator with exact Windows command shims",
   windowsOnly,
   async () => {
@@ -790,6 +889,97 @@ test(
     assert.equal(payload.operation, "ls");
     assert.equal(typeof payload.output, "string");
     assert.match(payload.output, /how-much-ai/u);
+  },
+);
+
+test(
+  "the trusted launcher accepts only the exact pinned sbom operation shape",
+  windowsOnly,
+  async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "hma-trusted-sbom-"));
+    const auditDirectory = path.join(fixture, "scripts", "audit");
+    const validatorPath = path.join(auditDirectory, "run-sanitized-validation.mjs");
+    const marker = path.join(fixture, "validator-arguments.json");
+    const npmPath = path.join(path.dirname(process.execPath), "npm.cmd");
+    const npmRoot = path.join(path.dirname(process.execPath), "node_modules", "npm");
+    const npmCliPath = path.join(npmRoot, "bin", "npm-cli.js");
+    const packageJsonPath = path.join(fixture, "package.json");
+    const packageLockPath = path.join(fixture, "package-lock.json");
+    await mkdir(auditDirectory, { recursive: true });
+    await writeFile(packageJsonPath, '{"name":"launcher-sbom-fixture","private":true}\n', "utf8");
+    await writeFile(packageLockPath, '{"name":"launcher-sbom-fixture","lockfileVersion":3,"packages":{}}\n', "utf8");
+    await writeFile(
+      validatorPath,
+      [
+        'import { writeFileSync } from "node:fs";',
+        `writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));`,
+        'process.stdout.write("accepted\\n");',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const exactArguments = [
+      "--run-pinned-npm",
+      "sbom",
+      "--npm",
+      npmPath,
+      "--expected-npm-cli-sha256",
+      await fileSha256(npmCliPath),
+      "--expected-npm-tree-sha256",
+      npmTreeSha256(npmRoot, npmPath),
+      "--package-json",
+      packageJsonPath,
+      "--expected-package-json-sha256",
+      await fileSha256(packageJsonPath),
+      "--package-lock",
+      packageLockPath,
+      "--expected-lockfile-sha256",
+      await fileSha256(packageLockPath),
+    ];
+
+    try {
+      const accepted = runLauncherFileBoundary({
+        nodePath: process.execPath,
+        expectedNodeSha256: await fileSha256(process.execPath),
+        scriptPath: validatorPath,
+        expectedScriptSha256: await fileSha256(validatorPath),
+        scriptArguments: exactArguments,
+      });
+      assert.equal(accepted.error, undefined);
+      assert.equal(accepted.status, 0);
+      assert.equal(accepted.stderr, "");
+      assert.equal(accepted.stdout, "accepted\n");
+      assert.deepEqual(JSON.parse(await readFile(marker, "utf8")), exactArguments);
+
+      const replaceArgument = (index: number, value: string) => {
+        const mutated = [...exactArguments];
+        mutated[index] = value;
+        return mutated;
+      };
+      for (const rejectedArguments of [
+        replaceArgument(1, "SBOM"),
+        replaceArgument(1, "status"),
+        replaceArgument(0, "--RUN-PINNED-NPM"),
+        replaceArgument(2, "--NPM"),
+        replaceArgument(4, "--expected-npm-cli-SHA256"),
+        [...exactArguments, "--json"],
+      ]) {
+        await rm(marker, { force: true });
+        const rejected = runLauncherFileBoundary({
+          nodePath: process.execPath,
+          expectedNodeSha256: await fileSha256(process.execPath),
+          scriptPath: validatorPath,
+          expectedScriptSha256: await fileSha256(validatorPath),
+          scriptArguments: rejectedArguments,
+        });
+        assert.equal(rejected.status, 1);
+        assert.equal(rejected.stdout, "");
+        assert.match(rejected.stderr, /^Trusted Node launch failed\.\r?\n$/u);
+        await assert.rejects(readFile(marker), { code: "ENOENT" });
+      }
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
   },
 );
 

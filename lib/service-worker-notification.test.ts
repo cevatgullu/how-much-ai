@@ -102,9 +102,12 @@ test("a valid same-origin local request displays only validated notification fie
 test("exact own request fields, title, body, and tag are enforced before display", async () => {
   const hiddenExtraMessage = validMessage();
   Object.defineProperty(hiddenExtraMessage, "extra", { value: true, enumerable: false });
+  const symbolicMessage = validMessage();
+  Object.defineProperty(symbolicMessage, Symbol("private"), { value: true });
   const invalidMessages = [
     { ...validMessage(), extra: true },
     hiddenExtraMessage,
+    symbolicMessage,
     Object.assign(Object.create(null), { ...validMessage(), body: "" }),
     validMessage({ title: "Account warning" }),
     validMessage({ body: "x".repeat(241) }),

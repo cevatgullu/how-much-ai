@@ -773,7 +773,7 @@ function parseArguments(argv) {
   const pinnedOperation =
     argv.length === 16 &&
     argv[0] === "--run-pinned-npm" &&
-    ["ci", "ls", "audit"].includes(argv[1]) &&
+    ["ci", "ls", "audit", "sbom"].includes(argv[1]) &&
     argv[2] === "--npm" &&
     argv[4] === "--expected-npm-cli-sha256" &&
     argv[6] === "--expected-npm-tree-sha256" &&
@@ -1029,7 +1029,7 @@ function runPinnedNpmOperation({
   sourceEnvironment = process.env,
   projectRoot = process.cwd(),
 }) {
-  if (!["ci", "ls", "audit"].includes(operation)) {
+  if (!["ci", "ls", "audit", "sbom"].includes(operation)) {
     throw new Error("invalid-pinned-npm-operation");
   }
   const root = path.resolve(projectRoot);
@@ -1047,6 +1047,7 @@ function runPinnedNpmOperation({
     ci: ["ci", "--ignore-scripts", "--audit=false", "--fund=false"],
     ls: ["ls", "--all"],
     audit: ["audit", "--json"],
+    sbom: ["sbom", "--sbom-format", "cyclonedx"],
   };
   try {
     assertPinnedProjectMetadata({

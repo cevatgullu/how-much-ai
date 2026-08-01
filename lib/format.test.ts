@@ -141,6 +141,21 @@ test("formatResetSchedule presents deterministic Turkish future reset times", ()
   });
 });
 
+test("formatResetSchedule accepts and presents an exact numeric +03:00 reset", () => {
+  assert.deepEqual(
+    formatResetSchedule(
+      "2026-08-01T03:00:00+03:00",
+      Date.parse("2026-07-31T23:00:00.000Z"),
+      { timeZone: "UTC" },
+    ),
+    {
+      exact: "1 Ağu 00:00",
+      countdown: "1 sa sonra",
+      state: "future",
+    },
+  );
+});
+
 test("formatResetSchedule distinguishes reset edges, past timestamps, and invalid values", () => {
   const now = Date.parse("2026-07-31T20:00:00.000Z");
   assert.deepEqual(formatResetSchedule("2026-07-31T20:02:00.000Z", now, { timeZone: "UTC" }), {

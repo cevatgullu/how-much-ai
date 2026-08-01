@@ -46,11 +46,12 @@ Upstream vulnerabilities in Anthropic, OpenAI, Convex, Redis providers, browsers
 
 ## Deployment security requirements
 
-- An install with no `APP_PASSWORD` is intentionally open. Never expose that mode to an untrusted network.
+- Ordinary hosted and development login fails closed when `APP_PASSWORD` is missing. Configure it before starting either mode; never treat a missing password as an open-access setting.
 - Use HTTPS for every remote deployment.
 - Keep the vault and all environment values on private, persistent storage.
 - Use independent random values for `APP_PASSWORD`, `AUTH_SECRET`, `VAULT_ENCRYPTION_SECRET`, `VAULT_ACCESS_SECRET`, and `CRON_SECRET`.
 - Leave `TRUST_PROXY_IP_HEADERS=0` unless a trusted reverse proxy overwrites forwarding headers.
+- Keep the reviewed strict-local device-notification path local. It requires no remote notification secret and must not be combined with the Convex/VAPID, Telegram, or webhook delivery paths.
 - Restrict outbound traffic where practical; Web Push and configured webhooks make server-side network requests.
 - Back up the complete local `.data` directory together. An encrypted vault without its matching key is not recoverable.
 

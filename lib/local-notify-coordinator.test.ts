@@ -7,7 +7,11 @@ import {
   type LocalSnapshotInput,
 } from "./local-notify-coordinator.ts";
 import type { LocalDeliveryResult, LocalWorkerNotification } from "./local-notify-delivery";
-import { LOCAL_NOTIFY_STATE_STORAGE_KEY, type LocalNotifyDocument } from "./local-notify-store.ts";
+import {
+  LOCAL_NOTIFY_STATE_STORAGE_KEY,
+  MAX_LOCAL_NOTIFY_STATE_BYTES,
+  type LocalNotifyDocument,
+} from "./local-notify-store.ts";
 
 const T1 = "2026-07-31T10:00:00.000Z";
 const T2 = "2026-07-31T15:00:00.000Z";
@@ -419,6 +423,69 @@ test("corrupt state is silently repaired, but true read and save failures return
     { status: "storage_error", delivered: 1 },
   );
   assert.equal(stored(writeFailure).records[0]?.nextBoundaryIndex, 0);
+});
+
+test("oversized and future-version state are repaired with one fresh canonical seed", async () => {
+  for (const raw of [
+    "x".repeat(MAX_LOCAL_NOTIFY_STATE_BYTES + 1),
+    JSON.stringify({ version: 2, records: [] }),
+  ]) {
+    const storage = new MemoryStorage();
+    storage.values.set(LOCAL_NOTIFY_STATE_STORAGE_KEY, raw);
+
+    assert.deepEqual(
+      await processLocalNotificationSnapshot(snapshot(), unlockedDependencies(storage)),
+      { status: "idle", delivered: 0 },
+    );
+    assert.equal(storage.writes.length, 1);
+    assert.deepEqual(stored(storage).records.map(({ accountHash, limitKey }) => [accountHash, limitKey]), [
+      [hashFor("account-a"), "session"],
+    ]);
+  }
+});
+
+test("failed and stale current-account cycles retain every other active account row", async () => {
+  const storage = new MemoryStorage();
+  const seedingDependencies = unlockedDependencies(storage);
+  await processLocalNotificationSnapshot(
+    snapshot({ activeAccountIds: ["account-a", "account-b"] }),
+    seedingDependencies,
+  );
+  await processLocalNotificationSnapshot(
+    snapshot({
+      accountId: "account-b",
+      accountLabel: "Claude 2",
+      activeAccountIds: ["account-a", "account-b"],
+    }),
+    seedingDependencies,
+  );
+
+  const failed = await processLocalNotificationSnapshot(
+    snapshot({
+      bars: [bar("session", 50)],
+      activeAccountIds: ["account-a", "account-b"],
+    }),
+    unlockedDependencies(storage, async () => ({
+      ok: false,
+      reason: "timeout",
+      message: "ignored",
+    })),
+  );
+  assert.deepEqual(failed, { status: "worker_error", delivered: 0 });
+  const afterFailure = storage.values.get(LOCAL_NOTIFY_STATE_STORAGE_KEY);
+  assert.deepEqual(stored(storage).records.map(({ accountHash }) => accountHash), [
+    hashFor("account-a"),
+    hashFor("account-b"),
+  ]);
+
+  assert.deepEqual(
+    await processLocalNotificationSnapshot(
+      snapshot({ stale: true, activeAccountIds: ["account-a"] }),
+      unlockedDependencies(storage),
+    ),
+    { status: "idle", delivered: 0 },
+  );
+  assert.equal(storage.values.get(LOCAL_NOTIFY_STATE_STORAGE_KEY), afterFailure);
 });
 
 test("hash and codec exceptions fail generically without delivery", async () => {

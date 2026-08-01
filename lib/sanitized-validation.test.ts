@@ -252,6 +252,140 @@ test("sanitized build environment is an exact case-insensitive allowlist", async
   assert.deepEqual(Object.keys(result).sort(), expectedKeys);
 });
 
+test(
+  "the isolated Windows environment contains writable folders, caches, and module search",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const { createIsolatedNpmEnvironment } = (await import(moduleUrl)) as {
+      createIsolatedNpmEnvironment: (
+        sourceEnvironment: NodeJS.ProcessEnv,
+      ) => {
+        env: Record<string, string>;
+        root: string;
+        cleanup: () => void;
+      };
+    };
+    const isolated = createIsolatedNpmEnvironment({
+      ...process.env,
+      ALLUSERSPROFILE: "Z:\\hostile-program-data",
+      HOMEDRIVE: "Z:",
+      HOMEPATH: "\\hostile-profile",
+      ProgramData: "Z:\\hostile-program-data",
+      PSModuleAnalysisCachePath: "Z:\\hostile-cache",
+      PSModulePath: "Z:\\hostile-modules",
+      SystemDrive: "Z:",
+    });
+    const workingDirectory = await mkdtemp(
+      path.join(os.tmpdir(), "hma-isolated-windows-cwd-"),
+    );
+
+    try {
+      const expectedPrograms = path.join(
+        isolated.env.APPDATA,
+        "Microsoft",
+        "Windows",
+        "Start Menu",
+        "Programs",
+      );
+      const powerShell51 = path.join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const { stdout, stderr } = await execFileAsync(
+        powerShell51,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          [
+            "$known = [ordered]@{",
+            "Programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)",
+            "ApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)",
+            "LocalApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)",
+            "CommonApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)",
+            "PSModulePath = $env:PSModulePath",
+            "}",
+            "Get-Module -ListAvailable | Out-Null",
+            "[pscustomobject]$known | ConvertTo-Json -Compress",
+          ].join("\r\n"),
+        ],
+        {
+          cwd: workingDirectory,
+          env: isolated.env,
+          encoding: "utf8",
+          windowsHide: true,
+        },
+      );
+
+      assert.equal(stderr, "");
+      const probe = JSON.parse(stdout.trim()) as Record<string, string>;
+      const modulePath = probe.PSModulePath;
+      delete probe.PSModulePath;
+      assert.deepEqual(
+        Object.fromEntries(
+          Object.entries(probe).map(([name, value]) => [
+            name,
+            value.toLowerCase(),
+          ]),
+        ),
+        {
+          Programs: expectedPrograms.toLowerCase(),
+          ApplicationData: isolated.env.APPDATA.toLowerCase(),
+          LocalApplicationData: isolated.env.LOCALAPPDATA.toLowerCase(),
+          CommonApplicationData: isolated.env.ProgramData.toLowerCase(),
+        },
+      );
+      assert.deepEqual(modulePath.split(path.delimiter), [
+        path.join(
+          path.parse(process.env.SystemRoot ?? "C:\\Windows").root,
+          "Program Files",
+          "WindowsPowerShell",
+          "Modules",
+        ),
+        path.join(
+          process.env.SystemRoot ?? "C:\\Windows",
+          "System32",
+          "WindowsPowerShell",
+          "v1.0",
+          "Modules",
+        ),
+      ]);
+      for (const candidate of [
+        isolated.env.ProgramData,
+        isolated.env.ALLUSERSPROFILE,
+        isolated.env.PSModuleAnalysisCachePath,
+      ]) {
+        assert.equal(
+          path.resolve(candidate).toLowerCase().startsWith(
+            `${path.resolve(isolated.root).toLowerCase()}${path.sep}`,
+          ),
+          true,
+        );
+      }
+      assert.equal(
+        isolated.env.ProgramData.toLowerCase(),
+        isolated.env.ALLUSERSPROFILE.toLowerCase(),
+      );
+      assert.equal(
+        path.resolve(isolated.env.SystemDrive).toLowerCase(),
+        path.resolve(isolated.root).toLowerCase(),
+      );
+      assert.equal(
+        `${isolated.env.HOMEDRIVE}${isolated.env.HOMEPATH}`.toLowerCase(),
+        path.resolve(isolated.root).toLowerCase(),
+      );
+      assert.deepEqual(readdirSync(workingDirectory), []);
+    } finally {
+      isolated.cleanup();
+      await rm(workingDirectory, { recursive: true, force: true });
+    }
+  },
+);
+
 test("a child receives no forbidden canary and reports booleans only", async () => {
   const { createSanitizedBuildEnvironment } = (await import(moduleUrl)) as {
     createSanitizedBuildEnvironment: (

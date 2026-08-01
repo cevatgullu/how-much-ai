@@ -600,6 +600,21 @@ function createTrustedWindowsCommandEnvironment(npmPath, env) {
     "directory",
     "invalid-windows-command-environment",
   );
+  const powershellModules = assertOrdinaryPath(
+    path.join(powershellDirectory, "Modules"),
+    "directory",
+    "invalid-windows-command-environment",
+  );
+  const allUsersPowershellModules = assertOrdinaryPath(
+    path.join(
+      path.parse(systemRoot).root,
+      "Program Files",
+      "WindowsPowerShell",
+      "Modules",
+    ),
+    "directory",
+    "invalid-windows-command-environment",
+  );
   const commandShell = assertOrdinaryPath(
     path.join(system32, "cmd.exe"),
     "file",
@@ -657,6 +672,10 @@ function createTrustedWindowsCommandEnvironment(npmPath, env) {
         systemRoot,
         powershellDirectory,
       ].join(path.delimiter),
+      PSModulePath: [
+        allUsersPowershellModules,
+        powershellModules,
+      ].join(path.delimiter),
     },
     nodePath,
     npmCliPath,
@@ -712,15 +731,50 @@ export function createIsolatedNpmEnvironment(
   const root = mkdtempSync(path.join(os.tmpdir(), "hma-npm-isolation-"));
   try {
     chmodSync(root, 0o700);
-    const appData = path.join(root, "appdata");
-    const localAppData = path.join(root, "localappdata");
+    const profileAppData = path.join(root, "AppData");
+    const appData =
+      process.platform === "win32"
+        ? path.join(profileAppData, "Roaming")
+        : path.join(root, "appdata");
+    const localAppData =
+      process.platform === "win32"
+        ? path.join(profileAppData, "Local")
+        : path.join(root, "localappdata");
     const cache = path.join(root, "cache");
+    const programData = path.join(root, "ProgramData");
     const temporary =
       process.platform === "win32"
         ? path.join(localAppData, "Temp")
         : path.join(root, "temp");
-    for (const directory of [appData, localAppData, cache, temporary]) {
+    if (process.platform === "win32") {
+      mkdirSync(profileAppData, { recursive: false });
+    }
+    for (const directory of [
+      appData,
+      localAppData,
+      cache,
+      programData,
+      temporary,
+    ]) {
       mkdirSync(directory, { recursive: false });
+    }
+    const programs = path.join(
+      appData,
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+    );
+    const powershellCache = path.join(
+      localAppData,
+      "Microsoft",
+      "Windows",
+      "PowerShell",
+      "ModuleAnalysisCache",
+    );
+    if (process.platform === "win32") {
+      mkdirSync(programs, { recursive: true });
+      mkdirSync(path.dirname(powershellCache), { recursive: true });
     }
     const userConfig = path.join(root, "user.npmrc");
     const globalConfig = path.join(root, "global.npmrc");
@@ -730,8 +784,9 @@ export function createIsolatedNpmEnvironment(
       flag: "wx",
       mode: 0o600,
     });
+    const sanitizedBase = createSanitizedBuildEnvironment(sourceEnvironment);
     const env = {
-      ...createSanitizedBuildEnvironment(sourceEnvironment),
+      ...sanitizedBase,
       APPDATA: appData,
       HOME: root,
       LOCALAPPDATA: localAppData,
@@ -749,6 +804,37 @@ export function createIsolatedNpmEnvironment(
       NPM_CONFIG_UPDATE_NOTIFIER: "false",
       NPM_CONFIG_USERCONFIG: userConfig,
     };
+    if (process.platform === "win32") {
+      const homeRoot = path.parse(root).root;
+      const homeDrive = homeRoot.replace(/[\\/]$/u, "");
+      const systemRoot = sanitizedBase.SystemRoot ?? sanitizedBase.WINDIR;
+      if (typeof systemRoot !== "string" || !path.isAbsolute(systemRoot)) {
+        throw new Error("invalid-windows-command-environment");
+      }
+      Object.assign(env, {
+        ALLUSERSPROFILE: programData,
+        HOMEDRIVE: homeDrive,
+        HOMEPATH: root.slice(homeDrive.length),
+        ProgramData: programData,
+        PSModuleAnalysisCachePath: powershellCache,
+        PSModulePath: [
+          path.join(
+            path.parse(systemRoot).root,
+            "Program Files",
+            "WindowsPowerShell",
+            "Modules",
+          ),
+          path.join(
+            systemRoot,
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "Modules",
+          ),
+        ].join(path.delimiter),
+        SystemDrive: root,
+      });
+    }
     return {
       env,
       root,

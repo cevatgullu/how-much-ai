@@ -126,6 +126,27 @@ test("a crashed poll owner is fenced out when a new owner reclaims after thirty 
   assert.equal(store.claimPoll(started.attemptId, "user-a")?.kind, "poll");
 });
 
+test("a live poll owner renews its fence while stale owners still expire exactly thirty seconds later", () => {
+  const now = { value: 45_000 };
+  const { store } = deterministicStore(now);
+  const started = store.start("user-a", authorization(now.value));
+  now.value += 5_000;
+  const claim = store.claimPoll(started.attemptId, "user-a");
+  assert.ok(claim && claim.kind === "poll");
+
+  now.value += POLL_FENCE_MS - 1;
+  assert.equal(store.renewPoll(started.attemptId, claim.owner), true);
+  assert.equal(store.renewPoll(started.attemptId, encoded(99)), false);
+
+  now.value += POLL_FENCE_MS - 1;
+  assert.equal(store.claimPoll(started.attemptId, "user-a")?.kind, "processing");
+  now.value += 1;
+  const reclaimed = store.claimPoll(started.attemptId, "user-a");
+  assert.ok(reclaimed && reclaimed.kind === "poll");
+  assert.notEqual(reclaimed.owner, claim.owner);
+  assert.equal(store.renewPoll(started.attemptId, claim.owner), false);
+});
+
 test("completion rejects the wrong owner, deletes secrets, and replays only copied account metadata for sixty seconds", () => {
   const now = { value: 50_000 };
   const { store, records } = deterministicStore(now);

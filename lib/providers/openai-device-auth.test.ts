@@ -279,3 +279,42 @@ test("an ambiguous exchange transport failure makes exactly one token request", 
   await rejectsWithStatus(operation, 502);
   assert.equal(calls.filter((url) => url === "https://auth.openai.com/oauth/token").length, 1);
 });
+
+test("device errors expose only the non-secret phase needed for safe retry decisions", async () => {
+  await assert.rejects(
+    pollOpenAIDeviceAuthorization(authorization(), {
+      fetchImpl: async () => new Response(null, { status: 503 }),
+    }),
+    (error: unknown) => {
+      assert.equal((error as { phase?: unknown }).phase, "poll");
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    pollOpenAIDeviceAuthorization(authorization(), {
+      fetchImpl: async () => Response.json({ authorization_code: "authorization-code", code_verifier: null }),
+    }),
+    (error: unknown) => {
+      assert.equal((error as { phase?: unknown }).phase, "authorization");
+      return true;
+    },
+  );
+
+  let calls = 0;
+  await assert.rejects(
+    pollOpenAIDeviceAuthorization(authorization(), {
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return Response.json({ authorization_code: "authorization-code", code_verifier: "code-verifier" });
+        }
+        throw new Error("synthetic ambiguous exchange");
+      },
+    }),
+    (error: unknown) => {
+      assert.equal((error as { phase?: unknown }).phase, "exchange");
+      return true;
+    },
+  );
+});

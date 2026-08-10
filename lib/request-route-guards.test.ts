@@ -33,6 +33,8 @@ process.env.VAULT_ACCESS_SECRET = "request-guard-secret";
 
 const { POST: manualPost } = await import("../app/api/connect/manual/route.ts");
 const { POST: localPost } = await import("../app/api/connect/local/route.ts");
+const { POST: openaiDeviceStartPost } = await import("../app/api/connect/openai/device/start/route.ts");
+const { POST: openaiDeviceStatusPost } = await import("../app/api/connect/openai/device/status/route.ts");
 const { POST: oauthPost } = await import("../app/api/connect/oauth/route.ts");
 const { POST: pairStartPost } = await import("../app/api/connect/pair/start/route.ts");
 const { POST: pairCompletePost } = await import("../app/api/connect/pair/complete/route.ts");
@@ -65,6 +67,8 @@ test("JSON API routes return 400 for valid JSON null instead of throwing", async
   const cases: Array<[string, (request: Request) => Promise<Response>]> = [
     ["/api/connect/manual", manualPost],
     ["/api/connect/local", localPost],
+    ["/api/connect/openai/device/start", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", openaiDeviceStatusPost],
     ["/api/connect/pair/start", pairStartPost],
     ["/api/connect/pair/complete", pairCompletePost],
     ["/api/usage", usagePost],
@@ -79,6 +83,8 @@ test("JSON API routes return 400 for valid JSON null instead of throwing", async
 test("JSON API routes reject array bodies as non-object input", async () => {
   for (const [pathname, handler] of [
     ["/api/connect/manual", manualPost],
+    ["/api/connect/openai/device/start", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", openaiDeviceStatusPost],
     ["/api/usage", usagePost],
   ] as const) {
     const response = await handler(jsonPrimitive(pathname, "[]"));
@@ -93,6 +99,8 @@ test("browser state mutations reject cross-origin requests before route-specific
     ["/api/connect/local", "POST", localPost],
     ["/api/connect/manual", "POST", manualPost],
     ["/api/connect/oauth", "POST", oauthPost],
+    ["/api/connect/openai/device/start", "POST", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", "POST", openaiDeviceStatusPost],
     ["/api/connect/pair/start", "POST", pairStartPost],
     ["/api/notify", "PUT", notifyPut],
     ["/api/notify/subscribe", "POST", subscribePost],
@@ -121,6 +129,8 @@ test("browser state mutations reject cross-origin requests before route-specific
 test("browser JSON mutations reject text/plain no-CORS bodies", async () => {
   for (const [pathname, method, handler] of [
     ["/api/connect/manual", "POST", manualPost],
+    ["/api/connect/openai/device/start", "POST", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", "POST", openaiDeviceStatusPost],
     ["/api/notify", "PUT", notifyPut],
     ["/api/notify/subscribe", "POST", subscribePost],
     ["/api/usage", "POST", usagePost],

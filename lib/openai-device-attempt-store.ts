@@ -88,6 +88,7 @@ export interface OpenAIDeviceAttemptStore {
     expectedAccountId?: string,
   ): { attemptId: string; userCode: string; pollAfterMs: number; expiresAt: number };
   claimPoll(attemptId: unknown, userId: string): OpenAIDevicePollClaim | null;
+  renewPoll(attemptId: unknown, owner: unknown): boolean;
   releasePending(attemptId: unknown, owner: unknown): boolean;
   complete(
     attemptId: unknown,
@@ -316,6 +317,17 @@ export function createOpenAIDeviceAttemptStore(
           ? { expectedAccountId: polling.expectedAccountId }
           : {}),
       };
+    },
+
+    renewPoll(attemptId, owner) {
+      const current = now();
+      const record = ownedPollingRecord(attemptId, owner, current);
+      if (!record || current >= record.ownerExpiresAt) return false;
+      records.set(record.attemptId, {
+        ...record,
+        ownerExpiresAt: current + POLL_FENCE_MS,
+      });
+      return true;
     },
 
     releasePending(attemptId, owner) {

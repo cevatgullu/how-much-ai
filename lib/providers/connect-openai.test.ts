@@ -48,6 +48,7 @@ process.env.APP_PASSWORD = "connect-openai-test-password";
 process.env.AUTH_SECRET = "connect-openai-test-auth-secret";
 
 const { POST } = await import("../../app/api/connect/manual/route.ts");
+const { buildProviderAccount, saveProviderAccount } = await import("../connect-account.ts");
 const { createSession, SESSION_COOKIE } = await import("../session.ts");
 const { loadAccounts, saveAccounts } = await import("../vault.ts");
 const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
@@ -124,4 +125,58 @@ test("manual connect rejects an unsupported provider", async () => {
     }),
   );
   assert.equal(response.status, 400);
+});
+
+test("managed OpenAI accounts require a refresh token", async () => {
+  const identity = {
+    id: "openai-acc-managed",
+    email: "managed@example.com",
+    plan: "ChatGPT Pro",
+  };
+  const tokens = {
+    accessToken,
+    refreshToken: "rt-openai-managed",
+    expiresAt: 2_000,
+  };
+
+  const built = buildProviderAccount(identity, tokens, "openai", 2_000, "managed");
+  assert.equal(built.credentialKind, "managed");
+  assert.throws(
+    () => buildProviderAccount(identity, { ...tokens, refreshToken: null }, "openai", 2_000, "managed"),
+    /managed app login.*refresh token/i,
+  );
+});
+
+test("managed OpenAI reconnect replaces credentials while preserving nickname and addedAt", async () => {
+  const identity = {
+    id: "openai-acc-managed",
+    email: "updated@example.com",
+    plan: "ChatGPT Plus",
+  };
+  const tokens = {
+    accessToken,
+    refreshToken: "rt-openai-managed-new",
+    expiresAt: 3_000,
+  };
+  await saveAccounts("default", [
+    {
+      id: identity.id,
+      email: "old@example.com",
+      label: "Primary",
+      plan: "ChatGPT Pro",
+      addedAt: 1_000,
+      credentialKind: "rotating",
+      provider: "openai",
+      tokens: { ...tokens, refreshToken: "rt-openai-managed-old", expiresAt: 1_500 },
+    },
+  ]);
+
+  await saveProviderAccount("default", identity, tokens, "openai", "managed");
+
+  const [saved] = await loadAccounts("default");
+  assert.equal(saved.credentialKind, "managed");
+  assert.equal(saved.label, "Primary");
+  assert.equal(saved.addedAt, 1_000);
+  assert.equal(saved.email, "updated@example.com");
+  assert.deepEqual(saved.tokens, tokens);
 });

@@ -2,6 +2,9 @@ import crypto from "node:crypto";
 
 export type ServerErrorScope =
   | "connect.oauth.save"
+  | "connect.openai.device.start"
+  | "connect.openai.device.poll"
+  | "connect.openai.device.save"
   | "connect.manual.save"
   | "connect.pair.preflight"
   | "connect.pair.claim"

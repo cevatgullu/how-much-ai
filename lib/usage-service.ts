@@ -116,6 +116,16 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : "Failed to reach Anthropic";
 }
 
+function providerProductName(providerId: "anthropic" | "openai"): "Claude" | "ChatGPT" {
+  return providerId === "openai" ? "ChatGPT" : "Claude";
+}
+
+function replacementAccessTokenRejected(providerId: "anthropic" | "openai"): Error {
+  return new Error(
+    `${providerProductName(providerId)} rejected the replacement access token. Reconnect with the private app login.`,
+  );
+}
+
 // Only an explicit auth rejection from token refresh proves the grant is dead/revoked. A 429 is
 // ambiguous throttling and must remain recoverable, so it cools down without forcing reconnect.
 // 5xx/network is also transient — release the lock and try again on a later poll.
@@ -229,7 +239,11 @@ function staleResult(now: number, prior: Prior): AccountUsageResult {
   };
 }
 
-function failedRefreshResult(prior: Prior, error: unknown): AccountUsageResult {
+function failedRefreshResult(
+  prior: Prior,
+  error: unknown,
+  providerId: "anthropic" | "openai",
+): AccountUsageResult {
   if (error instanceof RotatedTokenPersistenceError) {
     return {
       usage: prior.usage,
@@ -241,7 +255,7 @@ function failedRefreshResult(prior: Prior, error: unknown): AccountUsageResult {
       tokens: error.tokens,
       tokensNeedPersistence: true,
       error:
-        "Claude renewed this account, but the new credential could not be saved after several attempts. Keep this dashboard open and retry; do not reconnect yet.",
+        `${providerProductName(providerId)} renewed this account, but the new credential could not be saved after several attempts. Keep this dashboard open and retry; do not reconnect yet.`,
     };
   }
   if (prior.usage) return { ...staleResult(Date.now(), prior), cooldownUntil: 0, error: errMsg(error) };
@@ -303,7 +317,9 @@ async function refreshAndFetch(
     try {
       const refreshed = await provider.refresh(
         base,
-        account.credentialKind === "managed" ? { scopes: CLAUDE_SUBSCRIPTION_OAUTH.scopes } : undefined,
+        account.credentialKind === "managed" && provider.id === "anthropic"
+          ? { scopes: CLAUDE_SUBSCRIPTION_OAUTH.scopes }
+          : undefined,
       );
       rotated = true;
       let journalError: unknown;
@@ -395,7 +411,7 @@ async function refreshAndFetch(
       return reauthResult(
         now,
         prior,
-        new Error("Claude rejected the replacement access token. Reconnect with the private app login."),
+        replacementAccessTokenRejected(provider.id),
       );
     }
     if (httpStatusOf(err) === 401) {
@@ -414,7 +430,7 @@ async function refreshAndFetch(
           return reauthResult(
             now,
             prior,
-            new Error("Claude rejected the replacement access token. Reconnect with the private app login."),
+            replacementAccessTokenRejected(provider.id),
           );
         }
         if (httpStatusOf(retryError) === 429) {
@@ -556,7 +572,7 @@ async function getAccountUsageConvex(
     return await refreshAndFetch(userId, account, now, store, prior);
   } catch (err) {
     await store.release().catch(() => {});
-    return failedRefreshResult(prior, err);
+    return failedRefreshResult(prior, err, getProvider(account.provider).id);
   } finally {
     clearInterval(renewal);
   }
@@ -660,7 +676,7 @@ async function getAccountUsageRedis(
     return await refreshAndFetch(userId, account, now, store, prior);
   } catch (error) {
     await store.release().catch(() => {});
-    return failedRefreshResult(prior, error);
+    return failedRefreshResult(prior, error, getProvider(account.provider).id);
   } finally {
     clearInterval(renewal);
   }
@@ -678,7 +694,7 @@ const localUsageCoordinator = new LocalUsageCoordinator<StoredAccount>(
         refreshAndFetch(userId, account, now, store, prior),
       );
     } catch (error) {
-      return failedRefreshResult(prior, error);
+      return failedRefreshResult(prior, error, getProvider(account.provider).id);
     }
   },
 );

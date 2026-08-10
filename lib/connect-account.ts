@@ -155,8 +155,16 @@ export function buildProviderAccount(
   tokens: AccountTokens,
   providerId: ProviderId,
   now = Date.now(),
+  credentialKindOverride?: AccountCredentialKind,
 ): StoredAccount {
-  const credentialKind: AccountCredentialKind = tokens.refreshToken === null ? "long_lived" : "rotating";
+  const credentialKind: AccountCredentialKind =
+    credentialKindOverride ?? (tokens.refreshToken === null ? "long_lived" : "rotating");
+  if (credentialKind === "long_lived" && tokens.refreshToken !== null) {
+    throw new Error("A long-lived credential cannot contain a refresh token.");
+  }
+  if ((credentialKind === "rotating" || credentialKind === "managed") && tokens.refreshToken === null) {
+    throw new Error(`${credentialKind === "managed" ? "A managed app login" : "A rotating login"} requires a refresh token.`);
+  }
   return {
     id: identity.id,
     email: identity.email,
@@ -184,8 +192,12 @@ export async function saveProviderAccount(
   identity: ProviderProfile,
   tokens: AccountTokens,
   providerId: ProviderId,
+  credentialKindOverride?: AccountCredentialKind,
 ): Promise<ConnectedAccountInfo> {
-  return persistStoredAccount(userId, buildProviderAccount(identity, tokens, providerId));
+  return persistStoredAccount(
+    userId,
+    buildProviderAccount(identity, tokens, providerId, Date.now(), credentialKindOverride),
+  );
 }
 
 // Some dedicated setup tokens can read usage while Anthropic withholds the profile endpoint. They

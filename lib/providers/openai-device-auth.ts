@@ -33,6 +33,18 @@ interface StartOptions extends RequestOptions {
   now?: () => number;
 }
 
+export type OpenAIDeviceAuthErrorPhase = "start" | "poll" | "authorization" | "exchange";
+
+export class OpenAIDeviceAuthError extends ProviderError {
+  readonly phase: OpenAIDeviceAuthErrorPhase;
+
+  constructor(message: string, status: number, phase: OpenAIDeviceAuthErrorPhase) {
+    super(message, status, "openai");
+    this.name = "OpenAIDeviceAuthError";
+    this.phase = phase;
+  }
+}
+
 const DEVICE_REQUEST_TIMEOUT_MS = 15_000;
 const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_DEVICE_AUTH_ID_LENGTH = 4_096;
@@ -48,8 +60,12 @@ function boundedString(value: unknown, maximumLength: number): value is string {
   );
 }
 
-function upstreamError(message: string, status = 502): ProviderError {
-  return new ProviderError(message, status, "openai");
+function upstreamError(
+  message: string,
+  phase: OpenAIDeviceAuthErrorPhase,
+  status = 502,
+): OpenAIDeviceAuthError {
+  return new OpenAIDeviceAuthError(message, status, phase);
 }
 
 async function requestJson(
@@ -57,12 +73,13 @@ async function requestJson(
   input: string,
   init: RequestInit,
   transportMessage: string,
+  phase: OpenAIDeviceAuthErrorPhase,
 ): Promise<{ response: Response; data: Record<string, unknown> | null }> {
   let response: Response;
   try {
     response = await fetchImpl(input, init);
   } catch {
-    throw upstreamError(transportMessage);
+    throw upstreamError(transportMessage, phase);
   }
 
   const parsed = await response.json().catch(() => null);
@@ -93,10 +110,11 @@ export async function startOpenAIDeviceAuthorization(
       signal: timeoutSignal(DEVICE_REQUEST_TIMEOUT_MS),
     },
     "Could not reach OpenAI to start device authorization.",
+    "start",
   );
 
   if (!response.ok) {
-    throw upstreamError(`OpenAI declined device authorization (HTTP ${response.status}).`, response.status);
+    throw upstreamError(`OpenAI declined device authorization (HTTP ${response.status}).`, "start", response.status);
   }
 
   const deviceAuthId = data?.device_auth_id;
@@ -109,12 +127,12 @@ export async function startOpenAIDeviceAuthorization(
     interval.length > 32 ||
     !/^\d+(?:\.\d+)?$/.test(interval)
   ) {
-    throw upstreamError("OpenAI returned an invalid device authorization response.");
+    throw upstreamError("OpenAI returned an invalid device authorization response.", "start");
   }
 
   const intervalSeconds = Number(interval);
   if (!Number.isFinite(intervalSeconds)) {
-    throw upstreamError("OpenAI returned an invalid device authorization response.");
+    throw upstreamError("OpenAI returned an invalid device authorization response.", "start");
   }
 
   return {
@@ -145,11 +163,16 @@ export async function pollOpenAIDeviceAuthorization(
       signal: timeoutSignal(DEVICE_REQUEST_TIMEOUT_MS),
     },
     "Could not reach OpenAI while checking device authorization.",
+    "poll",
   );
 
   if (poll.response.status === 404) return { status: "pending" };
   if (!poll.response.ok) {
-    throw upstreamError(`OpenAI declined the device authorization poll (HTTP ${poll.response.status}).`, poll.response.status);
+    throw upstreamError(
+      `OpenAI declined the device authorization poll (HTTP ${poll.response.status}).`,
+      "poll",
+      poll.response.status,
+    );
   }
 
   const authorizationCode = poll.data?.authorization_code;
@@ -158,7 +181,7 @@ export async function pollOpenAIDeviceAuthorization(
     !boundedString(authorizationCode, MAX_AUTHORIZATION_FIELD_LENGTH) ||
     !boundedString(codeVerifier, MAX_AUTHORIZATION_FIELD_LENGTH)
   ) {
-    throw upstreamError("OpenAI returned an invalid device authorization result.");
+    throw upstreamError("OpenAI returned an invalid device authorization result.", "authorization");
   }
 
   const form = new URLSearchParams({
@@ -180,16 +203,21 @@ export async function pollOpenAIDeviceAuthorization(
       signal: timeoutSignal(TOKEN_REQUEST_TIMEOUT_MS),
     },
     "Could not reach OpenAI to finish device authorization.",
+    "exchange",
   );
 
   if (!exchange.response.ok) {
-    throw upstreamError(`OpenAI declined the device token exchange (HTTP ${exchange.response.status}).`, exchange.response.status);
+    throw upstreamError(
+      `OpenAI declined the device token exchange (HTTP ${exchange.response.status}).`,
+      "exchange",
+      exchange.response.status,
+    );
   }
 
   const accessToken = exchange.data?.access_token;
   const refreshToken = exchange.data?.refresh_token;
   if (!boundedString(accessToken, Number.MAX_SAFE_INTEGER) || !boundedString(refreshToken, Number.MAX_SAFE_INTEGER)) {
-    throw upstreamError("OpenAI returned an invalid device token response.");
+    throw upstreamError("OpenAI returned an invalid device token response.", "exchange");
   }
 
   return {

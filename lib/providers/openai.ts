@@ -7,6 +7,7 @@ import { ProviderError } from "./types";
 import type { Provider, ProviderProfile } from "./types";
 import type { AccountTokens, UsageData } from "../types";
 import { normalizeOpenAIUsage, type WhamUsagePayload } from "./openai-usage";
+import { OPENAI_DEVICE_AUTH } from "./openai-device-auth";
 import {
   chatgptAccountId,
   CodexCredentialError,
@@ -19,7 +20,6 @@ import {
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
-const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 // Cloudflare gates /wham/usage on the path, not the UA (verified), so we identify honestly.
 const USER_AGENT = "how-much-ai/0.1.0";
 const USAGE_TIMEOUT_MS = 15_000;
@@ -98,7 +98,7 @@ export const openaiProvider: Provider = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          client_id: CLIENT_ID,
+          client_id: OPENAI_DEVICE_AUTH.clientId,
           grant_type: "refresh_token",
           refresh_token: tokens.refreshToken,
         }),

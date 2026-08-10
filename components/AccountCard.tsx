@@ -96,6 +96,8 @@ export function AccountCard({
   const managedLogin = credentialKind === "managed";
   const setupToken = credentialKind === "long_lived";
   const sharedCliLogin = credentialKind === "rotating";
+  const providerName = account.provider === "openai" ? "ChatGPT" : "Claude";
+  const cliName = account.provider === "openai" ? "Codex CLI" : "Claude Code";
   const tokenDaysRemaining = Math.ceil((account.credentialExpiresAt - now) / 86_400_000);
   const tokenExpiryWarning = setupToken && tokenDaysRemaining <= 30;
   const cooldownRemaining = Math.max(0, (snapshot?.cooldownUntil ?? 0) - now);
@@ -276,7 +278,7 @@ export function AccountCard({
       {sharedCliLogin && status !== "reauth" && (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-xs leading-relaxed text-[#f0c47d]">
           <span className="max-w-sm">
-            This account shares Claude Code&apos;s rotating login. A private app login renews independently.
+            This account shares {cliName}&apos;s rotating login. A private app login renews independently.
           </span>
           {onReconnect ? (
             <button
@@ -327,10 +329,10 @@ export function AccountCard({
           <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
             <p className="text-sm leading-relaxed text-muted">
               {managedLogin
-                ? "This private app login expired or was revoked. Sign in with Claude again to restore automatic renewal."
+                ? `This private app login expired or was revoked. Sign in with ${providerName} again to restore automatic renewal.`
                 : setupToken
                   ? "This legacy inference-only setup token expired or was revoked. Replace it to restore checks."
-                  : "This shared Claude Code session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard."}
+                  : `This shared ${cliName} session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard.`}
             </p>
             {onReconnect ? (
               <button
@@ -342,7 +344,9 @@ export function AccountCard({
               </button>
             ) : (
               <p className="text-xs font-medium text-ivory">
-                Use the secure launcher&apos;s Claude connector to replace it.
+                {account.provider === "openai"
+                  ? "Reconnect this ChatGPT account to replace it."
+                  : "Use the secure launcher's Claude connector to replace it."}
               </p>
             )}
           </div>
@@ -413,10 +417,10 @@ export function AccountCard({
           <span
             title={
               managedLogin
-                ? "Private app-owned Claude login; renews automatically without sharing Claude Code's session"
+                ? `Private app-owned ${providerName} login; renews automatically without sharing ${cliName}'s session`
                 : setupToken
                   ? `Legacy inference-only setup token; estimated renewal date ${new Date(account.credentialExpiresAt).toLocaleDateString()}`
-                  : "Shared with Claude Code; a private app login is more reliable"
+                  : `Shared with ${cliName}; a private app login is more reliable`
             }
             className={sharedCliLogin ? "text-[#e3b56e]" : "text-muted"}
           >

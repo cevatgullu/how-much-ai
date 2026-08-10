@@ -83,6 +83,7 @@ const { default: OAuthCallbackPage } = await import(
   "../app/oauth/callback/page.tsx"
 );
 const { AddAccountModal } = await import("../components/AddAccountModal.tsx");
+const { PROVIDER_META } = await import("../components/providers-ui.tsx");
 const { default: HomePage } = await import("../app/page.tsx");
 
 after(() => {
@@ -243,9 +244,45 @@ test("strict OpenAI selection keeps the same-machine action and never renders cr
     }),
   );
 
+  assert.match(strictOpenAiMarkup, /connect private chatgpt login/i);
+  assert.match(strictOpenAiMarkup, /private app login · auto-renews/i);
+  assert.match(
+    strictOpenAiMarkup,
+    /<details(?![^>]*\bopen\b)[^>]*>[\s\S]*<summary[^>]*>[\s\S]*legacy shared cli login/i,
+  );
+  assert.match(strictOpenAiMarkup, /codex cli rotation can disconnect the dashboard/i);
   assert.match(strictOpenAiMarkup, /read chatgpt login from this machine/i);
   assert.doesNotMatch(
     strictOpenAiMarkup,
     /paste your ~\/\.codex\/auth\.json|<textarea/i,
   );
+});
+
+test("ordinary OpenAI selection keeps credential import inside the secondary legacy disclosure", () => {
+  const markup = renderToStaticMarkup(
+    createElement(AddAccountModal, {
+      open: true,
+      strictLocal: false,
+      onClose() {},
+      onServerConnected() {},
+      reconnectAccount: {
+        id: "openai-account",
+        email: "account@example.invalid",
+        plan: "ChatGPT Pro",
+        addedAt: 1,
+        credentialKind: "managed",
+        provider: "openai",
+        credentialExpiresAt: 2,
+      },
+    }),
+  );
+
+  assert.match(markup, /connect private chatgpt login/i);
+  assert.match(markup, /legacy shared cli login/i);
+  assert.match(markup, /paste your ~\/\.codex\/auth\.json/i);
+  assert.match(markup, /<textarea/i);
+});
+
+test("OpenAI provider metadata advertises private login support", () => {
+  assert.equal(PROVIDER_META.openai.supportsPrivateLogin, true);
 });

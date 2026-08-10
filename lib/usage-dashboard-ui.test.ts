@@ -285,6 +285,23 @@ test("mixed providers compute independent ordinals without changing account orde
   );
 });
 
+test("OpenAI account guidance names ChatGPT while preserving login-kind badges", () => {
+  const managedMarkup = renderAccountCard(account("managed-openai", "openai"), {
+    status: "reauth",
+  });
+  assert.match(managedMarkup, /sign in with chatgpt again/i);
+  assert.doesNotMatch(managedMarkup, /claude/i);
+  assert.match(managedMarkup, /private app login · auto-renews/i);
+
+  const sharedMarkup = renderAccountCard(
+    { ...account("shared-openai", "openai"), credentialKind: "rotating" },
+    { status: "ready" },
+  );
+  assert.match(sharedMarkup, /shared cli login/i);
+  assert.match(sharedMarkup, /codex cli/i);
+  assert.doesNotMatch(sharedMarkup, /shares claude code/i);
+});
+
 test("dashboard source wires provider ordinals into a direct ordered card list", () => {
   const source = readFileSync(path.join(projectRoot, "components", "Dashboard.tsx"), "utf8");
   assert.match(source, /const providerOrdinals = useMemo/);

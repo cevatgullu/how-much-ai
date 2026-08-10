@@ -9,11 +9,24 @@ export interface ProviderMeta {
   label: string;
   Icon: (props: { className?: string }) => ReactElement;
   supportsOAuth: boolean;
+  supportsPrivateLogin: boolean;
 }
 
 export const PROVIDER_META: Record<ProviderId, ProviderMeta> = {
-  anthropic: { id: "anthropic", label: "Claude", Icon: AnthropicIcon, supportsOAuth: true },
-  openai: { id: "openai", label: "ChatGPT", Icon: OpenAIIcon, supportsOAuth: false },
+  anthropic: {
+    id: "anthropic",
+    label: "Claude",
+    Icon: AnthropicIcon,
+    supportsOAuth: true,
+    supportsPrivateLogin: true,
+  },
+  openai: {
+    id: "openai",
+    label: "ChatGPT",
+    Icon: OpenAIIcon,
+    supportsOAuth: false,
+    supportsPrivateLogin: true,
+  },
 };
 
 // Picker order (matches lib/providers PROVIDERS).

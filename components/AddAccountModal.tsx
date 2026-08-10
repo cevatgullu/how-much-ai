@@ -8,6 +8,7 @@ import type { BrowserAccount } from "@/lib/types";
 import type { ProviderId } from "@/lib/providers/types";
 import { CheckIcon, CopyIcon, DesktopIcon, SpinnerIcon, TerminalIcon } from "./Icons";
 import { ModalShell } from "./ModalShell";
+import { OpenAIDeviceLogin } from "./OpenAIDeviceLogin";
 import { PROVIDER_META, PROVIDER_ORDER, parseCodexCredential } from "./providers-ui";
 
 interface AddAccountModalProps {
@@ -109,6 +110,7 @@ export function AddAccountModal({
   // Local flow.
   const [localWorking, setLocalWorking] = useState(false);
   const [localError, setLocalError] = useState<{ message: string; recommendation?: string } | null>(null);
+  const [deviceBusy, setDeviceBusy] = useState(false);
 
   // Pairing flow.
   const [pairCode, setPairCode] = useState<string | null>(null);
@@ -346,6 +348,7 @@ export function AddAccountModal({
     setOauthOpened(false);
     setLocalWorking(false);
     setLocalError(null);
+    setDeviceBusy(false);
     setPairCode(null);
     setPairCommand("");
     setPairState("waiting");
@@ -703,7 +706,7 @@ export function AddAccountModal({
   }, [finishServerConnect, pasted, reconnectAccount, strictLocal, working]);
 
   if (!open) return null;
-  const requestBusy = working || localWorking || pairStarting || pairState === "processing";
+  const requestBusy = working || localWorking || deviceBusy || pairStarting || pairState === "processing";
   const command = DUMP_COMMANDS[os];
   const oauthUrl = !strictLocal && oauthBundle ? buildAuthorizeUrl(oauthBundle) : null;
 
@@ -1026,78 +1029,104 @@ export function AddAccountModal({
         successCard
       ) : (
         <div className="space-y-4">
-          {mode === "local" && (
-            <div className="rounded-xl border border-border bg-surface p-5">
-              <div className="flex items-start gap-3">
-                <span
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
-                  style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
-                >
-                  <DesktopIcon className="h-5 w-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm text-ivory">Read the Codex login on this computer</p>
+          <OpenAIDeviceLogin
+            expectedAccountId={reconnectAccount?.id}
+            disabled={requestBusy}
+            onBusyChange={setDeviceBusy}
+            onConnected={(account) => {
+              finishServerConnect({
+                email: account.email,
+                plan: account.plan,
+                label: account.label,
+              });
+            }}
+          />
+
+          <details className="rounded-xl border border-border/70 bg-surface/55">
+            <summary className="min-h-11 cursor-pointer px-4 py-3 text-xs font-medium text-muted transition-colors hover:text-ivory focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]">
+              Legacy shared CLI login
+            </summary>
+            <div className="space-y-4 border-t border-border/60 px-4 pb-4 pt-3">
+              <p className="text-xs leading-relaxed text-[#e3b56e]">
+                Codex CLI rotation can disconnect the dashboard. Use this fallback only when private login is unavailable.
+              </p>
+
+              {mode === "local" ? (
+                <div className="rounded-xl border border-border bg-surface p-4">
+                  <div className="flex items-start gap-3">
+                    <span
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+                      style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
+                    >
+                      <DesktopIcon className="h-5 w-5" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-ivory">Read the Codex login on this computer</p>
+                      <p className="mt-1 text-xs leading-relaxed text-muted">
+                        Uses the ChatGPT login the Codex CLI stored in <code>~/.codex/auth.json</code> on this machine.
+                      </p>
+                      <button
+                        ref={localActionRef}
+                        type="button"
+                        onClick={connectOpenAILocal}
+                        disabled={requestBusy}
+                        className={`mt-3 ${PRIMARY_BUTTON}`}
+                      >
+                        {localWorking ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
+                        {localWorking ? "Reading…" : "Read ChatGPT login from this machine"}
+                      </button>
+                      {localError ? (
+                        <div role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
+                          <p>{localError.message}</p>
+                          {localError.recommendation ? <p className="mt-1 text-faint">{localError.recommendation}</p> : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {!strictLocal ? (
+                <div className={mode === "local" ? "border-t border-border/60 pt-4" : ""}>
+                  <label htmlFor="openai-cli-credentials" className="text-sm text-ivory">
+                    {mode === "local" ? "Or paste your ~/.codex/auth.json" : "Paste your ~/.codex/auth.json"}
+                  </label>
                   <p className="mt-1 text-xs leading-relaxed text-muted">
-                    Uses the ChatGPT login the Codex CLI already stored in <code>~/.codex/auth.json</code>. It is stored
-                    encrypted in your vault and never displayed or sent anywhere else.
+                    Run <code className="rounded bg-bg px-1 py-0.5 font-mono">cat ~/.codex/auth.json</code> and paste the
+                    whole output. The tokens are stored encrypted and never shown.
                   </p>
-                  <button
-                    ref={localActionRef}
-                    type="button"
-                    onClick={connectOpenAILocal}
+                  <textarea
+                    id="openai-cli-credentials"
+                    value={pasted}
                     disabled={requestBusy}
+                    onChange={(event) => {
+                      setPasted(event.target.value);
+                      setError(null);
+                    }}
+                    spellCheck={false}
+                    autoComplete="off"
+                    rows={4}
+                    placeholder={'{ "tokens": { "access_token": "…", "refresh_token": "…" } }'}
+                    className="mt-2 w-full resize-y rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary outline-none focus:border-[var(--accent)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={connectOpenAIPaste}
+                    disabled={!pasted.trim() || requestBusy}
                     className={`mt-3 ${PRIMARY_BUTTON}`}
                   >
-                    {localWorking && <SpinnerIcon className="h-4 w-4 animate-spin-slow" />}
-                    {localWorking ? "Reading…" : "Read ChatGPT login from this machine"}
+                    {working ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
+                    {working ? "Connecting…" : "Connect shared ChatGPT login"}
                   </button>
-                  {localError && (
-                    <div role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
-                      <p>{localError.message}</p>
-                      {localError.recommendation && <p className="mt-1 text-faint">{localError.recommendation}</p>}
-                    </div>
-                  )}
+                  {error ? (
+                    <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
+                      {error}
+                    </p>
+                  ) : null}
                 </div>
-              </div>
+              ) : null}
             </div>
-          )}
-
-          {!strictLocal && (
-            <div className={mode === "local" ? "border-t border-border/60 pt-4" : ""}>
-            <p className="text-sm text-ivory">
-              {mode === "local" ? "Or paste your ~/.codex/auth.json" : "Paste your ~/.codex/auth.json"}
-            </p>
-            <p className="mt-1 text-xs leading-relaxed text-muted">
-              Run <code className="rounded bg-bg px-1 py-0.5 font-mono">cat ~/.codex/auth.json</code> and paste the whole
-              output. The tokens are stored encrypted and never shown.
-            </p>
-            <textarea
-              value={pasted}
-              onChange={(event) => {
-                setPasted(event.target.value);
-                setError(null);
-              }}
-              spellCheck={false}
-              rows={4}
-              placeholder={'{ "tokens": { "access_token": "…", "refresh_token": "…" } }'}
-              className="mt-2 w-full resize-y rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary outline-none focus:border-[var(--accent)]"
-            />
-            <button
-              type="button"
-              onClick={connectOpenAIPaste}
-              disabled={!pasted.trim() || working}
-              className={`mt-3 ${PRIMARY_BUTTON}`}
-            >
-              {working && <SpinnerIcon className="h-4 w-4 animate-spin-slow" />}
-              {working ? "Connecting…" : "Connect ChatGPT account"}
-            </button>
-            {error && (
-              <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
-                {error}
-              </p>
-            )}
-            </div>
-          )}
+          </details>
         </div>
       )}
     </div>

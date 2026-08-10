@@ -5,6 +5,7 @@ import { registerHooks } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { OpenAIDeviceAttemptRecord } from "../openai-device-attempt-store.ts";
 import type { StoredAccount } from "../types.ts";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -61,6 +62,7 @@ const AUTHORIZATION_CODE = "fixture-authorization-code";
 const CODE_VERIFIER = "fixture-code-verifier";
 const REFRESH_TOKEN = "fixture-refresh-token";
 let now = Date.now();
+let attemptRecords = new Map<string, OpenAIDeviceAttemptRecord>();
 
 function jwt(payload: Record<string, unknown>): string {
   const segment = Buffer.from(JSON.stringify(payload)).toString("base64url");
@@ -75,9 +77,11 @@ const ACCESS_TOKEN = jwt({
 
 function resetAttemptStore(): void {
   let nextByte = 1;
+  attemptRecords = new Map<string, OpenAIDeviceAttemptRecord>();
   const replacement = createOpenAIDeviceAttemptStore({
     now: () => now,
     randomBytes: (size) => new Uint8Array(size).fill(nextByte++),
+    records: attemptRecords,
   });
   Object.assign(openAIDeviceAttemptStore, replacement);
 }
@@ -153,9 +157,9 @@ function heartbeatRecorder(): {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
   }
   assert.fail("condition was not reached");
 }
@@ -233,20 +237,20 @@ test("authorized status verifies identity, saves managed, and replays completion
   await saveAccounts("default", [previous]);
   let polls = 0;
   let exchanges = 0;
-  let releasePoll: ((response: Response) => void) | undefined;
-  const heldPoll = new Promise<Response>((resolve) => {
-    releasePoll = resolve;
+  let releaseExchange: ((response: Response) => void) | undefined;
+  const heldExchange = new Promise<Response>((resolve) => {
+    releaseExchange = resolve;
   });
   globalThis.fetch = (async (input: unknown) => {
     const url = String(input);
     if (url.endsWith("/api/accounts/deviceauth/usercode")) return startUpstreamResponse();
     if (url.endsWith("/api/accounts/deviceauth/token")) {
       polls += 1;
-      return heldPoll;
+      return Response.json({ authorization_code: AUTHORIZATION_CODE, code_verifier: CODE_VERIFIER });
     }
     if (url.endsWith("/oauth/token")) {
       exchanges += 1;
-      return Response.json({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN });
+      return heldExchange;
     }
     if (url.includes("/wham/usage")) return Response.json({ ...usageFixture, email: "device@example.com" });
     throw new Error(`unexpected fetch ${new URL(url).pathname}`);
@@ -254,26 +258,41 @@ test("authorized status verifies identity, saves managed, and replays completion
   const started = await start(previous.id);
   now += 1_000;
   const heartbeat = heartbeatRecorder();
+  let firstResponsePromise: Promise<Response> | undefined;
+  let concurrentResponsePromise: Promise<Response> | undefined;
   try {
-    const firstResponsePromise = statusPost(
+    firstResponsePromise = statusPost(
       request("/api/connect/openai/device/status", { attemptId: started.attemptId }),
     );
-    await waitFor(() => polls === 1 && heartbeat.activeCount() === 1);
-    for (let renewal = 0; renewal < 3; renewal += 1) {
-      now += 10_000;
-      heartbeat.tick();
+    await waitFor(() => exchanges === 1);
+
+    const consuming = attemptRecords.get(String(started.attemptId));
+    assert.equal(consuming?.status, "consuming");
+    const consumingSerialized = JSON.stringify(consuming);
+    for (const forbidden of [DEVICE_AUTH_ID, USER_CODE, "deviceAuthId", "userCode", "expectedAccountId"]) {
+      assert.equal(consumingSerialized.includes(forbidden), false, forbidden);
     }
-    now += 1_000;
+    assert.equal(heartbeat.activeCount(), 0);
+    assert.equal(heartbeat.clearedCount(), 1);
 
-    const concurrentResponse = await statusPost(
+    now += 31_000;
+    let concurrentSettled = false;
+    let concurrent: Record<string, unknown> | undefined;
+    concurrentResponsePromise = statusPost(
       request("/api/connect/openai/device/status", { attemptId: started.attemptId }),
     );
-    const concurrent = await concurrentResponse.json();
-    assert.equal(concurrent.status, "processing");
-    assert.equal(polls, 1);
-    assert.equal(exchanges, 0);
+    void concurrentResponsePromise.then(async (response) => {
+      concurrent = (await response.json()) as Record<string, unknown>;
+      concurrentSettled = true;
+    });
+    await waitFor(() => concurrentSettled || polls > 1 || exchanges > 1);
 
-    releasePoll?.(Response.json({ authorization_code: AUTHORIZATION_CODE, code_verifier: CODE_VERIFIER }));
+    assert.equal(concurrentSettled, true);
+    assert.equal(concurrent?.status, "processing");
+    assert.equal(polls, 1);
+    assert.equal(exchanges, 1);
+
+    releaseExchange?.(Response.json({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN }));
     const firstResponse = await firstResponsePromise;
     const first = await firstResponse.json();
     const replayResponse = await statusPost(
@@ -285,8 +304,6 @@ test("authorized status verifies identity, saves managed, and replays completion
     assert.deepEqual(replay, first);
     assert.equal(polls, 1);
     assert.equal(exchanges, 1);
-    assert.equal(heartbeat.activeCount(), 0);
-    assert.equal(heartbeat.clearedCount(), 1);
     assert.deepEqual(first, {
       status: "done",
       account: {
@@ -305,6 +322,9 @@ test("authorized status verifies identity, saves managed, and replays completion
     const serialized = JSON.stringify({ first, replay });
     for (const forbidden of forbiddenSecrets()) assert.equal(serialized.includes(forbidden), false);
   } finally {
+    releaseExchange?.(Response.json({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN }));
+    if (firstResponsePromise) await Promise.allSettled([firstResponsePromise]);
+    if (concurrentResponsePromise) await Promise.allSettled([concurrentResponsePromise]);
     heartbeat.restore();
   }
 });
@@ -507,6 +527,89 @@ test("an ambiguous code exchange fails terminally and is never retried", async (
     }
   } finally {
     console.error = originalError;
+    heartbeat.restore();
+  }
+});
+
+test("consuming state prevents reclaim while vault persistence outlives the poll lease", async () => {
+  let polls = 0;
+  let exchanges = 0;
+  globalThis.fetch = (async (input: unknown) => {
+    const url = String(input);
+    if (url.endsWith("/api/accounts/deviceauth/usercode")) return startUpstreamResponse();
+    if (url.endsWith("/api/accounts/deviceauth/token")) {
+      polls += 1;
+      return Response.json({ authorization_code: AUTHORIZATION_CODE, code_verifier: CODE_VERIFIER });
+    }
+    if (url.endsWith("/oauth/token")) {
+      exchanges += 1;
+      return Response.json({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN });
+    }
+    if (url.includes("/wham/usage")) return Response.json(usageFixture);
+    throw new Error(`unexpected fetch ${new URL(url).pathname}`);
+  }) as unknown as typeof fetch;
+  const started = await start();
+  now = Number(started.expiresAt) - 1;
+
+  const originalRename = fs.rename;
+  let releaseRename: (() => void) | undefined;
+  const heldRename = new Promise<void>((resolve) => {
+    releaseRename = resolve;
+  });
+  let renameCalls = 0;
+  fs.rename = (async (...args: Parameters<typeof fs.rename>) => {
+    renameCalls += 1;
+    await heldRename;
+    return originalRename(...args);
+  }) as typeof fs.rename;
+  const heartbeat = heartbeatRecorder();
+  let firstResponsePromise: Promise<Response> | undefined;
+  let concurrentResponsePromise: Promise<Response> | undefined;
+  try {
+    firstResponsePromise = statusPost(
+      request("/api/connect/openai/device/status", { attemptId: started.attemptId }),
+    );
+    await waitFor(() => renameCalls === 1);
+    assert.equal(attemptRecords.get(String(started.attemptId))?.status, "consuming");
+    assert.equal(heartbeat.activeCount(), 0);
+    assert.equal(heartbeat.clearedCount(), 1);
+
+    now += 31_000;
+    let concurrentSettled = false;
+    let concurrent: Record<string, unknown> | undefined;
+    concurrentResponsePromise = statusPost(
+      request("/api/connect/openai/device/status", { attemptId: started.attemptId }),
+    );
+    void concurrentResponsePromise.then(async (response) => {
+      concurrent = (await response.json()) as Record<string, unknown>;
+      concurrentSettled = true;
+    });
+    await waitFor(() => concurrentSettled || polls > 1 || exchanges > 1);
+
+    assert.equal(concurrentSettled, true);
+    assert.equal(concurrent?.status, "processing");
+    assert.equal(polls, 1);
+    assert.equal(exchanges, 1);
+    assert.equal(renameCalls, 1);
+
+    releaseRename?.();
+    const firstResponse = await firstResponsePromise;
+    const first = await firstResponse.json();
+    assert.equal(firstResponse.status, 200);
+    assert.equal(first.status, "done");
+    assert.equal(openAIDeviceAttemptStore.status(started.attemptId, "default")?.status, "done");
+    const [saved] = await loadAccounts("default");
+    assert.equal(saved.credentialKind, "managed");
+    assert.deepEqual(saved.tokens, {
+      accessToken: ACCESS_TOKEN,
+      refreshToken: REFRESH_TOKEN,
+      expiresAt: 1_900_000_000_000,
+    });
+  } finally {
+    releaseRename?.();
+    if (firstResponsePromise) await Promise.allSettled([firstResponsePromise]);
+    if (concurrentResponsePromise) await Promise.allSettled([concurrentResponsePromise]);
+    fs.rename = originalRename;
     heartbeat.restore();
   }
 });

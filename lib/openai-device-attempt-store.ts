@@ -38,6 +38,18 @@ export interface OpenAIDevicePollingAttempt extends LiveAttemptBase {
   nextPollAt?: never;
 }
 
+export interface OpenAIDeviceConsumingAttempt extends AttemptBase {
+  status: "consuming";
+  consumeExpiresAt: number;
+  intervalMs: number;
+  consumer: string;
+  deviceAuthId?: never;
+  userCode?: never;
+  expectedAccountId?: never;
+  owner?: never;
+  ownerExpiresAt?: never;
+}
+
 interface TerminalAttemptBase extends AttemptBase {
   retainUntil: number;
   deviceAuthId?: never;
@@ -63,6 +75,7 @@ export interface OpenAIDeviceExpiredAttempt extends TerminalAttemptBase {
 export type OpenAIDeviceAttemptRecord =
   | OpenAIDevicePendingAttempt
   | OpenAIDevicePollingAttempt
+  | OpenAIDeviceConsumingAttempt
   | OpenAIDeviceDoneAttempt
   | OpenAIDeviceFailedAttempt
   | OpenAIDeviceExpiredAttempt;
@@ -90,6 +103,7 @@ export interface OpenAIDeviceAttemptStore {
   claimPoll(attemptId: unknown, userId: string): OpenAIDevicePollClaim | null;
   renewPoll(attemptId: unknown, owner: unknown): boolean;
   releasePending(attemptId: unknown, owner: unknown): boolean;
+  beginConsume(attemptId: unknown, owner: unknown): boolean;
   complete(
     attemptId: unknown,
     owner: unknown,
@@ -140,7 +154,10 @@ export function createOpenAIDeviceAttemptStore(
   const records = options.records ?? new Map<string, OpenAIDeviceAttemptRecord>();
 
   function terminalRecord(
-    record: OpenAIDevicePendingAttempt | OpenAIDevicePollingAttempt,
+    record:
+      | OpenAIDevicePendingAttempt
+      | OpenAIDevicePollingAttempt
+      | OpenAIDeviceConsumingAttempt,
     status: "failed" | "expired",
     current: number,
   ): OpenAIDeviceFailedAttempt | OpenAIDeviceExpiredAttempt {
@@ -158,8 +175,9 @@ export function createOpenAIDeviceAttemptStore(
     current: number,
   ): OpenAIDeviceAttemptRecord {
     if (
-      (record.status === "pending" || record.status === "polling") &&
-      current >= record.expiresAt
+      ((record.status === "pending" || record.status === "polling") &&
+        current >= record.expiresAt) ||
+      (record.status === "consuming" && current >= record.consumeExpiresAt)
     ) {
       const expired = terminalRecord(record, "expired", current);
       records.set(record.attemptId, expired);
@@ -196,7 +214,12 @@ export function createOpenAIDeviceAttemptStore(
   function ownerAvailable(value: string): boolean {
     if (records.has(value)) return false;
     for (const record of records.values()) {
-      if (record.status === "polling" && record.owner === value) return false;
+      if (
+        (record.status === "polling" && record.owner === value) ||
+        (record.status === "consuming" && record.consumer === value)
+      ) {
+        return false;
+      }
     }
     return true;
   }
@@ -231,7 +254,26 @@ export function createOpenAIDeviceAttemptStore(
     if (!canonicalCapability(attemptId) || !canonicalCapability(owner)) return null;
     const found = records.get(attemptId);
     const record = found ? pruneRecord(found, current) : null;
-    if (!record || record.status !== "polling" || record.owner !== owner) return null;
+    if (
+      !record ||
+      record.status !== "polling" ||
+      record.owner !== owner ||
+      current >= record.ownerExpiresAt
+    ) {
+      return null;
+    }
+    return record;
+  }
+
+  function ownedConsumingRecord(
+    attemptId: unknown,
+    consumer: unknown,
+    current: number,
+  ): OpenAIDeviceConsumingAttempt | null {
+    if (!canonicalCapability(attemptId) || !canonicalCapability(consumer)) return null;
+    const found = records.get(attemptId);
+    const record = found ? pruneRecord(found, current) : null;
+    if (!record || record.status !== "consuming" || record.consumer !== consumer) return null;
     return record;
   }
 
@@ -268,9 +310,21 @@ export function createOpenAIDeviceAttemptStore(
       const found = records.get(attemptId);
       if (!found || found.userId !== userId) return null;
       const record = pruneRecord(found, current);
-      if (!record || (record.status !== "pending" && record.status !== "polling")) {
+      if (!record) {
         return null;
       }
+
+      if (record.status === "consuming") {
+        return {
+          kind: "processing",
+          pollAfterMs: Math.min(
+            record.intervalMs,
+            Math.max(0, record.consumeExpiresAt - current),
+          ),
+          expiresAt: record.consumeExpiresAt,
+        };
+      }
+      if (record.status !== "pending" && record.status !== "polling") return null;
 
       if (record.status === "pending" && current < record.nextPollAt) {
         return {
@@ -322,7 +376,7 @@ export function createOpenAIDeviceAttemptStore(
     renewPoll(attemptId, owner) {
       const current = now();
       const record = ownedPollingRecord(attemptId, owner, current);
-      if (!record || current >= record.ownerExpiresAt) return false;
+      if (!record) return false;
       records.set(record.attemptId, {
         ...record,
         ownerExpiresAt: current + POLL_FENCE_MS,
@@ -352,9 +406,25 @@ export function createOpenAIDeviceAttemptStore(
       return true;
     },
 
-    complete(attemptId, owner, account) {
+    beginConsume(attemptId, owner) {
       const current = now();
       const record = ownedPollingRecord(attemptId, owner, current);
+      if (!record) return false;
+      records.set(record.attemptId, {
+        attemptId: record.attemptId,
+        userId: record.userId,
+        createdAt: record.createdAt,
+        status: "consuming",
+        consumeExpiresAt: current + ATTEMPT_TTL_MS,
+        intervalMs: record.intervalMs,
+        consumer: record.owner,
+      });
+      return true;
+    },
+
+    complete(attemptId, owner, account) {
+      const current = now();
+      const record = ownedConsumingRecord(attemptId, owner, current);
       if (!record) return false;
       records.set(record.attemptId, {
         attemptId: record.attemptId,
@@ -369,7 +439,9 @@ export function createOpenAIDeviceAttemptStore(
 
     fail(attemptId, owner) {
       const current = now();
-      const record = ownedPollingRecord(attemptId, owner, current);
+      const record =
+        ownedPollingRecord(attemptId, owner, current) ??
+        ownedConsumingRecord(attemptId, owner, current);
       if (!record) return false;
       records.set(record.attemptId, terminalRecord(record, "failed", current));
       return true;
@@ -395,6 +467,16 @@ export function createOpenAIDeviceAttemptStore(
           status: "processing",
           pollAfterMs: Math.max(0, record.ownerExpiresAt - current),
           expiresAt: record.expiresAt,
+        };
+      }
+      if (record.status === "consuming") {
+        return {
+          status: "processing",
+          pollAfterMs: Math.min(
+            record.intervalMs,
+            Math.max(0, record.consumeExpiresAt - current),
+          ),
+          expiresAt: record.consumeExpiresAt,
         };
       }
       if (record.status === "done") {

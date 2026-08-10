@@ -147,6 +147,71 @@ test("a live poll owner renews its fence while stale owners still expire exactly
   assert.equal(store.renewPoll(started.attemptId, claim.owner), false);
 });
 
+test("owner mutations reject an expired lease at the exact boundary before any reclaim", () => {
+  const now = { value: 47_000 };
+  const { store, records } = deterministicStore(now);
+  const started = store.start("user-a", authorization(now.value));
+  now.value += 5_000;
+  const claim = store.claimPoll(started.attemptId, "user-a");
+  assert.ok(claim && claim.kind === "poll");
+
+  now.value += POLL_FENCE_MS;
+  assert.equal(store.renewPoll(started.attemptId, claim.owner), false);
+  assert.equal(store.releasePending(started.attemptId, claim.owner), false);
+  assert.equal(store.beginConsume(started.attemptId, claim.owner), false);
+  assert.equal(
+    store.complete(started.attemptId, claim.owner, {
+      id: "account-id",
+      email: "account@example.com",
+      plan: "ChatGPT Plus",
+      label: "account@example.com",
+      alreadyConnected: false,
+    }),
+    false,
+  );
+  assert.equal(store.fail(started.attemptId, claim.owner), false);
+  assert.equal(records.get(started.attemptId)?.status, "polling");
+
+  const reclaimed = store.claimPoll(started.attemptId, "user-a");
+  assert.ok(reclaimed && reclaimed.kind === "poll");
+  assert.notEqual(reclaimed.owner, claim.owner);
+});
+
+test("beginConsume atomically burns poll credentials and cannot be reclaimed after the poll lease", () => {
+  const now = { value: 48_000 };
+  const { store, records } = deterministicStore(now);
+  const started = store.start("user-a", authorization(now.value), "account-selected");
+  now.value += 5_000;
+  const claim = store.claimPoll(started.attemptId, "user-a");
+  assert.ok(claim && claim.kind === "poll");
+
+  assert.equal(store.beginConsume(started.attemptId, encoded(99)), false);
+  assert.equal(store.beginConsume(started.attemptId, claim.owner), true);
+  assert.equal(store.beginConsume(started.attemptId, claim.owner), false);
+  assert.deepEqual(Object.keys(records.get(started.attemptId) ?? {}).sort(), [
+    "attemptId",
+    "consumeExpiresAt",
+    "consumer",
+    "createdAt",
+    "intervalMs",
+    "status",
+    "userId",
+  ].sort());
+  const serialized = JSON.stringify(records.get(started.attemptId));
+  for (const forbidden of ["device-secret", "ABCD-EFGH", "account-selected", "deviceAuthId", "userCode"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+
+  now.value += POLL_FENCE_MS;
+  assert.deepEqual(store.claimPoll(started.attemptId, "user-a"), {
+    kind: "processing",
+    pollAfterMs: 5_000,
+    expiresAt: 48_000 + 5_000 + ATTEMPT_TTL_MS,
+  });
+  assert.equal(store.renewPoll(started.attemptId, claim.owner), false);
+  assert.equal(store.releasePending(started.attemptId, claim.owner), false);
+});
+
 test("completion rejects the wrong owner, deletes secrets, and replays only copied account metadata for sixty seconds", () => {
   const now = { value: 50_000 };
   const { store, records } = deterministicStore(now);
@@ -162,6 +227,9 @@ test("completion rejects the wrong owner, deletes secrets, and replays only copi
     alreadyConnected: false,
   };
 
+  assert.equal(store.complete(started.attemptId, claim.owner, account), false);
+  assert.equal(store.beginConsume(started.attemptId, claim.owner), true);
+  now.value += POLL_FENCE_MS;
   assert.equal(store.complete(started.attemptId, encoded(99), account), false);
   assert.equal(store.complete(started.attemptId, claim.owner, account), true);
   account.label = "mutated after completion";
@@ -209,6 +277,57 @@ test("failure is owner-fenced, deletes every secret, and exposes only a generic 
     Object.keys(retained ?? {}).sort(),
     ["attemptId", "createdAt", "retainUntil", "status", "userId"].sort(),
   );
+});
+
+test("the sole consumer can fail terminally after the ordinary poll lease expires", () => {
+  const now = { value: 65_000 };
+  const { store, records } = deterministicStore(now);
+  const started = store.start("user-a", authorization(now.value), "account-selected");
+  now.value += 5_000;
+  const claim = store.claimPoll(started.attemptId, "user-a");
+  assert.ok(claim && claim.kind === "poll");
+  assert.equal(store.beginConsume(started.attemptId, claim.owner), true);
+
+  now.value += POLL_FENCE_MS;
+  assert.equal(store.fail(started.attemptId, encoded(99)), false);
+  assert.equal(store.fail(started.attemptId, claim.owner), true);
+  assert.deepEqual(store.status(started.attemptId, "user-a"), {
+    status: "failed",
+    error: "OpenAI device login failed. Start a new login and try again.",
+  });
+  assert.deepEqual(
+    Object.keys(records.get(started.attemptId) ?? {}).sort(),
+    ["attemptId", "createdAt", "retainUntil", "status", "userId"].sort(),
+  );
+});
+
+test("consumption gets a fresh bounded deadline when authorization arrives at device expiry", () => {
+  const now = { value: 67_000 };
+  const { store } = deterministicStore(now);
+  const started = store.start("user-a", authorization(now.value), "account-selected");
+  now.value = started.expiresAt - 1;
+  const claim = store.claimPoll(started.attemptId, "user-a");
+  assert.ok(claim && claim.kind === "poll");
+  assert.equal(store.beginConsume(started.attemptId, claim.owner), true);
+
+  const consumeStartedAt = now.value;
+  now.value += POLL_FENCE_MS;
+  assert.deepEqual(store.claimPoll(started.attemptId, "user-a"), {
+    kind: "processing",
+    pollAfterMs: 5_000,
+    expiresAt: consumeStartedAt + ATTEMPT_TTL_MS,
+  });
+  assert.equal(
+    store.complete(started.attemptId, claim.owner, {
+      id: "account-id",
+      email: "account@example.com",
+      plan: "ChatGPT Plus",
+      label: "account@example.com",
+      alreadyConnected: false,
+    }),
+    true,
+  );
+  assert.equal(store.status(started.attemptId, "user-a")?.status, "done");
 });
 
 test("fifteen-minute expiry is exact and replaces live state with a generic secret-free result", () => {

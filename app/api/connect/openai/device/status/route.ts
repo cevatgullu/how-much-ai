@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/auth";
 import { resolveProviderAccount, saveProviderAccount } from "@/lib/connect-account";
 import { openAIDeviceAttemptStore } from "@/lib/openai-device-attempt-store";
 import {
+  exchangeOpenAIDeviceAuthorization,
   OpenAIDeviceAuthError,
   pollOpenAIDeviceAuthorization,
 } from "@/lib/providers/openai-device-auth";
@@ -72,10 +73,17 @@ export async function POST(req: Request) {
   }
 
   let saving = false;
+  let consuming = false;
   let ownerAlive = true;
+  let renewalActive = true;
   const renewal = setInterval(() => {
     if (!openAIDeviceAttemptStore.renewPoll(body.attemptId, claim.owner)) ownerAlive = false;
   }, POLL_OWNER_RENEW_MS);
+  const stopRenewal = () => {
+    if (!renewalActive) return;
+    renewalActive = false;
+    clearInterval(renewal);
+  };
   const requireCurrentOwner = () => {
     if (!ownerAlive) throw new Error("OpenAI device login poll ownership was lost");
   };
@@ -88,8 +96,14 @@ export async function POST(req: Request) {
       return pending ? NextResponse.json(pending, { headers: NO_STORE }) : unavailable();
     }
 
-    const { identity } = await resolveProviderAccount(result.tokens, "openai");
-    requireCurrentOwner();
+    if (!openAIDeviceAttemptStore.beginConsume(body.attemptId, claim.owner)) {
+      return unavailable(409);
+    }
+    consuming = true;
+    stopRenewal();
+
+    const tokens = await exchangeOpenAIDeviceAuthorization(result.grant);
+    const { identity } = await resolveProviderAccount(tokens, "openai");
     if (claim.expectedAccountId && identity.id !== claim.expectedAccountId) {
       openAIDeviceAttemptStore.fail(body.attemptId, claim.owner);
       return NextResponse.json(
@@ -101,14 +115,13 @@ export async function POST(req: Request) {
     }
 
     saving = true;
-    const account = await saveProviderAccount(userId, identity, result.tokens, "openai", "managed");
-    requireCurrentOwner();
+    const account = await saveProviderAccount(userId, identity, tokens, "openai", "managed");
     if (!openAIDeviceAttemptStore.complete(body.attemptId, claim.owner, account)) {
       throw new Error("OpenAI device login completion ownership was lost");
     }
     return NextResponse.json({ status: "done", account }, { headers: NO_STORE });
   } catch (error) {
-    const retryable = retryablePreCodeError(error);
+    const retryable = !consuming && retryablePreCodeError(error);
     if (retryable) openAIDeviceAttemptStore.releasePending(body.attemptId, claim.owner);
     else openAIDeviceAttemptStore.fail(body.attemptId, claim.owner);
 
@@ -129,6 +142,6 @@ export async function POST(req: Request) {
       { status, headers: NO_STORE },
     );
   } finally {
-    clearInterval(renewal);
+    stopRenewal();
   }
 }

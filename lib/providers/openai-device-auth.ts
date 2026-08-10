@@ -17,9 +17,14 @@ export interface OpenAIDeviceAuthorization {
   expiresAt: number;
 }
 
+export interface OpenAIDeviceAuthorizationGrant {
+  authorizationCode: string;
+  codeVerifier: string;
+}
+
 export type OpenAIDevicePollResult =
   | { status: "pending" }
-  | { status: "authorized"; tokens: AccountTokens };
+  | { status: "authorized"; grant: OpenAIDeviceAuthorizationGrant };
 
 type FetchImpl = typeof fetch;
 type TimeoutSignal = (durationMs: number) => AbortSignal;
@@ -184,12 +189,31 @@ export async function pollOpenAIDeviceAuthorization(
     throw upstreamError("OpenAI returned an invalid device authorization result.", "authorization");
   }
 
+  return {
+    status: "authorized",
+    grant: { authorizationCode, codeVerifier },
+  };
+}
+
+export async function exchangeOpenAIDeviceAuthorization(
+  grant: OpenAIDeviceAuthorizationGrant,
+  options: RequestOptions = {},
+): Promise<AccountTokens> {
+  if (
+    !boundedString(grant.authorizationCode, MAX_AUTHORIZATION_FIELD_LENGTH) ||
+    !boundedString(grant.codeVerifier, MAX_AUTHORIZATION_FIELD_LENGTH)
+  ) {
+    throw upstreamError("OpenAI returned an invalid device authorization result.", "authorization");
+  }
+
+  const { fetchImpl, timeoutSignal } = dependencies(options);
+
   const form = new URLSearchParams({
     grant_type: "authorization_code",
     client_id: OPENAI_DEVICE_AUTH.clientId,
-    code: authorizationCode,
+    code: grant.authorizationCode,
     redirect_uri: OPENAI_DEVICE_AUTH.redirectUri,
-    code_verifier: codeVerifier,
+    code_verifier: grant.codeVerifier,
   });
   const exchange = await requestJson(
     fetchImpl,
@@ -221,11 +245,8 @@ export async function pollOpenAIDeviceAuthorization(
   }
 
   return {
-    status: "authorized",
-    tokens: {
-      accessToken,
-      refreshToken,
-      expiresAt: expiryFromAccessToken(accessToken),
-    },
+    accessToken,
+    refreshToken,
+    expiresAt: expiryFromAccessToken(accessToken),
   };
 }

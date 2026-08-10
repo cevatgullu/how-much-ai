@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import "./_resolve-ts.mjs";
 
-const { OPENAI_DEVICE_AUTH, pollOpenAIDeviceAuthorization, startOpenAIDeviceAuthorization } =
-  await import("./openai-device-auth.ts");
+const {
+  OPENAI_DEVICE_AUTH,
+  exchangeOpenAIDeviceAuthorization,
+  pollOpenAIDeviceAuthorization,
+  startOpenAIDeviceAuthorization,
+} = await import("./openai-device-auth.ts");
 
 type FetchCall = { url: string; init?: RequestInit };
 
@@ -18,6 +22,13 @@ function authorization() {
     userCode: "ABCD-EFGH",
     intervalMs: 5_000,
     expiresAt: 1_700_000_900_000,
+  };
+}
+
+function authorizationGrant() {
+  return {
+    authorizationCode: "authorization-code",
+    codeVerifier: "code-verifier",
   };
 }
 
@@ -117,55 +128,70 @@ test("device poll posts only the device fields and treats 404 as pending", async
   assert.equal(calls[0]?.init?.signal, timeout.signal);
 });
 
-test("authorized poll exchanges one code with the exact form boundary", async () => {
+test("authorized poll returns a bounded grant without making the token exchange", async () => {
   const calls: FetchCall[] = [];
   const timeout = timeoutRecorder();
-  const accessToken = jwt({ exp: 1_800_000_000 });
   const result = await pollOpenAIDeviceAuthorization(authorization(), {
     timeoutSignal: timeout.timeoutSignal,
     fetchImpl: async (input, init) => {
       calls.push({ url: String(input), init });
-      if (calls.length === 1) {
-        return Response.json({ authorization_code: "authorization-code", code_verifier: "code-verifier" });
-      }
+      return Response.json({ authorization_code: "authorization-code", code_verifier: "code-verifier" });
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, "https://auth.openai.com/api/accounts/deviceauth/token");
+  assert.deepEqual(timeout.durations, [15_000]);
+  assert.deepEqual(result, {
+    status: "authorized",
+    grant: authorizationGrant(),
+  });
+});
+
+test("authorization exchange sends one code with the exact form boundary", async () => {
+  const calls: FetchCall[] = [];
+  const timeout = timeoutRecorder();
+  const accessToken = jwt({ exp: 1_800_000_000 });
+  const result = await exchangeOpenAIDeviceAuthorization(authorizationGrant(), {
+    timeoutSignal: timeout.timeoutSignal,
+    fetchImpl: async (input: URL | RequestInfo, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
       return Response.json({ access_token: accessToken, refresh_token: "synthetic-refresh" });
     },
   });
 
-  assert.equal(calls.length, 2);
-  assert.equal(calls[1]?.url, "https://auth.openai.com/oauth/token");
-  assert.deepEqual(calls[1]?.init, {
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, "https://auth.openai.com/oauth/token");
+  assert.deepEqual(calls[0]?.init, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body:
       "grant_type=authorization_code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&code=authorization-code&redirect_uri=https%3A%2F%2Fauth.openai.com%2Fdeviceauth%2Fcallback&code_verifier=code-verifier",
     redirect: "manual",
     cache: "no-store",
-    signal: calls[1]?.init?.signal,
+    signal: calls[0]?.init?.signal,
   });
-  assert.deepEqual(timeout.durations, [15_000, 30_000]);
+  assert.deepEqual(timeout.durations, [30_000]);
   assert.equal(calls[0]?.init?.signal, timeout.signal);
-  assert.equal(calls[1]?.init?.signal, timeout.signal);
   assert.deepEqual(result, {
-    status: "authorized",
-    tokens: { accessToken, refreshToken: "synthetic-refresh", expiresAt: 1_800_000_000_000 },
+    accessToken,
+    refreshToken: "synthetic-refresh",
+    expiresAt: 1_800_000_000_000,
   });
 });
 
 test("token exchange rejects a missing refresh token", async () => {
   let calls = 0;
   const accessToken = jwt({ exp: 1_800_000_000 });
-  const operation = pollOpenAIDeviceAuthorization(authorization(), {
+  const operation = exchangeOpenAIDeviceAuthorization(authorizationGrant(), {
     fetchImpl: async () => {
       calls += 1;
-      return calls === 1
-        ? Response.json({ authorization_code: "authorization-code", code_verifier: "code-verifier" })
-        : Response.json({ access_token: accessToken });
+      return Response.json({ access_token: accessToken });
     },
   });
 
   await rejectsWithStatus(operation, 502);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
 });
 
 test("only a 404 poll response is pending", async () => {
@@ -266,12 +292,9 @@ test("transport failures are bounded and classified without response details", a
 
 test("an ambiguous exchange transport failure makes exactly one token request", async () => {
   const calls: string[] = [];
-  const operation = pollOpenAIDeviceAuthorization(authorization(), {
+  const operation = exchangeOpenAIDeviceAuthorization(authorizationGrant(), {
     fetchImpl: async (input) => {
       calls.push(String(input));
-      if (calls.length === 1) {
-        return Response.json({ authorization_code: "authorization-code", code_verifier: "code-verifier" });
-      }
       throw new Error("synthetic ambiguous exchange");
     },
   });
@@ -301,14 +324,9 @@ test("device errors expose only the non-secret phase needed for safe retry decis
     },
   );
 
-  let calls = 0;
   await assert.rejects(
-    pollOpenAIDeviceAuthorization(authorization(), {
+    exchangeOpenAIDeviceAuthorization(authorizationGrant(), {
       fetchImpl: async () => {
-        calls += 1;
-        if (calls === 1) {
-          return Response.json({ authorization_code: "authorization-code", code_verifier: "code-verifier" });
-        }
         throw new Error("synthetic ambiguous exchange");
       },
     }),

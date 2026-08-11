@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Preserve the account-wide OpenAI weekly limit.
-- Preserve all model-scoped limits except `codex_bengalfox`.
+- Preserve all model-scoped limits except the exact weekly row whose display name is `GPT-5.3-Codex-Spark` and whose `metered_feature` is `codex_bengalfox`.
 - Do not change Claude normalization, UI components, or notification code.
 - Follow RED-GREEN TDD and the repository validation order.
 

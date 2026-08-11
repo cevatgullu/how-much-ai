@@ -34,6 +34,20 @@ function stubFetch(handler: (url: string, init: any) => Response): { calls: Arra
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+function additionalLimit(limitName: string, meteredFeature: string, windowSeconds: number, usedPercent: number) {
+  return {
+    limit_name: limitName,
+    metered_feature: meteredFeature,
+    rate_limit: {
+      primary_window: {
+        used_percent: usedPercent,
+        limit_window_seconds: windowSeconds,
+        reset_at: 1_800_000_000,
+      },
+    },
+  };
+}
+
 test("normalizeOpenAIUsage maps the live /wham/usage fixture", () => {
   const usage = normalizeOpenAIUsage(fixture);
   // fixture primary window: used_percent 3, 604800s (weekly), reset_at 1784976109
@@ -75,6 +89,39 @@ test("normalizeOpenAIUsage excludes only the Codex Spark weekly limit", () => {
       ["weekly_all", 10],
       ["weekly_scoped:gpt-5-codex", 20],
     ],
+  );
+});
+
+test("normalizeOpenAIUsage preserves a non-weekly row with the Spark name and feature", () => {
+  const usage = normalizeOpenAIUsage({
+    additional_rate_limits: [additionalLimit("GPT-5.3-Codex-Spark", "codex_bengalfox", 18_000, 31)],
+  });
+
+  assert.deepEqual(
+    extractBars(usage).map(({ key, usedPercent }) => [key, usedPercent]),
+    [["session", 31]],
+  );
+});
+
+test("normalizeOpenAIUsage preserves a weekly row with the Spark feature but a different name", () => {
+  const usage = normalizeOpenAIUsage({
+    additional_rate_limits: [additionalLimit("GPT-5.3-Codex-Spark Preview", "codex_bengalfox", 604_800, 32)],
+  });
+
+  assert.deepEqual(
+    extractBars(usage).map(({ key, usedPercent }) => [key, usedPercent]),
+    [["weekly_scoped:codex_bengalfox", 32]],
+  );
+});
+
+test("normalizeOpenAIUsage preserves a weekly row with the Spark name but a different feature", () => {
+  const usage = normalizeOpenAIUsage({
+    additional_rate_limits: [additionalLimit("GPT-5.3-Codex-Spark", "codex_bengalfox-preview", 604_800, 33)],
+  });
+
+  assert.deepEqual(
+    extractBars(usage).map(({ key, usedPercent }) => [key, usedPercent]),
+    [["weekly_scoped:codex_bengalfox-preview", 33]],
   );
 });
 

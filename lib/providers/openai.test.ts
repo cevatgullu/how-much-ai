@@ -42,10 +42,40 @@ test("normalizeOpenAIUsage maps the live /wham/usage fixture", () => {
   const weekly = usage.limits?.find((l) => l.kind === "weekly_all");
   assert.equal(weekly?.percent, 3);
   assert.equal(weekly?.is_active, true);
-  const scoped = usage.limits?.find((l) => l.scope?.model?.display_name === "GPT-5.3-Codex-Spark");
-  assert.ok(scoped, "scoped model limit present");
-  assert.equal(scoped?.kind, "weekly_scoped");
-  assert.equal(scoped?.group, "codex_bengalfox");
+  const spark = usage.limits?.find((l) => l.scope?.model?.display_name === "GPT-5.3-Codex-Spark");
+  assert.equal(spark, undefined);
+});
+
+test("normalizeOpenAIUsage excludes only the Codex Spark weekly limit", () => {
+  const payload = {
+    rate_limit: {
+      primary_window: { used_percent: 10, limit_window_seconds: 604_800, reset_at: 1_800_000_000 },
+    },
+    additional_rate_limits: [
+      {
+        limit_name: "GPT-5.3-Codex-Spark",
+        metered_feature: "codex_bengalfox",
+        rate_limit: {
+          primary_window: { used_percent: 30, limit_window_seconds: 604_800, reset_at: 1_800_000_000 },
+        },
+      },
+      {
+        limit_name: "GPT-5 Codex",
+        metered_feature: "gpt-5-codex",
+        rate_limit: {
+          primary_window: { used_percent: 20, limit_window_seconds: 604_800, reset_at: 1_800_000_000 },
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    extractBars(normalizeOpenAIUsage(payload)).map(({ key, usedPercent }) => [key, usedPercent]),
+    [
+      ["weekly_all", 10],
+      ["weekly_scoped:gpt-5-codex", 20],
+    ],
+  );
 });
 
 test("normalizeOpenAIUsage maps a 5-hour session window", () => {

@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
-import { createElement } from "react";
+import { createElement, type ComponentType } from "react";
 import { transformSync } from "next/dist/build/swc/index.js";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -83,6 +83,7 @@ const { default: OAuthCallbackPage } = await import(
   "../app/oauth/callback/page.tsx"
 );
 const { AddAccountModal } = await import("../components/AddAccountModal.tsx");
+const openAIDeviceLoginModule = await import("../components/OpenAIDeviceLogin.tsx") as unknown as Record<string, unknown>;
 const { PROVIDER_META } = await import("../components/providers-ui.tsx");
 const { default: HomePage } = await import("../app/page.tsx");
 
@@ -285,4 +286,17 @@ test("ordinary OpenAI selection keeps credential import inside the secondary leg
 
 test("OpenAI provider metadata advertises private login support", () => {
   assert.equal(PROVIDER_META.openai.supportsPrivateLogin, true);
+});
+
+test("the private ChatGPT starting state provides an explicit cancel action", () => {
+  const StartingState = openAIDeviceLoginModule.OpenAIDeviceLoginStartingState;
+  assert.equal(typeof StartingState, "function");
+  if (typeof StartingState !== "function") return;
+
+  const markup = renderToStaticMarkup(createElement(
+    StartingState as ComponentType<{ onCancel(): void }>,
+    { onCancel() {} },
+  ));
+  assert.match(markup, /role="status"[^>]*>[^<]*<svg[\s\S]*getting a one-time code/i);
+  assert.match(markup, /<button[^>]*type="button"[^>]*>[\s\S]*cancel login[\s\S]*<\/button>/i);
 });

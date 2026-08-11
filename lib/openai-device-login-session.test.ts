@@ -55,6 +55,17 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+function validStart(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    attemptId: "attempt-a",
+    userCode: "ABCD-EFGH",
+    verificationUrl: OPENAI_DEVICE_VERIFICATION_URL,
+    pollAfterMs: 1_000,
+    expiresAt: 99_000,
+    ...overrides,
+  };
+}
+
 test("start opens the fixed OpenAI page before fetch and recursively honors server poll delays", async () => {
   const clock = scheduler();
   const events: string[] = [];
@@ -120,6 +131,7 @@ test("start opens the fixed OpenAI page before fetch and recursively honors serv
     expiresAt: 99_000,
   });
   assert.equal(clock.tasks.size, 1);
+  assert.equal(clock.cleared.length, 1, "the start deadline is cleared before the poll timer is installed");
   assert.equal(clock.runOnly(), 1_250);
   await settle();
   assert.equal(clock.tasks.size, 1);
@@ -169,6 +181,179 @@ test("a mismatched server verification URL fails safely without opening it or po
   assert.equal(states.some((state) => state.status === "waiting"), false);
 });
 
+test("a never-settling start request is aborted at one deterministic deadline", async () => {
+  const clock = scheduler();
+  const never = deferred<Response>();
+  const states: OpenAIDeviceLoginState[] = [];
+  const busy: boolean[] = [];
+  let signal: AbortSignal | undefined;
+  const session = createOpenAIDeviceLoginSession({
+    fetch: async (_input, init) => {
+      signal = init?.signal as AbortSignal;
+      return never.promise;
+    },
+    open() {},
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    navigateToLogin() {},
+    onState(state) {
+      states.push(state);
+    },
+    onConnected() {
+      assert.fail("a timed-out start cannot connect");
+    },
+    onBusyChange(value) {
+      busy.push(value);
+    },
+  });
+
+  const starting = session.start();
+  assert.equal(clock.tasks.size, 1, "start must own the session's only timer");
+  assert.equal(clock.runOnly(), 30_000);
+  await starting;
+
+  assert.equal(signal?.aborted, true);
+  assert.equal(clock.tasks.size, 0);
+  assert.deepEqual(busy, [true, false]);
+  assert.equal(states.at(-1)?.status, "failed");
+  assert.equal(states.some((state) => state.status === "waiting"), false);
+});
+
+test("cancel releases a never-settling start request and suppresses its late response", async () => {
+  const clock = scheduler();
+  const pendingStart = deferred<Response>();
+  const states: OpenAIDeviceLoginState[] = [];
+  const busy: boolean[] = [];
+  let signal: AbortSignal | undefined;
+  const session = createOpenAIDeviceLoginSession({
+    fetch: async (_input, init) => {
+      signal = init?.signal as AbortSignal;
+      return pendingStart.promise;
+    },
+    open() {},
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    navigateToLogin() {
+      assert.fail("a cancelled start cannot navigate");
+    },
+    onState(state) {
+      states.push(state);
+    },
+    onConnected() {
+      assert.fail("a cancelled start cannot connect");
+    },
+    onBusyChange(value) {
+      busy.push(value);
+    },
+  });
+
+  const starting = session.start();
+  assert.equal(clock.tasks.size, 1);
+  const stateCount = states.length;
+  session.cancel();
+  await starting;
+  assert.equal(signal?.aborted, true);
+  assert.equal(clock.tasks.size, 0);
+  assert.equal(clock.cleared.length, 1);
+  assert.deepEqual(busy, [true, false]);
+
+  pendingStart.resolve(json(validStart()));
+  await settle();
+  assert.equal(states.length, stateCount);
+  assert.equal(clock.tasks.size, 0);
+});
+
+test("start accepts only exact fields and JavaScript-date-safe expiry values", async () => {
+  for (const body of [
+    validStart({ accessToken: "must-not-cross-browser-boundary" }),
+    validStart({ expiresAt: 8_640_000_000_000_001 }),
+  ]) {
+    const clock = scheduler();
+    const states: OpenAIDeviceLoginState[] = [];
+    const session = createOpenAIDeviceLoginSession({
+      fetch: async () => json(body),
+      open() {},
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      navigateToLogin() {},
+      onState(state) {
+        states.push(state);
+      },
+      onConnected() {},
+    });
+
+    await session.start();
+    assert.equal(states.at(-1)?.status, "failed");
+    assert.equal(states.some((state) => state.status === "waiting"), false);
+    assert.equal(clock.tasks.size, 0);
+  }
+});
+
+test("pending and processing accept only exact fields and date-safe expiries", async () => {
+  for (const statusBody of [
+    { status: "pending", pollAfterMs: 1_000, expiresAt: 99_000, refreshToken: "must-not-cross-browser-boundary" },
+    { status: "processing", pollAfterMs: 1_000, expiresAt: 99_000, accessToken: "must-not-cross-browser-boundary" },
+    { status: "pending", pollAfterMs: 1_000, expiresAt: 8_640_000_000_000_001 },
+  ]) {
+    const clock = scheduler();
+    const states: OpenAIDeviceLoginState[] = [];
+    const responses = [json(validStart({ pollAfterMs: 1 })), json(statusBody)];
+    const session = createOpenAIDeviceLoginSession({
+      fetch: async () => responses.shift()!,
+      open() {},
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      navigateToLogin() {},
+      onState(state) {
+        states.push(state);
+      },
+      onConnected() {},
+    });
+
+    await session.start();
+    clock.runOnly();
+    await settle();
+    assert.equal(states.at(-1)?.status, "failed");
+    assert.equal(clock.tasks.size, 0);
+  }
+});
+
+test("terminal success bodies require their exact status and error fields", async () => {
+  async function terminal(body: Record<string, unknown>): Promise<OpenAIDeviceLoginState["status"] | undefined> {
+    const clock = scheduler();
+    const states: OpenAIDeviceLoginState[] = [];
+    const responses = [json(validStart({ pollAfterMs: 1 })), json(body)];
+    const session = createOpenAIDeviceLoginSession({
+      fetch: async () => responses.shift()!,
+      open() {},
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      navigateToLogin() {},
+      onState(state) {
+        states.push(state);
+      },
+      onConnected() {},
+    });
+    await session.start();
+    clock.runOnly();
+    await settle();
+    assert.equal(clock.tasks.size, 0);
+    return states.at(-1)?.status;
+  }
+
+  assert.equal(await terminal({ status: "failed", error: "Try again" }), "failed");
+  assert.equal(await terminal({ status: "expired", error: "Start again" }), "expired");
+  assert.equal(
+    await terminal({ status: "expired", error: "Start again", accessToken: "must-not-cross-browser-boundary" }),
+    "failed",
+  );
+  assert.equal(await terminal({ status: "expired" }), "failed");
+  assert.equal(
+    await terminal({ status: "failed", error: "Try again", refreshToken: "must-not-cross-browser-boundary" }),
+    "failed",
+  );
+});
+
 test("cancel aborts the active request, clears its timer, and fences every late response", async () => {
   const timerClock = scheduler();
   const timerSession = createOpenAIDeviceLoginSession({
@@ -190,7 +375,7 @@ test("cancel aborts the active request, clears its timer, and fences every late 
   assert.equal(timerClock.tasks.size, 1);
   timerSession.cancel();
   assert.equal(timerClock.tasks.size, 0);
-  assert.equal(timerClock.cleared.length, 1);
+  assert.equal(timerClock.cleared.length, 2, "both the completed start deadline and pending poll were cleared");
 
   const clock = scheduler();
   const pendingPoll = deferred<Response>();
@@ -249,7 +434,7 @@ test("cancel aborts the active request, clears its timer, and fences every late 
 });
 
 test("only an exact Not signed in 401 navigates to login", async () => {
-  async function run(error: string, status: number): Promise<number> {
+  async function run(error: string, status: number, extras: Record<string, unknown> = {}): Promise<number> {
     const clock = scheduler();
     let navigations = 0;
     const states: OpenAIDeviceLoginState[] = [];
@@ -261,7 +446,7 @@ test("only an exact Not signed in 401 navigates to login", async () => {
         pollAfterMs: 1,
         expiresAt: 99_000,
       }),
-      json({ error }, status),
+      json({ error, ...extras }, status),
     ];
     const session = createOpenAIDeviceLoginSession({
       fetch: async () => responses.shift()!,
@@ -287,6 +472,7 @@ test("only an exact Not signed in 401 navigates to login", async () => {
   assert.equal(await run("Not signed in", 401), 1);
   assert.equal(await run("Not signed in", 403), 0);
   assert.equal(await run("Session missing", 401), 0);
+  assert.equal(await run("Not signed in", 401, { accessToken: "must-not-cross-browser-boundary" }), 0);
 });
 
 test("done is emitted once and only for an exact credential-free response", async () => {

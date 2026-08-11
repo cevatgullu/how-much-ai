@@ -19,6 +19,24 @@ interface OpenAIDeviceLoginProps {
 
 type DeviceLoginView = OpenAIDeviceLoginState | { status: "idle" };
 
+export function OpenAIDeviceLoginStartingState({ onCancel }: { onCancel(): void }) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+      <span role="status" aria-live="polite" className="inline-flex items-center gap-2 text-xs text-muted">
+        <SpinnerIcon className="h-4 w-4 animate-spin-slow text-[var(--accent-bright)]" />
+        Getting a one-time code…
+      </span>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="min-h-11 rounded-lg border border-border px-3 text-xs font-medium text-muted transition-colors hover:bg-surface-hover hover:text-ivory"
+      >
+        Cancel login
+      </button>
+    </div>
+  );
+}
+
 async function copyText(value: string): Promise<void> {
   try {
     if (navigator.clipboard?.writeText) {
@@ -124,10 +142,7 @@ export function OpenAIDeviceLogin({
       ) : null}
 
       {view.status === "starting" ? (
-        <div role="status" aria-live="polite" className="mt-4 inline-flex items-center gap-2 text-xs text-muted">
-          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-[var(--accent-bright)]" />
-          Getting a one-time code…
-        </div>
+        <OpenAIDeviceLoginStartingState onCancel={cancel} />
       ) : null}
 
       {authorization ? (

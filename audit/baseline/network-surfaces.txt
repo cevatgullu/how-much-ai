@@ -51,5 +51,11 @@ lib\providers\openai.ts:20:const USAGE_URL = "https://chatgpt.com/backend-api/wh
 lib\providers\openai.ts:21:const TOKEN_URL = "https://auth.openai.com/oauth/token";
 lib\providers\openai.ts:62:    res = await fetch(USAGE_URL, {
 lib\providers\openai.ts:97:      res = await fetch(TOKEN_URL, {
+lib\providers\openai-device-auth.ts:6:  issuer: "https://auth.openai.com",
+lib\providers\openai-device-auth.ts:8:  verificationUrl: "https://auth.openai.com/codex/device",
+lib\providers\openai-device-auth.ts:9:  redirectUri: "https://auth.openai.com/deviceauth/callback",
+lib\providers\openai-device-auth.ts:108:    `${OPENAI_DEVICE_AUTH.issuer}/api/accounts/deviceauth/usercode`,
+lib\providers\openai-device-auth.ts:158:    `${OPENAI_DEVICE_AUTH.issuer}/api/accounts/deviceauth/token`,
+lib\providers\openai-device-auth.ts:220:    `${OPENAI_DEVICE_AUTH.issuer}/oauth/token`,
 lib\providers\openai-credential-source.mjs:10:const OPENAI_AUTH_CLAIM = "https://api.openai.com/auth";
 lib\providers\openai-credential-source.mjs:65:  const profile = payload && payload["https://api.openai.com/profile"];

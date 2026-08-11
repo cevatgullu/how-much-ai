@@ -163,6 +163,40 @@ test("the installer requires retained exact locked Node and PowerShell executabl
 });
 
 test(
+  "the installer keeps function-shared state when invoked from authenticated memory",
+  windowsOnly,
+  async () => {
+    const probeBody = [
+      "function Get-HmaInstallerScopeProbe {",
+      "    [pscustomobject]@{",
+      "        registeredTaskCount = @($script:registeredTaskNames).Count",
+      "        bootstrapHashCount = @($script:bootstrapHashFiles.Keys).Count",
+      "        launcherDefaults = ((-not $script:launcherCreatedByThisRun) -and $null -eq $script:launcherCreatedIdentity -and $null -eq $script:launcherStagingRoot -and $null -eq $script:launcherProgramsRoot)",
+      "    }",
+      "}",
+      "Get-HmaInstallerScopeProbe | ConvertTo-Json -Compress",
+    ].join("\r\n");
+    const { stdout, stderr } = await runPowerShell([
+      "Set-StrictMode -Version Latest",
+      "$ErrorActionPreference = 'Stop'",
+      `$installer = [IO.File]::ReadAllText(${psLiteral(installerScriptPath)})`,
+      "$marker = 'function Test-HmaOrdinalEqual'",
+      "$prefix = $installer.Substring(0, $installer.IndexOf($marker, [StringComparison]::Ordinal))",
+      `$probeText = $prefix + [Environment]::NewLine + ${psLiteral(probeBody)}`,
+      "$probe = [ScriptBlock]::Create($probeText)",
+      `& $probe -SourceRoot 'C:\\probe-source' -ExpectedManifestSha256 ('0' * 64) -NodePath 'C:\\probe-node.exe' -ExpectedNodeSha256 ('1' * 64) -Ps51Path ${psLiteral(powerShell51)} -ExpectedPs51Sha256 ('2' * 64) -StateRoot 'C:\\probe-state' -Port 37645`,
+    ]);
+
+    assert.equal(stderr, "");
+    assert.deepEqual(parseSafeRecord(stdout), {
+      registeredTaskCount: 2,
+      bootstrapHashCount: 10,
+      launcherDefaults: true,
+    });
+  },
+);
+
+test(
   "runtime plans bind loopback, isolate Edge, and create limited secret-free task actions",
   windowsOnly,
   async () => {

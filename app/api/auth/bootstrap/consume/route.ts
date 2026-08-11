@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { consumeLocalBootstrapTicket } from "@/lib/local-bootstrap";
-import { browserMutationFailure, readJsonObject } from "@/lib/request-body";
+import { readJsonObject } from "@/lib/request-body";
 import {
   assertStrictLocalEnvironment,
   sessionCookiePolicy,
@@ -26,11 +26,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Bad request" }, { status: 421, headers: NO_STORE });
   }
 
-  const guard = browserMutationFailure(req);
-  const requestOrigin = new URL(req.url).origin;
   if (
-    guard ||
-    requestOrigin !== STRICT_LOCAL_ORIGIN ||
     req.headers.get("origin") !== STRICT_LOCAL_ORIGIN ||
     req.headers.get("sec-fetch-site")?.trim().toLowerCase() !== "same-origin"
   ) {

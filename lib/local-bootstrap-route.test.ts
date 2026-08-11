@@ -447,6 +447,27 @@ test("bootstrap consume requires the exact same origin, consumes once, and sets 
   assert.equal((await replay.text()).includes(ticket), false);
 });
 
+test("bootstrap consume trusts the exact external Host and Origin when Next uses an internal request URL", async () => {
+  process.env = validStrictEnvironment();
+  const ticket = await startTicket();
+  const response = await consumePost(
+    new Request("http://next-internal.invalid:3000/api/auth/bootstrap/consume", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "127.0.0.1:37645",
+        Origin: "http://127.0.0.1:37645",
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ ticket }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.match(response.headers.get("set-cookie") ?? "", new RegExp(`^${SESSION_COOKIE}=`));
+});
+
 test("an already-authenticated browser still erases, consumes, and cannot replay a new fragment", async () => {
   process.env = validStrictEnvironment();
   const ticket = await startTicket();

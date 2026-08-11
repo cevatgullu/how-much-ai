@@ -1766,6 +1766,38 @@ leaves both tasks stopped. If rollback cannot be proven, do not delete the
 journal or backups; leave the tasks stopped and re-run the same reviewed
 candidate with the same old/new manifest anchors so recovery is deterministic.
 
+The rollback record authenticates the old `install.json`, manifest, bootstrap,
+runtime, task fingerprints, and shortcut, and constrains every recorded restore
+path to the exact state root and old commit. The installer keeps retained
+read/delete handles that deny other write/delete sharing on the live old
+control files and shortcut across staging and activation. Before any rollback
+mutation it validates every journal-local restore source; an invalid moved
+original is quarantined, and recovery uses the separately verified old copy. A
+rollback is complete only after both exact tasks remain `Ready` for stable
+consecutive samples, and the loopback listener and dedicated Edge profile remain
+quiescent.
+
+The journal is first built with a durable valid record under a unique private
+sibling name and is published by one directory rename. Completed journals are
+renamed to a unique tombstone before recursive deletion. Recovery accepts only
+the deterministic journal and those exact sibling-name forms, proves their
+recursive private ACL and no-reparse permitted tree before parsing, and retains
+the journal without mutation when any ownership, schema, source, or rollback
+proof fails. A safely abandoned publication or retirement tombstone is removed
+on the next invocation after the same validation.
+
+Task Scheduler does not expose an atomic compare-and-swap replacement API.
+Within the secure-local threat model (which excludes malicious code already
+running as the same Windows user), update and rollback therefore perform the
+strongest available boundary: immediately re-export and fingerprint each exact
+task before stopping or unregistering it, never use `-Force`, and register only
+when the reserved name is absent. An unexpected task is never stopped, deleted,
+or overwritten; the journal is retained and the operation fails closed. There
+is still an unavoidable same-user race between the final fingerprint check and
+the Task Scheduler operation. The shortcut uses a retained Windows file handle
+and file identity across its replacement boundary instead of relying on the
+path alone.
+
 Never run `git pull`, an automatic updater, `npm update`, or an unreviewed
 installer against the running installation. A changed provider endpoint or
 browser callback format requires a new review; it is not a reason to broaden

@@ -42,6 +42,7 @@ $updateRollbackAttempted = $false
 $updateNewInstall = $null
 $updateNewConfig = $null
 $updateNewLauncherPlan = $null
+$updateFileLeases = New-Object 'Collections.Generic.List[IDisposable]'
 $bootstrapHashFiles = [ordered]@{
     start = 'start-secure-local.ps1'
     open = 'open-secure-local.ps1'
@@ -922,16 +923,118 @@ function Assert-HmaUpdateRootPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$LiteralPath,
-        [Parameter(Mandatory)][string]$StateRoot
+        [Parameter(Mandatory)][string]$StateRoot,
+        [ValidateSet('published', 'publishing', 'retired')][string]$Kind = 'published'
     )
 
     $expected = (Get-HmaUpdateTransactionPaths -StateRoot $StateRoot).JournalRoot
-    if (-not (Test-HmaOrdinalEqual `
-            -Left ([IO.Path]::GetFullPath($LiteralPath)) `
-            -Right ([IO.Path]::GetFullPath([string]$expected)) `
-            -IgnoreCase) -or
-        [IO.Path]::GetFileName($LiteralPath) -cnotmatch '^\.hma-update-[a-f0-9]{64}$') {
+    $fullPath = [IO.Path]::GetFullPath($LiteralPath)
+    $expectedFull = [IO.Path]::GetFullPath([string]$expected)
+    $valid = if ($Kind -ceq 'published') {
+        Test-HmaOrdinalEqual -Left $fullPath -Right $expectedFull -IgnoreCase
+    } elseif ($Kind -ceq 'publishing') {
+        $fullPath -cmatch ('^' + [regex]::Escape($expectedFull) +
+            '\.publishing-[a-f0-9]{32}$')
+    } else {
+        $fullPath -cmatch ('^' + [regex]::Escape($expectedFull) +
+            '\.retired-[a-f0-9]{32}$')
+    }
+    if (-not $valid) {
         throw 'The update journal path is invalid.'
+    }
+}
+
+function Assert-HmaUpdateTreeShape {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [switch]$RequireJournal
+    )
+
+    $root = Get-HmaVerifiedExistingPath -LiteralPath $LiteralPath -Directory
+    $tree = @(Get-HmaNoFollowTree -Root $root)
+    if (-not (Test-HmaPrivateAcl -LiteralPath $root -Recurse)) {
+        throw 'The update journal ACL is invalid.'
+    }
+    foreach ($entry in $tree) {
+        $relative = ([string]$entry.Relative).Replace('\', '/')
+        $allowed = (
+            $relative -cin @(
+                'transaction.json',
+                'transaction.next',
+                'transaction.previous',
+                'old',
+                'candidate'
+            ) -or
+            $relative -cmatch '^old/(?:app|bootstrap|app-original|bootstrap-original)(?:/|$)' -or
+            $relative -cmatch '^old/(?:failed-app|failed-bootstrap)-[a-f0-9]{32}(?:/|$)' -or
+            $relative -cmatch '^old/(?:install\.json|integrity\.json)(?:\.original|\.failed-[a-f0-9]{32})?$' -or
+            $relative -cin @(
+                'old/How Much AI.lnk',
+                'old/How Much AI.original.lnk',
+                'old/HowMuchAI-Service.xml',
+                'old/HowMuchAI-Window.xml'
+            ) -or
+            $relative -cmatch '^old/(?:failed|quarantined)-launcher-[a-f0-9]{32}\.lnk$' -or
+            $relative -cmatch '^old/quarantined-(?:app|bootstrap|install|integrity)-[a-f0-9]{32}(?:/|$)' -or
+            $relative -cmatch '^candidate/(?:app|bootstrap)(?:/|$)' -or
+            $relative -cin @(
+                'candidate/install.json',
+                'candidate/integrity.json',
+                'candidate/tasks.json',
+                'candidate/How Much AI.lnk'
+            )
+        )
+        if (-not $allowed) {
+            throw 'The update journal tree is invalid.'
+        }
+    }
+    if ($RequireJournal) {
+        $journalPath = Join-Path $root 'transaction.json'
+        if (-not [IO.File]::Exists($journalPath) -or
+            [IO.Directory]::Exists($journalPath)) {
+            throw 'The update journal is invalid.'
+        }
+    }
+    return $root
+}
+
+function Get-HmaUpdateOrphanRoots {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$StateRoot)
+
+    $paths = Get-HmaUpdateTransactionPaths -StateRoot $StateRoot
+    $parent = Get-HmaVerifiedExistingPath `
+        -LiteralPath ([IO.Path]::GetDirectoryName([string]$paths.JournalRoot)) `
+        -Directory
+    $baseName = [IO.Path]::GetFileName([string]$paths.JournalRoot)
+    return @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop |
+        Where-Object {
+            $_.Name -cmatch ('^' + [regex]::Escape($baseName) +
+                '\.(?:publishing|retired)-[a-f0-9]{32}$')
+        })
+}
+
+function Remove-HmaUpdateOrphanRoots {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$StateRoot)
+
+    foreach ($item in @(Get-HmaUpdateOrphanRoots -StateRoot $StateRoot)) {
+        if (-not $item.PSIsContainer -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'An update journal retirement path is invalid.'
+        }
+        $kind = if ($item.Name -cmatch '\.publishing-') {
+            'publishing'
+        } else {
+            'retired'
+        }
+        Assert-HmaUpdateRootPath `
+            -LiteralPath $item.FullName `
+            -StateRoot $StateRoot `
+            -Kind $kind
+        $null = Assert-HmaUpdateTreeShape -LiteralPath $item.FullName
+        [IO.Directory]::Delete($item.FullName, $true)
     }
 }
 
@@ -946,8 +1049,40 @@ function Remove-HmaUpdateRoot {
     if (-not [IO.Directory]::Exists($LiteralPath)) {
         return
     }
-    $null = Get-HmaNoFollowTree -Root $LiteralPath
-    [IO.Directory]::Delete($LiteralPath, $true)
+    $null = Assert-HmaUpdateTreeShape `
+        -LiteralPath $LiteralPath `
+        -RequireJournal
+    $retired = $LiteralPath + '.retired-' + [Guid]::NewGuid().ToString('N')
+    Assert-HmaUpdateRootPath `
+        -LiteralPath $retired `
+        -StateRoot $StateRoot `
+        -Kind retired
+    Move-Item -LiteralPath $LiteralPath -Destination $retired
+    $null = Assert-HmaUpdateTreeShape -LiteralPath $retired
+    [IO.Directory]::Delete($retired, $true)
+}
+
+function Remove-HmaUnpublishedUpdateRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [Parameter(Mandatory)][string]$StateRoot
+    )
+
+    Assert-HmaUpdateRootPath -LiteralPath $LiteralPath -StateRoot $StateRoot
+    if (-not [IO.Directory]::Exists($LiteralPath)) { return }
+    $null = Assert-HmaUpdateTreeShape -LiteralPath $LiteralPath
+    if (@(Get-HmaNoFollowTree -Root $LiteralPath).Count -ne 0) {
+        throw 'The unpublished update journal is invalid.'
+    }
+    $retired = $LiteralPath + '.retired-' + [Guid]::NewGuid().ToString('N')
+    Assert-HmaUpdateRootPath `
+        -LiteralPath $retired `
+        -StateRoot $StateRoot `
+        -Kind retired
+    Move-Item -LiteralPath $LiteralPath -Destination $retired
+    $null = Assert-HmaUpdateTreeShape -LiteralPath $retired
+    [IO.Directory]::Delete($retired, $true)
 }
 
 function Copy-HmaExactTree {
@@ -1031,10 +1166,22 @@ function Write-HmaUpdateJournal {
     $temporary = Join-Path $JournalRoot 'transaction.next'
     $previous = Join-Path $JournalRoot 'transaction.previous'
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
-        (ConvertTo-Json -InputObject $Record -Depth 4 -Compress)
+        (ConvertTo-Json -InputObject $Record -Depth 8 -Compress)
     )
     try {
-        [IO.File]::WriteAllBytes($temporary, $bytes)
+        $stream = $null
+        try {
+            $stream = [IO.File]::Open(
+                $temporary,
+                [IO.FileMode]::Create,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+            )
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
         Set-HmaPrivateAcl -LiteralPath $temporary
         if ([IO.File]::Exists($destination)) {
             [IO.File]::Replace($temporary, $destination, $previous, $true)
@@ -1052,10 +1199,21 @@ function Write-HmaUpdateJournal {
 
 function Get-HmaUpdateJournal {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$JournalRoot)
+    param(
+        [Parameter(Mandatory)][string]$JournalRoot,
+        [ValidateSet('transaction.json', 'transaction.next')]
+        [string]$FileName = 'transaction.json'
+    )
 
+    if ($FileName -ceq 'transaction.json') {
+        $null = Assert-HmaUpdateTreeShape `
+            -LiteralPath $JournalRoot `
+            -RequireJournal
+    } else {
+        $null = Assert-HmaUpdateTreeShape -LiteralPath $JournalRoot
+    }
     $path = Get-HmaVerifiedExistingPath `
-        -LiteralPath (Join-Path $JournalRoot 'transaction.json') `
+        -LiteralPath (Join-Path $JournalRoot $FileName) `
         -File
     $text = [IO.File]::ReadAllText($path)
     $record = ConvertFrom-Json -InputObject $text -ErrorAction Stop
@@ -1066,11 +1224,22 @@ function Get-HmaUpdateJournal {
             'stateRoot',
             'oldCommit',
             'oldManifestSha256',
+            'oldInstallSha256',
+            'oldVersion',
+            'oldAppRoot',
+            'oldNodePath',
+            'oldPort',
+            'oldUpstreamBase',
+            'oldBootstrapHashes',
+            'oldLauncherSha256',
+            'oldTaskFingerprints',
             'newCommit',
             'newManifestSha256',
+            'newInstallSha256',
+            'newLauncherSha256',
             'phase'
         )
-    if ($record.version -isnot [int] -or [int]$record.version -ne 1 -or
+    if ($record.version -isnot [int] -or [int]$record.version -ne 2 -or
         $record.stateRoot -isnot [string] -or
         $record.oldCommit -isnot [string] -or
         [string]$record.oldCommit -cnotmatch '^[a-fA-F0-9]{40}$' -or
@@ -1092,8 +1261,82 @@ function Get-HmaUpdateJournal {
         throw 'The update journal is invalid.'
     }
     Assert-HmaSha256 -Value $record.oldManifestSha256
+    Assert-HmaSha256 -Value $record.oldInstallSha256
+    Assert-HmaSha256 -Value $record.oldLauncherSha256
     Assert-HmaSha256 -Value $record.newManifestSha256
+    Assert-HmaSha256 -Value $record.newInstallSha256
+    if ([string]$record.phase -cne 'staging') {
+        Assert-HmaSha256 -Value $record.newLauncherSha256
+    } elseif ($record.newLauncherSha256 -isnot [string] -or
+        [string]$record.newLauncherSha256 -cnotin @('', ('0' * 64))) {
+        throw 'The update journal is invalid.'
+    }
+    if ($record.oldVersion -isnot [int] -or [int]$record.oldVersion -ne 1 -or
+        $record.oldAppRoot -isnot [string] -or
+        $record.oldNodePath -isnot [string] -or
+        $record.oldPort -isnot [int] -or
+        [int]$record.oldPort -ne 37645 -or
+        $record.oldUpstreamBase -isnot [string]) {
+        throw 'The update journal is invalid.'
+    }
+    Assert-HmaExactProperties `
+        -InputObject $record.oldBootstrapHashes `
+        -Expected @($script:bootstrapHashFiles.Keys)
+    foreach ($name in $script:bootstrapHashFiles.Keys) {
+        Assert-HmaSha256 -Value $record.oldBootstrapHashes.$name
+    }
+    $taskFingerprints = @($record.oldTaskFingerprints)
+    if ($taskFingerprints.Count -ne $script:registeredTaskNames.Count) {
+        throw 'The update journal is invalid.'
+    }
+    $seenTaskNames = @{}
+    foreach ($taskFingerprint in $taskFingerprints) {
+        Assert-HmaExactProperties `
+            -InputObject $taskFingerprint `
+            -Expected @('name', 'sha256')
+        $taskName = [string]$taskFingerprint.name
+        if ($taskName -cnotin $script:registeredTaskNames -or
+            $seenTaskNames.ContainsKey($taskName)) {
+            throw 'The update journal is invalid.'
+        }
+        $seenTaskNames[$taskName] = $true
+        Assert-HmaSha256 -Value $taskFingerprint.sha256
+    }
     return $record
+}
+
+function Repair-HmaPublishedUpdateJournal {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JournalRoot,
+        [Parameter(Mandatory)][string]$StateRoot
+    )
+
+    Assert-HmaUpdateRootPath -LiteralPath $JournalRoot -StateRoot $StateRoot
+    $null = Assert-HmaUpdateTreeShape -LiteralPath $JournalRoot
+    $current = Join-Path $JournalRoot 'transaction.json'
+    $next = Join-Path $JournalRoot 'transaction.next'
+    if ([IO.File]::Exists($current)) {
+        $null = Get-HmaUpdateJournal -JournalRoot $JournalRoot
+        return $true
+    }
+    if ([IO.File]::Exists($next)) {
+        $null = Get-HmaUpdateJournal `
+            -JournalRoot $JournalRoot `
+            -FileName 'transaction.next'
+        [IO.File]::Move($next, $current)
+        $null = Assert-HmaUpdateTreeShape `
+            -LiteralPath $JournalRoot `
+            -RequireJournal
+        return $true
+    }
+    if (@(Get-HmaNoFollowTree -Root $JournalRoot).Count -eq 0) {
+        Remove-HmaUnpublishedUpdateRoot `
+            -LiteralPath $JournalRoot `
+            -StateRoot $StateRoot
+        return $false
+    }
+    throw 'The update journal is invalid.'
 }
 
 function Get-HmaPropertyString {
@@ -1103,6 +1346,13 @@ function Get-HmaPropertyString {
         [Parameter(Mandatory)][string]$Name
     )
 
+    if ($InputObject -is [Collections.IDictionary]) {
+        if (-not $InputObject.Contains($Name) -or
+            $null -eq $InputObject[$Name]) {
+            return ''
+        }
+        return [string]$InputObject[$Name]
+    }
     $property = $InputObject.PSObject.Properties[$Name]
     if ($null -eq $property -or $null -eq $property.Value) {
         return ''
@@ -1181,6 +1431,12 @@ function Get-HmaTaskVerificationRecord {
         return $null
     }
     $xml = Export-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    $xmlBytes = (New-Object Text.UTF8Encoding($false)).GetBytes([string]$xml)
+    try {
+        $fingerprint = Get-HmaBytesSha256 -Bytes $xmlBytes
+    } finally {
+        [Array]::Clear($xmlBytes, 0, $xmlBytes.Length)
+    }
     return [pscustomobject]@{
         TaskName = [string]$task.TaskName
         Principal = $task.Principal
@@ -1189,7 +1445,27 @@ function Get-HmaTaskVerificationRecord {
         Settings = $task.Settings
         State = Get-HmaPropertyString -InputObject $task -Name 'State'
         Xml = [string]$xml
+        Fingerprint = $fingerprint
     }
+}
+
+function Assert-HmaTaskFingerprintUnchanged {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$ExpectedTask)
+
+    $current = Get-HmaTaskVerificationRecord `
+        -TaskName ([string]$ExpectedTask.TaskName)
+    if ($null -eq $current -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$current.TaskName) `
+            -Right ([string]$ExpectedTask.TaskName)) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$current.Fingerprint) `
+            -Right ([string]$ExpectedTask.Fingerprint) `
+            -IgnoreCase)) {
+        throw 'A scheduled task changed before mutation.'
+    }
+    return $current
 }
 
 function Get-HmaLauncherFileIdentity {
@@ -1201,6 +1477,42 @@ function Get-HmaLauncherFileIdentity {
         return [HmaInstaller.FileIdentity]::Get($verified)
     } catch {
         throw 'The launcher identity is invalid.'
+    }
+}
+
+function Enter-HmaUpdateFileLease {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [Parameter(Mandatory)][string]$ExpectedSha256
+    )
+
+    $lease = $null
+    try {
+        $path = Get-HmaVerifiedExistingPath -LiteralPath $LiteralPath -File
+        $lease = [HmaInstaller.FileLease]::Open($path)
+        if (-not (Test-HmaOrdinalEqual `
+                -Left $lease.Sha256() `
+                -Right $ExpectedSha256 `
+                -IgnoreCase)) {
+            throw 'A retained update file changed.'
+        }
+        return $lease
+    } catch {
+        if ($null -ne $lease) { $lease.Dispose() }
+        throw 'A retained update file lease is invalid.'
+    }
+}
+
+function Exit-HmaUpdateFileLeases {
+    [CmdletBinding()]
+    param([AllowNull()]$Leases)
+
+    foreach ($lease in @($Leases)) {
+        if ($null -ne $lease) { $lease.Dispose() }
+    }
+    if ($null -ne $Leases -and $null -ne $Leases.PSObject.Methods['Clear']) {
+        $Leases.Clear()
     }
 }
 
@@ -1355,7 +1667,9 @@ function Assert-HmaOfflineUpdateQuiescent {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$StateRoot,
-        [Parameter(Mandatory)]$LauncherPlan
+        [Parameter(Mandatory)]$LauncherPlan,
+        [AllowNull()]$LauncherLease,
+        [AllowEmptyString()][string]$ExpectedLauncherSha256 = ''
     )
 
     foreach ($taskName in $script:registeredTaskNames) {
@@ -1369,7 +1683,18 @@ function Assert-HmaOfflineUpdateQuiescent {
             throw 'The installed scheduled tasks are not quiescent.'
         }
     }
-    if (-not (Test-HmaStartMenuLauncherPlan -Plan $LauncherPlan)) {
+    if ($null -ne $LauncherLease) {
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$LauncherLease.CurrentPath) `
+                -Right ([string]$LauncherPlan.Path) `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$LauncherLease.Sha256()) `
+                -Right $ExpectedLauncherSha256 `
+                -IgnoreCase)) {
+            throw 'The retained Start-menu launcher changed.'
+        }
+    } elseif (-not (Test-HmaStartMenuLauncherPlan -Plan $LauncherPlan)) {
         throw 'The installed Start-menu launcher differs.'
     }
     $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
@@ -1385,6 +1710,50 @@ function Assert-HmaOfflineUpdateQuiescent {
             $commandLine.IndexOf($edgeProfile, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
             throw 'The dedicated Edge profile is not quiescent.'
         }
+    }
+}
+
+function Assert-HmaStableOfflineUpdateQuiescent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)]$LauncherPlan
+    )
+
+    $stableReadySamples = 0
+    for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
+        $allReady = $true
+        foreach ($taskName in $script:registeredTaskNames) {
+            $record = Get-HmaTaskVerificationRecord -TaskName $taskName
+            if ($null -eq $record -or
+                -not (Test-HmaRegisteredTaskPlan `
+                    -Task $record `
+                    -Config $Config `
+                    -StateRoot $StateRoot) -or
+                -not (Test-HmaOrdinalEqual `
+                    -Left ([string]$record.State) `
+                    -Right 'Ready')) {
+                $allReady = $false
+            }
+        }
+        if ($allReady) {
+            $stableReadySamples += 1
+            if ($stableReadySamples -ge 3) { break }
+        } else {
+            $stableReadySamples = 0
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    if ($stableReadySamples -lt 3) {
+        throw 'The rolled-back scheduled tasks are not stably Ready.'
+    }
+    for ($sample = 0; $sample -lt 2; $sample += 1) {
+        Assert-HmaOfflineUpdateQuiescent `
+            -Config $Config `
+            -StateRoot $StateRoot `
+            -LauncherPlan $LauncherPlan
+        if ($sample -eq 0) { Start-Sleep -Milliseconds 25 }
     }
 }
 
@@ -1405,6 +1774,9 @@ function Register-HmaExactTaskPlans {
         -RestartCount 3 `
         -RestartInterval (New-TimeSpan -Minutes 1)
     foreach ($plan in @($Plans)) {
+        if ($null -ne (Get-HmaTaskVerificationRecord -TaskName $plan.Name)) {
+            throw 'A scheduled task destination is occupied.'
+        }
         $action = New-ScheduledTaskAction `
             -Execute $plan.FilePath `
             -Argument $plan.ActionArguments
@@ -1414,7 +1786,7 @@ function Register-HmaExactTaskPlans {
             -Trigger $trigger `
             -Principal $principal `
             -Settings $settings `
-            -Force | Out-Null
+            -ErrorAction Stop | Out-Null
     }
 }
 
@@ -1465,6 +1837,7 @@ function Start-HmaUpdateTransaction {
         [Parameter(Mandatory)]$OldConfig,
         [Parameter(Mandatory)]$OldTaskRecords,
         [Parameter(Mandatory)]$OldLauncherPlan,
+        [Parameter(Mandatory)]$OldFileLeases,
         [Parameter(Mandatory)]$NewInstall,
         [Parameter(Mandatory)][byte[]]$NewInstallBytes,
         [Parameter(Mandatory)][byte[]]$NewManifestBytes,
@@ -1480,18 +1853,96 @@ function Start-HmaUpdateTransaction {
     if ([IO.File]::Exists($JournalRoot) -or [IO.Directory]::Exists($JournalRoot)) {
         throw 'An update journal already exists.'
     }
-    [void][IO.Directory]::CreateDirectory($JournalRoot)
-    Set-HmaPrivateAcl -LiteralPath $JournalRoot
+    $publishingRoot = $JournalRoot + '.publishing-' + [Guid]::NewGuid().ToString('N')
+    Assert-HmaUpdateRootPath `
+        -LiteralPath $publishingRoot `
+        -StateRoot $StateRoot `
+        -Kind publishing
+    if ([IO.File]::Exists($publishingRoot) -or
+        [IO.Directory]::Exists($publishingRoot)) {
+        throw 'An update journal publication path is occupied.'
+    }
+    $oldInstallPath = Get-HmaVerifiedExistingPath `
+        -LiteralPath (Join-Path $StateRoot 'install.json') `
+        -File
+    $oldIntegrityPath = Get-HmaVerifiedExistingPath `
+        -LiteralPath (Join-Path $StateRoot 'integrity.json') `
+        -File
+    if (-not (Test-HmaOrdinalEqual `
+            -Left ([string]$OldFileLeases.Integrity.Sha256()) `
+            -Right ([string]$OldConfig.manifestSha256) `
+            -IgnoreCase)) {
+        throw 'The retained rollback manifest lease is invalid.'
+    }
+    $expectedOldAppRoot = Join-Path `
+        (Join-Path $StateRoot 'runtime') `
+        ([string]$OldConfig.commit)
+    if (-not (Test-HmaOrdinalEqual `
+            -Left ([string]$OldConfig.appRoot) `
+            -Right $expectedOldAppRoot `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$OldConfig.stateRoot) `
+            -Right $StateRoot `
+            -IgnoreCase)) {
+        throw 'The retained rollback destinations are invalid.'
+    }
+    $oldBootstrapHashes = [ordered]@{}
+    foreach ($name in $script:bootstrapHashFiles.Keys) {
+        $value = Get-HmaPropertyString `
+            -InputObject $OldConfig.bootstrapHashes `
+            -Name $name
+        Assert-HmaSha256 -Value $value
+        $oldBootstrapHashes[$name] = $value.ToLowerInvariant()
+    }
+    $oldTaskFingerprints = @($OldTaskRecords | ForEach-Object {
+            Assert-HmaSha256 -Value $_.Fingerprint
+            [ordered]@{
+                name = [string]$_.TaskName
+                sha256 = ([string]$_.Fingerprint).ToLowerInvariant()
+            }
+        })
+    if ($oldTaskFingerprints.Count -ne $script:registeredTaskNames.Count) {
+        throw 'The retained task fingerprints are invalid.'
+    }
     $record = [ordered]@{
-        version = 1
+        version = 2
         stateRoot = $StateRoot
         oldCommit = [string]$OldConfig.commit
         oldManifestSha256 = [string]$OldConfig.manifestSha256
+        oldInstallSha256 = [string]$OldFileLeases.Install.Sha256()
+        oldVersion = [int]$OldConfig.version
+        oldAppRoot = $expectedOldAppRoot
+        oldNodePath = [string]$OldConfig.nodePath
+        oldPort = [int]$OldConfig.port
+        oldUpstreamBase = [string]$OldConfig.upstreamBase
+        oldBootstrapHashes = $oldBootstrapHashes
+        oldLauncherSha256 = [string]$OldFileLeases.Launcher.Sha256()
+        oldTaskFingerprints = $oldTaskFingerprints
         newCommit = [string]$NewInstall.commit
         newManifestSha256 = [string]$NewInstall.manifestSha256
+        newInstallSha256 = Get-HmaBytesSha256 -Bytes $NewInstallBytes
+        newLauncherSha256 = ''
         phase = 'staging'
     }
-    Write-HmaUpdateJournal -JournalRoot $JournalRoot -Record $record
+    $journalPublished = $false
+    try {
+        [void][IO.Directory]::CreateDirectory($publishingRoot)
+        Set-HmaPrivateAcl -LiteralPath $publishingRoot
+        Write-HmaUpdateJournal -JournalRoot $publishingRoot -Record $record
+        Set-HmaPrivateAcl -LiteralPath $publishingRoot
+        $null = Assert-HmaUpdateTreeShape `
+            -LiteralPath $publishingRoot `
+            -RequireJournal
+        Move-Item -LiteralPath $publishingRoot -Destination $JournalRoot
+        $journalPublished = $true
+    } finally {
+        if (-not $journalPublished -and
+            [IO.Directory]::Exists($publishingRoot)) {
+            $null = Assert-HmaUpdateTreeShape -LiteralPath $publishingRoot
+            [IO.Directory]::Delete($publishingRoot, $true)
+        }
+    }
 
     $oldRoot = Join-Path $JournalRoot 'old'
     $candidateRoot = Join-Path $JournalRoot 'candidate'
@@ -1503,12 +1954,12 @@ function Start-HmaUpdateTransaction {
     Copy-HmaExactTree `
         -Source (Join-Path $StateRoot 'bootstrap') `
         -Destination $oldBootstrapBackup
-    Copy-HmaExactFile `
-        -Source (Join-Path $StateRoot 'install.json') `
-        -Destination (Join-Path $oldRoot 'install.json')
-    Copy-HmaExactFile `
-        -Source (Join-Path $StateRoot 'integrity.json') `
-        -Destination (Join-Path $oldRoot 'integrity.json')
+    $oldInstallBackup = Join-Path $oldRoot 'install.json'
+    $OldFileLeases.Install.CopyTo($oldInstallBackup)
+    Set-HmaPrivateAcl -LiteralPath $oldInstallBackup
+    $oldIntegrityBackup = Join-Path $oldRoot 'integrity.json'
+    $OldFileLeases.Integrity.CopyTo($oldIntegrityBackup)
+    Set-HmaPrivateAcl -LiteralPath $oldIntegrityBackup
     $oldManifest = ConvertFrom-Json `
         -InputObject ([IO.File]::ReadAllText((Join-Path $oldRoot 'integrity.json'))) `
         -ErrorAction Stop
@@ -1536,9 +1987,9 @@ function Start-HmaUpdateTransaction {
     Assert-HmaInstalledEntries `
         -Root $oldBootstrapBackup `
         -Entries $oldBootstrapEntries
-    Copy-HmaExactFile `
-        -Source ([string]$OldLauncherPlan.Path) `
-        -Destination (Join-Path $oldRoot 'How Much AI.lnk')
+    $oldLauncherBackup = Join-Path $oldRoot 'How Much AI.lnk'
+    $OldFileLeases.Launcher.CopyTo($oldLauncherBackup)
+    Set-HmaPrivateAcl -LiteralPath $oldLauncherBackup
     foreach ($recordedTask in @($OldTaskRecords)) {
         $taskPath = Join-Path $oldRoot ([string]$recordedTask.TaskName + '.xml')
         [IO.File]::WriteAllText(
@@ -1584,12 +2035,20 @@ function Start-HmaUpdateTransaction {
     if (-not (Test-HmaPrivateAcl -LiteralPath $JournalRoot -Recurse)) {
         throw 'The update journal ACL is invalid.'
     }
+    $record.newLauncherSha256 = Get-HmaSha256 `
+        -LiteralPath ([string]$candidateLauncherPlan.Path)
     $record.phase = 'staged'
     Write-HmaUpdateJournal -JournalRoot $JournalRoot -Record $record
     return [pscustomobject]@{
         Record = $record
         OldRoot = $oldRoot
         CandidateRoot = $candidateRoot
+        OldTaskRecords = @($OldTaskRecords)
+        OldFileLeases = $OldFileLeases
+        OldInstall = $OldConfig
+        OldManifest = $oldManifest
+        OldRuntimeEntries = @($oldRuntimeEntries)
+        OldBootstrapEntries = @($oldBootstrapEntries)
     }
 }
 
@@ -1638,9 +2097,29 @@ function Invoke-HmaUpdateActivation {
     Set-HmaUpdatePhase -Transaction $Transaction -Phase 'bootstrap-promoted'
 
     foreach ($name in @('integrity.json', 'install.json')) {
-        Move-Item `
-            -LiteralPath (Join-Path $StateRoot $name) `
-            -Destination (Join-Path $oldRoot ($name + '.original'))
+        $lease = if ($name -ceq 'integrity.json') {
+            $Transaction.OldFileLeases.Integrity
+        } else {
+            $Transaction.OldFileLeases.Install
+        }
+        $expectedHash = if ($name -ceq 'integrity.json') {
+            [string]$Transaction.Record.oldManifestSha256
+        } else {
+            [string]$Transaction.Record.oldInstallSha256
+        }
+        $livePath = Join-Path $StateRoot $name
+        if ($null -eq $lease -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$lease.CurrentPath) `
+                -Right $livePath `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$lease.Sha256()) `
+                -Right $expectedHash `
+                -IgnoreCase)) {
+            throw 'A retained control-file lease changed.'
+        }
+        $lease.MoveTo((Join-Path $oldRoot ($name + '.original')))
         Move-Item `
             -LiteralPath (Join-Path $candidateRoot $name) `
             -Destination (Join-Path $StateRoot $name)
@@ -1662,25 +2141,51 @@ function Invoke-HmaUpdateActivation {
         -RestartInterval (New-TimeSpan -Minutes 1)
     for ($index = 0; $index -lt @($NewTaskPlans).Count; $index += 1) {
         $plan = @($NewTaskPlans)[$index]
-        $action = New-ScheduledTaskAction `
-            -Execute $plan.FilePath `
-            -Argument $plan.ActionArguments
-        Register-ScheduledTask `
-            -TaskName $plan.Name `
-            -Action $action `
-            -Trigger $trigger `
-            -Principal $principal `
-            -Settings $settings `
-            -Force | Out-Null
+        $oldMatches = @($Transaction.OldTaskRecords | Where-Object {
+                Test-HmaOrdinalEqual `
+                    -Left ([string]$_.TaskName) `
+                    -Right ([string]$plan.Name)
+            })
+        if ($oldMatches.Count -ne 1) {
+            throw 'The retained scheduled-task identity is invalid.'
+        }
+        $null = Assert-HmaTaskFingerprintUnchanged `
+            -ExpectedTask $oldMatches[0]
+        Unregister-ScheduledTask `
+            -TaskName ([string]$plan.Name) `
+            -Confirm:$false `
+            -ErrorAction Stop
+        if ($null -ne (Get-HmaTaskVerificationRecord -TaskName $plan.Name)) {
+            throw 'A scheduled task destination is occupied.'
+        }
+        Register-HmaExactTaskPlans -Plans @($plan)
+        $registered = Get-HmaTaskVerificationRecord -TaskName $plan.Name
+        if ($null -eq $registered -or
+            -not (Test-HmaRegisteredTaskPlan `
+                -Task $registered `
+                -Config $NewInstall `
+                -StateRoot $StateRoot)) {
+            throw 'An updated scheduled task did not round-trip exactly.'
+        }
         Set-HmaUpdatePhase `
             -Transaction $Transaction `
             -Phase ('task-' + [string]($index + 1) + '-promoted')
     }
 
     $launcherPath = [string]$NewLauncherPlan.Path
-    Move-Item `
-        -LiteralPath $launcherPath `
-        -Destination (Join-Path $oldRoot 'How Much AI.original.lnk')
+    $launcherLease = $Transaction.OldFileLeases.Launcher
+    if ($null -eq $launcherLease -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$launcherLease.CurrentPath) `
+            -Right $launcherPath `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$launcherLease.Sha256()) `
+            -Right ([string]$Transaction.Record.oldLauncherSha256) `
+            -IgnoreCase)) {
+        throw 'The retained launcher lease changed.'
+    }
+    $launcherLease.MoveTo((Join-Path $oldRoot 'How Much AI.original.lnk'))
     Move-Item `
         -LiteralPath (Join-Path $candidateRoot 'How Much AI.lnk') `
         -Destination $launcherPath
@@ -1699,6 +2204,326 @@ function Invoke-HmaUpdateActivation {
     return $config
 }
 
+function Assert-HmaRollbackInstallConfiguration {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Install,
+        [Parameter(Mandatory)]$Record,
+        [Parameter(Mandatory)][string]$StateRoot
+    )
+
+    Assert-HmaExactProperties `
+        -InputObject $Install `
+        -Expected @(
+            'version',
+            'appRoot',
+            'stateRoot',
+            'nodePath',
+            'port',
+            'upstreamBase',
+            'commit',
+            'manifestSha256',
+            'bootstrapHashes'
+        )
+    $expectedAppRoot = Join-Path `
+        (Join-Path $StateRoot 'runtime') `
+        ([string]$Record.oldCommit)
+    if ([int]$Install.version -ne 1 -or
+        [int]$Install.version -ne [int]$Record.oldVersion -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Install.stateRoot) `
+            -Right $StateRoot `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Record.stateRoot) `
+            -Right $StateRoot `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Install.appRoot) `
+            -Right $expectedAppRoot `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Record.oldAppRoot) `
+            -Right $expectedAppRoot `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Install.nodePath) `
+            -Right ([string]$Record.oldNodePath) `
+            -IgnoreCase) -or
+        [int]$Install.port -ne [int]$Record.oldPort -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Install.upstreamBase) `
+            -Right ([string]$Record.oldUpstreamBase) `
+            ) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Install.commit) `
+            -Right ([string]$Record.oldCommit)) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$Install.manifestSha256) `
+            -Right ([string]$Record.oldManifestSha256) `
+            -IgnoreCase)) {
+        throw 'The rollback configuration is invalid.'
+    }
+    Assert-HmaExactProperties `
+        -InputObject $Install.bootstrapHashes `
+        -Expected @($script:bootstrapHashFiles.Keys)
+    foreach ($name in $script:bootstrapHashFiles.Keys) {
+        $actual = Get-HmaPropertyString `
+            -InputObject $Install.bootstrapHashes `
+            -Name $name
+        $expected = Get-HmaPropertyString `
+            -InputObject $Record.oldBootstrapHashes `
+            -Name $name
+        if (-not (Test-HmaOrdinalEqual `
+                -Left $actual `
+                -Right $expected `
+                -IgnoreCase)) {
+            throw 'The rollback bootstrap hashes are invalid.'
+        }
+    }
+}
+
+function Add-HmaInvalidRollbackSourceCandidate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [Parameter(Mandatory)][string]$OldRoot,
+        [Parameter(Mandatory)]$Destination
+    )
+
+    if (-not [IO.File]::Exists($LiteralPath) -and
+        -not [IO.Directory]::Exists($LiteralPath)) {
+        return
+    }
+    $candidateFull = [IO.Path]::GetFullPath($LiteralPath)
+    if (Test-HmaOrdinalEqual `
+            -Left ([IO.Path]::GetDirectoryName($candidateFull)) `
+            -Right ([IO.Path]::GetFullPath($OldRoot)) `
+            -IgnoreCase) {
+        [void]$Destination.Add($candidateFull)
+    }
+}
+
+function Get-HmaAuthenticatedRollbackInstall {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$Candidates,
+        [Parameter(Mandatory)]$Record,
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)][string]$OldRoot
+    )
+
+    $invalid = New-Object 'Collections.Generic.List[string]'
+    foreach ($candidate in $Candidates) {
+        try {
+            if (-not [IO.File]::Exists($candidate)) { continue }
+            $path = Get-HmaVerifiedExistingPath -LiteralPath $candidate -File
+            if (-not (Test-HmaOrdinalEqual `
+                    -Left (Get-HmaSha256 -LiteralPath $path) `
+                    -Right ([string]$Record.oldInstallSha256) `
+                    -IgnoreCase)) {
+                Add-HmaInvalidRollbackSourceCandidate `
+                    -LiteralPath $candidate `
+                    -OldRoot $OldRoot `
+                    -Destination $invalid
+                continue
+            }
+            $install = ConvertFrom-Json `
+                -InputObject ([IO.File]::ReadAllText($path)) `
+                -ErrorAction Stop
+            Assert-HmaRollbackInstallConfiguration `
+                -Install $install `
+                -Record $Record `
+                -StateRoot $StateRoot
+            return [pscustomobject]@{
+                Path = $path
+                Value = $install
+                InvalidPaths = $invalid.ToArray()
+            }
+        } catch {
+            Add-HmaInvalidRollbackSourceCandidate `
+                -LiteralPath $candidate `
+                -OldRoot $OldRoot `
+                -Destination $invalid
+        }
+    }
+    throw 'No authenticated rollback configuration is available.'
+}
+
+function Get-HmaAuthenticatedRollbackManifest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$Candidates,
+        [Parameter(Mandatory)]$Record,
+        [Parameter(Mandatory)][string]$OldRoot
+    )
+
+    $invalid = New-Object 'Collections.Generic.List[string]'
+    foreach ($candidate in $Candidates) {
+        try {
+            if (-not [IO.File]::Exists($candidate)) { continue }
+            $path = Get-HmaVerifiedExistingPath -LiteralPath $candidate -File
+            if (-not (Test-HmaOrdinalEqual `
+                    -Left (Get-HmaSha256 -LiteralPath $path) `
+                    -Right ([string]$Record.oldManifestSha256) `
+                    -IgnoreCase)) {
+                Add-HmaInvalidRollbackSourceCandidate `
+                    -LiteralPath $candidate `
+                    -OldRoot $OldRoot `
+                    -Destination $invalid
+                continue
+            }
+            $manifest = ConvertFrom-Json `
+                -InputObject ([IO.File]::ReadAllText($path)) `
+                -ErrorAction Stop
+            Assert-HmaExactProperties `
+                -InputObject $manifest `
+                -Expected @(
+                    'commit',
+                    'nodeSha256',
+                    'installerSha256',
+                    'runtimeFiles',
+                    'bootstrapFiles'
+                )
+            if (-not (Test-HmaOrdinalEqual `
+                    -Left ([string]$manifest.commit) `
+                    -Right ([string]$Record.oldCommit))) {
+                Add-HmaInvalidRollbackSourceCandidate `
+                    -LiteralPath $candidate `
+                    -OldRoot $OldRoot `
+                    -Destination $invalid
+                continue
+            }
+            return [pscustomobject]@{
+                Path = $path
+                Value = $manifest
+                InvalidPaths = $invalid.ToArray()
+            }
+        } catch {
+            Add-HmaInvalidRollbackSourceCandidate `
+                -LiteralPath $candidate `
+                -OldRoot $OldRoot `
+                -Destination $invalid
+        }
+    }
+    throw 'No authenticated rollback manifest is available.'
+}
+
+function Get-HmaAuthenticatedRollbackTree {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$Candidates,
+        [Parameter(Mandatory)]$Entries,
+        [Parameter(Mandatory)][string]$OldRoot
+    )
+
+    $invalid = New-Object 'Collections.Generic.List[string]'
+    foreach ($candidate in $Candidates) {
+        try {
+            if (-not [IO.Directory]::Exists($candidate)) { continue }
+            Assert-HmaInstalledEntries -Root $candidate -Entries $Entries
+            return [pscustomobject]@{
+                Path = Get-HmaVerifiedExistingPath -LiteralPath $candidate -Directory
+                InvalidPaths = $invalid.ToArray()
+            }
+        } catch {
+            Add-HmaInvalidRollbackSourceCandidate `
+                -LiteralPath $candidate `
+                -OldRoot $OldRoot `
+                -Destination $invalid
+        }
+    }
+    throw 'No authenticated rollback tree is available.'
+}
+
+function Get-HmaAuthenticatedRollbackLauncher {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$Candidates,
+        [Parameter(Mandatory)]$Plan,
+        [Parameter(Mandatory)][string]$ExpectedSha256,
+        [Parameter(Mandatory)][string]$OldRoot
+    )
+
+    $invalid = New-Object 'Collections.Generic.List[string]'
+    foreach ($candidate in $Candidates) {
+        try {
+            if (-not [IO.File]::Exists($candidate)) { continue }
+            $path = Get-HmaVerifiedExistingPath -LiteralPath $candidate -File
+            if (-not (Test-HmaOrdinalEqual `
+                    -Left (Get-HmaSha256 -LiteralPath $path) `
+                    -Right $ExpectedSha256 `
+                    -IgnoreCase)) {
+                Add-HmaInvalidRollbackSourceCandidate `
+                    -LiteralPath $candidate `
+                    -OldRoot $OldRoot `
+                    -Destination $invalid
+                continue
+            }
+            $candidatePlan = New-HmaLauncherPlanAtPath -Plan $Plan -Path $path
+            if (-not (Test-HmaStartMenuLauncherPlan -Plan $candidatePlan)) {
+                Add-HmaInvalidRollbackSourceCandidate `
+                    -LiteralPath $candidate `
+                    -OldRoot $OldRoot `
+                    -Destination $invalid
+                continue
+            }
+            return [pscustomobject]@{
+                Path = $path
+                InvalidPaths = $invalid.ToArray()
+            }
+        } catch {
+            Add-HmaInvalidRollbackSourceCandidate `
+                -LiteralPath $candidate `
+                -OldRoot $OldRoot `
+                -Destination $invalid
+        }
+    }
+    throw 'No authenticated rollback launcher is available.'
+}
+
+function Move-HmaInvalidRollbackSources {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$LiteralPaths,
+        [Parameter(Mandatory)][string]$OldRoot
+    )
+
+    $root = Get-HmaVerifiedExistingPath -LiteralPath $OldRoot -Directory
+    $seen = @{}
+    foreach ($literalPath in $LiteralPaths) {
+        $fullPath = [IO.Path]::GetFullPath($literalPath)
+        if ($seen.ContainsKey($fullPath)) { continue }
+        $seen[$fullPath] = $true
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([IO.Path]::GetDirectoryName($fullPath)) `
+                -Right $root `
+                -IgnoreCase)) {
+            throw 'A rollback quarantine path is invalid.'
+        }
+        $leaf = [IO.Path]::GetFileName($fullPath)
+        $kind = switch -CaseSensitive ($leaf) {
+            'app-original' { 'app'; break }
+            'bootstrap-original' { 'bootstrap'; break }
+            'install.json.original' { 'install'; break }
+            'integrity.json.original' { 'integrity'; break }
+            'How Much AI.original.lnk' { 'launcher'; break }
+            default { throw 'A rollback quarantine path is invalid.' }
+        }
+        $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'A rollback quarantine source is invalid.'
+        }
+        $suffix = [Guid]::NewGuid().ToString('N')
+        $destination = if ($kind -ceq 'launcher') {
+            Join-Path $root ('quarantined-launcher-' + $suffix + '.lnk')
+        } else {
+            Join-Path $root ('quarantined-' + $kind + '-' + $suffix)
+        }
+        Move-Item -LiteralPath $fullPath -Destination $destination
+    }
+}
+
 function Restore-HmaUpdateTransaction {
     [CmdletBinding()]
     param(
@@ -1711,57 +2536,58 @@ function Restore-HmaUpdateTransaction {
     )
 
     $oldRoot = [string]$Transaction.OldRoot
-    $oldInstallPath = Get-HmaVerifiedExistingPath `
-        -LiteralPath (Join-Path $oldRoot 'install.json') `
-        -File
-    $oldIntegrityPath = Get-HmaVerifiedExistingPath `
-        -LiteralPath (Join-Path $oldRoot 'integrity.json') `
-        -File
-    if (-not (Test-HmaOrdinalEqual `
-            -Left (Get-HmaSha256 -LiteralPath $oldIntegrityPath) `
-            -Right ([string]$Transaction.Record.oldManifestSha256) `
-            -IgnoreCase)) {
-        throw 'The rollback manifest is invalid.'
+    $invalidRollbackSources = New-Object 'Collections.Generic.List[string]'
+    $leaseProperty = $Transaction.PSObject.Properties['OldFileLeases']
+    $liveOldFileLeases = if ($null -ne $leaseProperty) {
+        $leaseProperty.Value
+    } else {
+        $null
     }
-    $oldInstall = ConvertFrom-Json `
-        -InputObject ([IO.File]::ReadAllText($oldInstallPath)) `
-        -ErrorAction Stop
-    $oldManifest = ConvertFrom-Json `
-        -InputObject ([IO.File]::ReadAllText($oldIntegrityPath)) `
-        -ErrorAction Stop
-    Assert-HmaExactProperties `
-        -InputObject $oldManifest `
-        -Expected @(
-            'commit',
-            'nodeSha256',
-            'installerSha256',
-            'runtimeFiles',
-            'bootstrapFiles'
-        )
-    Assert-HmaExactProperties `
-        -InputObject $oldInstall `
-        -Expected @(
-            'version',
-            'appRoot',
-            'stateRoot',
-            'nodePath',
-            'port',
-            'upstreamBase',
-            'commit',
-            'manifestSha256',
-            'bootstrapHashes'
-        )
-    if (-not (Test-HmaOrdinalEqual `
-            -Left ([string]$oldInstall.manifestSha256) `
-            -Right ([string]$Transaction.Record.oldManifestSha256) `
-            -IgnoreCase) -or
-        -not (Test-HmaOrdinalEqual `
-            -Left ([string]$oldInstall.commit) `
-            -Right ([string]$Transaction.Record.oldCommit)) -or
-        -not (Test-HmaOrdinalEqual `
-            -Left ([string]$oldManifest.commit) `
-            -Right ([string]$Transaction.Record.oldCommit))) {
-        throw 'The rollback configuration is invalid.'
+    if ($null -ne $liveOldFileLeases) {
+        $oldInstall = $Transaction.OldInstall
+        $oldManifest = $Transaction.OldManifest
+        Assert-HmaRollbackInstallConfiguration `
+            -Install $oldInstall `
+            -Record $Transaction.Record `
+            -StateRoot $StateRoot
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$liveOldFileLeases.Install.Sha256()) `
+                -Right ([string]$Transaction.Record.oldInstallSha256) `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$liveOldFileLeases.Integrity.Sha256()) `
+                -Right ([string]$Transaction.Record.oldManifestSha256) `
+                -IgnoreCase)) {
+            throw 'A retained rollback control file changed.'
+        }
+        $oldInstallPath = [string]$liveOldFileLeases.Install.CurrentPath
+        $oldIntegrityPath = [string]$liveOldFileLeases.Integrity.CurrentPath
+    } else {
+        $installSource = Get-HmaAuthenticatedRollbackInstall `
+            -Candidates @(
+                (Join-Path $oldRoot 'install.json.original'),
+                (Join-Path $oldRoot 'install.json'),
+                (Join-Path $StateRoot 'install.json')
+            ) `
+            -Record $Transaction.Record `
+            -StateRoot $StateRoot `
+            -OldRoot $oldRoot
+        $manifestSource = Get-HmaAuthenticatedRollbackManifest `
+            -Candidates @(
+                (Join-Path $oldRoot 'integrity.json.original'),
+                (Join-Path $oldRoot 'integrity.json'),
+                (Join-Path $StateRoot 'integrity.json')
+            ) `
+            -Record $Transaction.Record `
+            -OldRoot $oldRoot
+        foreach ($invalidPath in @($installSource.InvalidPaths) +
+            @($manifestSource.InvalidPaths)) {
+            [void]$invalidRollbackSources.Add([string]$invalidPath)
+        }
+        $oldInstallPath = [string]$installSource.Path
+        $oldIntegrityPath = [string]$manifestSource.Path
+        $oldInstall = $installSource.Value
+        $oldManifest = $manifestSource.Value
     }
     $oldRuntimeEntries = @(
         Get-HmaValidatedManifestEntries -Entries $oldManifest.runtimeFiles -Kind runtime
@@ -1769,12 +2595,32 @@ function Restore-HmaUpdateTransaction {
     $oldBootstrapEntries = @(
         Get-HmaValidatedManifestEntries -Entries $oldManifest.bootstrapFiles -Kind bootstrap
     )
-    Assert-HmaInstalledEntries `
-        -Root (Join-Path $oldRoot 'app') `
-        -Entries $oldRuntimeEntries
-    Assert-HmaInstalledEntries `
-        -Root (Join-Path $oldRoot 'bootstrap') `
-        -Entries $oldBootstrapEntries
+    $oldAppRoot = Join-Path `
+        (Join-Path $StateRoot 'runtime') `
+        ([string]$Transaction.Record.oldCommit)
+    $bootstrapRoot = Join-Path $StateRoot 'bootstrap'
+    $oldAppSelection = Get-HmaAuthenticatedRollbackTree `
+        -Candidates @(
+            $oldAppRoot,
+            (Join-Path $oldRoot 'app-original'),
+            (Join-Path $oldRoot 'app')
+        ) `
+        -Entries $oldRuntimeEntries `
+        -OldRoot $oldRoot
+    $oldBootstrapSelection = Get-HmaAuthenticatedRollbackTree `
+        -Candidates @(
+            $bootstrapRoot,
+            (Join-Path $oldRoot 'bootstrap-original'),
+            (Join-Path $oldRoot 'bootstrap')
+        ) `
+        -Entries $oldBootstrapEntries `
+        -OldRoot $oldRoot
+    foreach ($invalidPath in @($oldAppSelection.InvalidPaths) +
+        @($oldBootstrapSelection.InvalidPaths)) {
+        [void]$invalidRollbackSources.Add([string]$invalidPath)
+    }
+    $oldAppSource = [string]$oldAppSelection.Path
+    $oldBootstrapSource = [string]$oldBootstrapSelection.Path
 
     $currentTaskRecords = @{}
     $currentTasksMatchNew = @{}
@@ -1789,13 +2635,21 @@ function Restore-HmaUpdateTransaction {
                 -StateRoot $StateRoot)
         )
     }
+    $launcherLeaseAtLive = (
+        $null -ne $liveOldFileLeases -and
+        (Test-HmaOrdinalEqual `
+            -Left ([string]$liveOldFileLeases.Launcher.CurrentPath) `
+            -Right ([string]$NewLauncherPlan.Path) `
+            -IgnoreCase)
+    )
     $currentLauncherMatchesNew = (
+        -not $launcherLeaseAtLive -and
         [IO.File]::Exists([string]$NewLauncherPlan.Path) -and
         (Test-HmaStartMenuLauncherPlan -Plan $NewLauncherPlan)
     )
 
     Import-Module `
-        (Join-Path $oldRoot 'bootstrap\SecureLocalRuntime.psm1') `
+        (Join-Path $oldBootstrapSource 'SecureLocalRuntime.psm1') `
         -Force `
         -ErrorAction Stop
     $oldTaskPlans = @(
@@ -1813,6 +2667,32 @@ function Restore-HmaUpdateTransaction {
         -PowerShellPath $PowerShellPath `
         -IntegrityHash ([string]$oldInstall.bootstrapHashes.integrity) `
         -LauncherHash ([string]$oldInstall.bootstrapHashes.launcher)
+    $oldLauncherSource = if ($null -ne $liveOldFileLeases) {
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$liveOldFileLeases.Launcher.Sha256()) `
+                -Right ([string]$Transaction.Record.oldLauncherSha256) `
+                -IgnoreCase)) {
+            throw 'The retained rollback launcher changed.'
+        }
+        $liveOldFileLeases.Launcher
+    } else {
+        $launcherSelection = Get-HmaAuthenticatedRollbackLauncher `
+            -Candidates @(
+                (Join-Path $oldRoot 'How Much AI.original.lnk'),
+                (Join-Path $oldRoot 'How Much AI.lnk'),
+                ([string]$oldLauncherPlan.Path)
+            ) `
+            -Plan $oldLauncherPlan `
+            -ExpectedSha256 ([string]$Transaction.Record.oldLauncherSha256) `
+            -OldRoot $oldRoot
+        foreach ($invalidPath in @($launcherSelection.InvalidPaths)) {
+            [void]$invalidRollbackSources.Add([string]$invalidPath)
+        }
+        [string]$launcherSelection.Path
+    }
+    Move-HmaInvalidRollbackSources `
+        -LiteralPaths @($invalidRollbackSources) `
+        -OldRoot $oldRoot
     foreach ($taskName in $script:registeredTaskNames) {
         $current = $currentTaskRecords[$taskName]
         $matchesOld = (
@@ -1828,13 +2708,16 @@ function Restore-HmaUpdateTransaction {
             throw 'A scheduled task changed during rollback.'
         }
         if ($null -ne $current) {
+            $null = Assert-HmaTaskFingerprintUnchanged -ExpectedTask $current
             Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
         }
     }
     $launcherPath = [string]$NewLauncherPlan.Path
     $currentLauncherMatchesOld = (
-        [IO.File]::Exists($launcherPath) -and
+        $launcherLeaseAtLive -or
+        ([IO.File]::Exists($launcherPath) -and
         (Test-HmaStartMenuLauncherPlan -Plan $oldLauncherPlan)
+        )
     )
     if ([IO.File]::Exists($launcherPath) -and
         -not $currentLauncherMatchesOld -and
@@ -1851,20 +2734,11 @@ function Restore-HmaUpdateTransaction {
     } elseif ([IO.File]::Exists($newAppRoot)) {
         throw 'The updated runtime path is invalid.'
     }
-    $oldAppRoot = [string]$oldInstall.appRoot
     if (-not [IO.Directory]::Exists($oldAppRoot)) {
-        $oldOriginal = Join-Path $oldRoot 'app-original'
-        if ([IO.Directory]::Exists($oldOriginal)) {
-            Move-Item -LiteralPath $oldOriginal -Destination $oldAppRoot
-        } else {
-            Copy-HmaExactTree `
-                -Source (Join-Path $oldRoot 'app') `
-                -Destination $oldAppRoot
-        }
+        Copy-HmaExactTree -Source $oldAppSource -Destination $oldAppRoot
     }
     Assert-HmaInstalledEntries -Root $oldAppRoot -Entries $oldRuntimeEntries
 
-    $bootstrapRoot = Join-Path $StateRoot 'bootstrap'
     if ([IO.Directory]::Exists($bootstrapRoot)) {
         $bootstrapIsOld = $true
         try {
@@ -1882,23 +2756,39 @@ function Restore-HmaUpdateTransaction {
         throw 'The bootstrap rollback path is invalid.'
     }
     if (-not [IO.Directory]::Exists($bootstrapRoot)) {
-        $bootstrapOriginal = Join-Path $oldRoot 'bootstrap-original'
-        if ([IO.Directory]::Exists($bootstrapOriginal)) {
-            Move-Item -LiteralPath $bootstrapOriginal -Destination $bootstrapRoot
-        } else {
-            Copy-HmaExactTree `
-                -Source (Join-Path $oldRoot 'bootstrap') `
-                -Destination $bootstrapRoot
-        }
+        Copy-HmaExactTree -Source $oldBootstrapSource -Destination $bootstrapRoot
     }
     Assert-HmaInstalledEntries -Root $bootstrapRoot -Entries $oldBootstrapEntries
 
     foreach ($name in @('integrity.json', 'install.json')) {
         $destination = Join-Path $StateRoot $name
-        $oldFile = Join-Path $oldRoot $name
-        $oldHash = Get-HmaSha256 -LiteralPath $oldFile
+        $oldFile = if ($name -ceq 'install.json') {
+            $oldInstallPath
+        } else {
+            $oldIntegrityPath
+        }
+        $oldHash = if ($name -ceq 'install.json') {
+            [string]$Transaction.Record.oldInstallSha256
+        } else {
+            [string]$Transaction.Record.oldManifestSha256
+        }
+        $oldLease = if ($null -eq $liveOldFileLeases) {
+            $null
+        } elseif ($name -ceq 'install.json') {
+            $liveOldFileLeases.Install
+        } else {
+            $liveOldFileLeases.Integrity
+        }
         $currentHash = if ([IO.File]::Exists($destination)) {
-            Get-HmaSha256 -LiteralPath $destination
+            if ($null -ne $oldLease -and
+                (Test-HmaOrdinalEqual `
+                    -Left ([string]$oldLease.CurrentPath) `
+                    -Right $destination `
+                    -IgnoreCase)) {
+                [string]$oldLease.Sha256()
+            } else {
+                Get-HmaSha256 -LiteralPath $destination
+            }
         } else {
             ''
         }
@@ -1931,7 +2821,12 @@ function Restore-HmaUpdateTransaction {
                     -LiteralPath $destination `
                     -Destination (Join-Path $oldRoot ($name + '.failed-' + [Guid]::NewGuid().ToString('N')))
             }
-            Copy-HmaExactFile -Source $oldFile -Destination $destination
+            if ($null -ne $oldLease) {
+                $oldLease.CopyTo($destination)
+                Set-HmaPrivateAcl -LiteralPath $destination
+            } else {
+                Copy-HmaExactFile -Source $oldFile -Destination $destination
+            }
         }
     }
 
@@ -1941,24 +2836,86 @@ function Restore-HmaUpdateTransaction {
             -Destination (Join-Path $oldRoot ('failed-launcher-' + [Guid]::NewGuid().ToString('N') + '.lnk'))
     }
     if (-not [IO.File]::Exists($launcherPath)) {
-        Copy-HmaExactFile `
-            -Source (Join-Path $oldRoot 'How Much AI.lnk') `
-            -Destination $launcherPath
+        if ($null -ne $liveOldFileLeases) {
+            $oldLauncherSource.CopyTo($launcherPath)
+        } else {
+            Copy-HmaExactFile `
+                -Source $oldLauncherSource `
+                -Destination $launcherPath
+        }
     }
     Set-HmaPrivateAcl -LiteralPath $launcherPath
-    Register-HmaExactTaskPlans -Plans $oldTaskPlans
+    foreach ($oldPlan in @($oldTaskPlans)) {
+        $taskName = [string]$oldPlan.Name
+        $current = Get-HmaTaskVerificationRecord -TaskName $taskName
+        $matchesOld = (
+            $null -ne $current -and
+            (Test-HmaRegisteredTaskPlan `
+                -Task $current `
+                -Config $oldInstall `
+                -StateRoot $StateRoot)
+        )
+        $matchesNew = (
+            $null -ne $current -and
+            (Test-HmaRegisteredTaskPlan `
+                -Task $current `
+                -Config $NewConfig `
+                -StateRoot $StateRoot)
+        )
+        if ($null -ne $current -and -not $matchesOld -and -not $matchesNew) {
+            throw 'A scheduled task changed during rollback.'
+        }
+        if ($matchesNew) {
+            $null = Assert-HmaTaskFingerprintUnchanged -ExpectedTask $current
+            Unregister-ScheduledTask `
+                -TaskName $taskName `
+                -Confirm:$false `
+                -ErrorAction Stop
+            if ($null -ne (Get-HmaTaskVerificationRecord -TaskName $taskName)) {
+                throw 'A scheduled task destination is occupied.'
+            }
+            $current = $null
+        }
+        if ($null -eq $current) {
+            Register-HmaExactTaskPlans -Plans @($oldPlan)
+        }
+        $restoredTask = Get-HmaTaskVerificationRecord -TaskName $taskName
+        if ($null -eq $restoredTask -or
+            -not (Test-HmaRegisteredTaskPlan `
+                -Task $restoredTask `
+                -Config $oldInstall `
+                -StateRoot $StateRoot)) {
+            throw 'A rolled-back scheduled task did not round-trip exactly.'
+        }
+    }
     foreach ($taskName in $script:registeredTaskNames) {
+        $current = Get-HmaTaskVerificationRecord -TaskName $taskName
+        if ($null -eq $current -or
+            -not (Test-HmaRegisteredTaskPlan `
+                -Task $current `
+                -Config $oldInstall `
+                -StateRoot $StateRoot)) {
+            throw 'A scheduled task changed during rollback.'
+        }
+        $null = Assert-HmaTaskFingerprintUnchanged -ExpectedTask $current
         Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    }
+    if ($null -ne $liveOldFileLeases) {
+        Exit-HmaUpdateFileLeases -Leases @(
+            $liveOldFileLeases.Install,
+            $liveOldFileLeases.Integrity,
+            $liveOldFileLeases.Launcher
+        )
     }
     Import-Module `
         (Join-Path $bootstrapRoot 'SecureLocalIntegrity.psm1') `
         -Force `
         -ErrorAction Stop
     $restored = Assert-HmaStartupIntegrity -StateRoot $StateRoot
-    if (-not (Test-HmaExactTasksForConfig -Config $restored -StateRoot $StateRoot) -or
-        -not (Test-HmaStartMenuLauncherPlan -Plan $oldLauncherPlan)) {
-        throw 'The rollback did not verify exactly.'
-    }
+    Assert-HmaStableOfflineUpdateQuiescent `
+        -Config $restored `
+        -StateRoot $StateRoot `
+        -LauncherPlan $oldLauncherPlan
     Set-HmaUpdatePhase -Transaction $Transaction -Phase 'rolled-back'
     return $restored
 }
@@ -1970,6 +2927,8 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
 
 namespace HmaInstaller
 {
@@ -2018,6 +2977,195 @@ namespace HmaInstaller
                     information.VolumeSerialNumber,
                     information.FileIndexHigh,
                     information.FileIndexLow);
+            }
+        }
+    }
+
+    public sealed class FileLease : IDisposable
+    {
+        private const uint GenericRead = 0x80000000;
+        private const uint Delete = 0x00010000;
+        private const uint FileShareRead = 0x00000001;
+        private const uint OpenExisting = 3;
+        private const uint FileAttributeNormal = 0x00000080;
+        private const uint OpenReparsePoint = 0x00200000;
+        private const uint ReparsePointAttribute = 0x00000400;
+        private const int FileRenameInfo = 3;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ByHandleFileInformation
+        {
+            public uint FileAttributes;
+            public uint CreationTimeLow;
+            public uint CreationTimeHigh;
+            public uint LastAccessTimeLow;
+            public uint LastAccessTimeHigh;
+            public uint LastWriteTimeLow;
+            public uint LastWriteTimeHigh;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle fileHandle,
+            out ByHandleFileInformation information);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetFileInformationByHandle(
+            SafeFileHandle fileHandle,
+            int fileInformationClass,
+            IntPtr fileInformation,
+            uint bufferSize);
+
+        private SafeFileHandle handle;
+        private FileStream stream;
+        private string currentPath;
+        private readonly string identity;
+
+        private FileLease(string path)
+        {
+            handle = CreateFile(
+                path,
+                GenericRead | Delete,
+                FileShareRead,
+                IntPtr.Zero,
+                OpenExisting,
+                FileAttributeNormal | OpenReparsePoint,
+                IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            ByHandleFileInformation information;
+            if (!GetFileInformationByHandle(handle, out information))
+            {
+                int error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new Win32Exception(error);
+            }
+            if ((information.FileAttributes & ReparsePointAttribute) != 0)
+            {
+                handle.Dispose();
+                throw new InvalidOperationException("Reparse points are not permitted.");
+            }
+            identity = String.Format(
+                "{0:x8}:{1:x8}:{2:x8}",
+                information.VolumeSerialNumber,
+                information.FileIndexHigh,
+                information.FileIndexLow);
+            stream = new FileStream(handle, FileAccess.Read);
+            currentPath = path;
+        }
+
+        public static FileLease Open(string path)
+        {
+            return new FileLease(path);
+        }
+
+        public string CurrentPath { get { return currentPath; } }
+        public string Identity { get { return identity; } }
+
+        public string Sha256()
+        {
+            long originalPosition = stream.Position;
+            try
+            {
+                stream.Position = 0;
+                using (SHA256 algorithm = SHA256.Create())
+                {
+                    byte[] hash = algorithm.ComputeHash(stream);
+                    return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                }
+            }
+            finally
+            {
+                stream.Position = originalPosition;
+            }
+        }
+
+        public void MoveTo(string destination)
+        {
+            if (String.IsNullOrWhiteSpace(destination) || !Path.IsPathRooted(destination))
+            {
+                throw new ArgumentException("The destination path is invalid.");
+            }
+            byte[] nameBytes = System.Text.Encoding.Unicode.GetBytes(destination);
+            int rootOffset = IntPtr.Size == 8 ? 8 : 4;
+            int lengthOffset = rootOffset + IntPtr.Size;
+            int nameOffset = lengthOffset + 4;
+            int bufferLength = nameOffset + nameBytes.Length + 2;
+            IntPtr buffer = Marshal.AllocHGlobal(bufferLength);
+            try
+            {
+                for (int index = 0; index < bufferLength; index += 1)
+                {
+                    Marshal.WriteByte(buffer, index, 0);
+                }
+                Marshal.WriteByte(buffer, 0, 0);
+                Marshal.WriteIntPtr(buffer, rootOffset, IntPtr.Zero);
+                Marshal.WriteInt32(buffer, lengthOffset, nameBytes.Length);
+                Marshal.Copy(nameBytes, 0, IntPtr.Add(buffer, nameOffset), nameBytes.Length);
+                if (!SetFileInformationByHandle(
+                    handle,
+                    FileRenameInfo,
+                    buffer,
+                    (uint)bufferLength))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                currentPath = destination;
+            }
+            finally
+            {
+                Array.Clear(nameBytes, 0, nameBytes.Length);
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        public void CopyTo(string destination)
+        {
+            long originalPosition = stream.Position;
+            try
+            {
+                stream.Position = 0;
+                using (FileStream destinationStream = new FileStream(
+                    destination,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None))
+                {
+                    stream.CopyTo(destinationStream);
+                    destinationStream.Flush(true);
+                }
+            }
+            finally
+            {
+                stream.Position = originalPosition;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (stream != null)
+            {
+                stream.Dispose();
+                stream = null;
+                handle = null;
             }
         }
     }
@@ -2223,11 +3371,33 @@ namespace HmaInstaller
         throw 'An installed manifest cannot be expected for a fresh state.'
     }
 
+    $updateOrphans = @(Get-HmaUpdateOrphanRoots -StateRoot $state)
+    if ($stateExists -and
+        ($updateOrphans.Count -gt 0 -or
+            [IO.File]::Exists([string]$updatePaths.JournalRoot))) {
+        if ($null -eq $updateLock) {
+            $updateLock = Enter-HmaUpdateLock -LiteralPath ([string]$updatePaths.LockPath)
+        }
+        Remove-HmaUpdateOrphanRoots -StateRoot $state
+        if ([IO.File]::Exists([string]$updatePaths.JournalRoot)) {
+            throw 'The update journal path is invalid.'
+        }
+    }
+
+    $publishedJournalReady = $false
     if ($stateExists -and [IO.Directory]::Exists([string]$updatePaths.JournalRoot)) {
         if (-not $PSBoundParameters.ContainsKey('ExpectedInstalledManifestSha256')) {
             throw 'The interrupted update requires its installed manifest anchor.'
         }
-        $updateLock = Enter-HmaUpdateLock -LiteralPath ([string]$updatePaths.LockPath)
+        if ($null -eq $updateLock) {
+            $updateLock = Enter-HmaUpdateLock -LiteralPath ([string]$updatePaths.LockPath)
+        }
+        Remove-HmaUpdateOrphanRoots -StateRoot $state
+        $publishedJournalReady = Repair-HmaPublishedUpdateJournal `
+            -JournalRoot ([string]$updatePaths.JournalRoot) `
+            -StateRoot $state
+    }
+    if ($publishedJournalReady) {
         $journal = Get-HmaUpdateJournal -JournalRoot ([string]$updatePaths.JournalRoot)
         if (-not (Test-HmaOrdinalEqual `
                 -Left ([string]$journal.stateRoot) `
@@ -2341,6 +3511,7 @@ namespace HmaInstaller
                 $updateLock = Enter-HmaUpdateLock `
                     -LiteralPath ([string]$updatePaths.LockPath)
             }
+            Remove-HmaUpdateOrphanRoots -StateRoot $state
             $isUpdate = $true
         }
     }
@@ -2385,6 +3556,24 @@ namespace HmaInstaller
             -StateRoot $state `
             -LauncherPlan $oldLauncherPlan
 
+        $oldInstallLease = Enter-HmaUpdateFileLease `
+            -LiteralPath (Join-Path $state 'install.json') `
+            -ExpectedSha256 (Get-HmaSha256 -LiteralPath (Join-Path $state 'install.json'))
+        [void]$updateFileLeases.Add($oldInstallLease)
+        $oldIntegrityLease = Enter-HmaUpdateFileLease `
+            -LiteralPath (Join-Path $state 'integrity.json') `
+            -ExpectedSha256 ([string]$oldConfig.manifestSha256)
+        [void]$updateFileLeases.Add($oldIntegrityLease)
+        $oldLauncherLease = Enter-HmaUpdateFileLease `
+            -LiteralPath ([string]$oldLauncherPlan.Path) `
+            -ExpectedSha256 (Get-HmaSha256 -LiteralPath ([string]$oldLauncherPlan.Path))
+        [void]$updateFileLeases.Add($oldLauncherLease)
+        $oldFileLeases = [pscustomobject]@{
+            Install = $oldInstallLease
+            Integrity = $oldIntegrityLease
+            Launcher = $oldLauncherLease
+        }
+
         Import-HmaReviewedSourceModule `
             -Source $source `
             -Entries $bootstrapEntries `
@@ -2423,6 +3612,7 @@ namespace HmaInstaller
             -OldConfig $oldConfig `
             -OldTaskRecords $oldTaskRecords `
             -OldLauncherPlan $oldLauncherPlan `
+            -OldFileLeases $oldFileLeases `
             -NewInstall $install `
             -NewInstallBytes $installBytes `
             -NewManifestBytes $manifestBytes `
@@ -2435,13 +3625,23 @@ namespace HmaInstaller
         $updateNewInstall = $install
         $updateNewConfig = $newConfig
         $updateNewLauncherPlan = $newLauncherPlan
-        $stagedOldConfig = Assert-HmaStartupIntegrity -StateRoot $state
+        $stagedOldConfig = $oldConfig
         if (-not (Test-HmaOrdinalEqual `
-                -Left ([string]$stagedOldConfig.manifestSha256) `
+                -Left ([string]$oldInstallLease.Sha256()) `
+                -Right ([string]$updateTransaction.Record.oldInstallSha256) `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$oldIntegrityLease.Sha256()) `
                 -Right $ExpectedInstalledManifestSha256 `
                 -IgnoreCase)) {
             throw 'The installed release changed during staging.'
         }
+        Assert-HmaInstalledEntries `
+            -Root ([string]$oldConfig.appRoot) `
+            -Entries $updateTransaction.OldRuntimeEntries
+        Assert-HmaInstalledEntries `
+            -Root (Join-Path $state 'bootstrap') `
+            -Entries $updateTransaction.OldBootstrapEntries
         Import-Module `
             (Join-Path $state 'bootstrap\SecureLocalRuntime.psm1') `
             -Force `
@@ -2449,7 +3649,9 @@ namespace HmaInstaller
         Assert-HmaOfflineUpdateQuiescent `
             -Config $stagedOldConfig `
             -StateRoot $state `
-            -LauncherPlan $oldLauncherPlan
+            -LauncherPlan $oldLauncherPlan `
+            -LauncherLease $oldLauncherLease `
+            -ExpectedLauncherSha256 ([string]$updateTransaction.Record.oldLauncherSha256)
         Import-HmaReviewedSourceModule `
             -Source $source `
             -Entries $bootstrapEntries `
@@ -2464,6 +3666,7 @@ namespace HmaInstaller
         Assert-HmaSourceEntryLease `
             -Entries $allSourceEntries `
             -Streams $sourceEntryLocks
+        Exit-HmaUpdateFileLeases -Leases $updateFileLeases
         Remove-HmaUpdateRoot `
             -LiteralPath ([string]$updatePaths.JournalRoot) `
             -StateRoot $state
@@ -2744,6 +3947,7 @@ namespace HmaInstaller
                 -NewConfig $updateNewConfig `
                 -NewLauncherPlan $updateNewLauncherPlan `
                 -PowerShellPath $powerShellPath
+            Exit-HmaUpdateFileLeases -Leases $updateFileLeases
             Remove-HmaUpdateRoot `
                 -LiteralPath ([IO.Path]::GetDirectoryName([string]$updateTransaction.OldRoot)) `
                 -StateRoot $state
@@ -2799,6 +4003,7 @@ namespace HmaInstaller
     throw 'Secure local installation failed.'
 } finally {
     Exit-HmaSourceEntryLease -Streams $sourceEntryLocks
+    Exit-HmaUpdateFileLeases -Leases $updateFileLeases
     if ($null -ne $updateLock) {
         $updateLock.Dispose()
     }

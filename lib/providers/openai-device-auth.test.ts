@@ -102,19 +102,22 @@ test("device start clamps a numeric string interval to one through ten seconds",
   assert.equal(high.intervalMs, 10_000);
 });
 
-test("device poll posts only the device fields and treats 404 as pending", async () => {
+test("device poll posts only the device fields and treats 403 and 404 as pending", async () => {
   const calls: FetchCall[] = [];
   const timeout = timeoutRecorder();
-  const result = await pollOpenAIDeviceAuthorization(authorization(), {
-    timeoutSignal: timeout.timeoutSignal,
-    fetchImpl: async (input, init) => {
-      calls.push({ url: String(input), init });
-      return new Response(null, { status: 404 });
-    },
-  });
+  for (const status of [403, 404]) {
+    const result = await pollOpenAIDeviceAuthorization(authorization(), {
+      timeoutSignal: timeout.timeoutSignal,
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), init });
+        return new Response(null, { status });
+      },
+    });
 
-  assert.deepEqual(result, { status: "pending" });
-  assert.equal(calls.length, 1);
+    assert.deepEqual(result, { status: "pending" });
+  }
+
+  assert.equal(calls.length, 2);
   assert.equal(calls[0]?.url, "https://auth.openai.com/api/accounts/deviceauth/token");
   assert.deepEqual(calls[0]?.init, {
     method: "POST",
@@ -124,7 +127,7 @@ test("device poll posts only the device fields and treats 404 as pending", async
     cache: "no-store",
     signal: calls[0]?.init?.signal,
   });
-  assert.deepEqual(timeout.durations, [15_000]);
+  assert.deepEqual(timeout.durations, [15_000, 15_000]);
   assert.equal(calls[0]?.init?.signal, timeout.signal);
 });
 
@@ -194,7 +197,7 @@ test("token exchange rejects a missing refresh token", async () => {
   assert.equal(calls, 1);
 });
 
-test("only a 404 poll response is pending", async () => {
+test("other non-success device responses remain terminal", async () => {
   await rejectsWithStatus(
     startOpenAIDeviceAuthorization({ fetchImpl: async () => new Response(null, { status: 503 }) }),
     503,

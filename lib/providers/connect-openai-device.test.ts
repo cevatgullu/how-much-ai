@@ -195,11 +195,11 @@ test("device start returns only the public code and verification metadata", asyn
   assert.equal(JSON.stringify(body).includes("device_auth_id"), false);
 });
 
-test("device status maps upstream 404 to pending at the retained interval", async () => {
+test("device status maps upstream 403 to pending at the retained interval", async () => {
   globalThis.fetch = (async (input: unknown) => {
     const url = String(input);
     if (url.endsWith("/api/accounts/deviceauth/usercode")) return startUpstreamResponse();
-    if (url.endsWith("/api/accounts/deviceauth/token")) return new Response(null, { status: 404 });
+    if (url.endsWith("/api/accounts/deviceauth/token")) return new Response(null, { status: 403 });
     throw new Error(`unexpected fetch ${new URL(url).pathname}`);
   }) as unknown as typeof fetch;
   const started = await start();

@@ -171,7 +171,7 @@ export async function pollOpenAIDeviceAuthorization(
     "poll",
   );
 
-  if (poll.response.status === 404) return { status: "pending" };
+  if (poll.response.status === 403 || poll.response.status === 404) return { status: "pending" };
   if (!poll.response.ok) {
     throw upstreamError(
       `OpenAI declined the device authorization poll (HTTP ${poll.response.status}).`,

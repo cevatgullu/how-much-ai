@@ -10,7 +10,7 @@ How Much AI'ı iPhone 17 Pro Max ve Windows'ta kurulabilir bir web uygulamasına
 
 Kritik ürün sözü şudur:
 
-> Sunucu izlemesi açıkken kullanım 5 dakikada bir kontrol edilir. Sağlayıcı önbelleği, ağ koşulları ve sistem ayarları nedeniyle bildirim birkaç dakika gecikebilir.
+> Tüm cihazlar için sunucu izlemesi açıkken kullanım 5 dakikada bir kontrol edilir. Sağlayıcı önbelleği, ağ koşulları ve sistem ayarları nedeniyle bildirim birkaç dakika gecikebilir.
 
 “Gerçek zamanlı”, “kesin teslim edildi” veya işletim sisteminin Odak/Rahatsız Etme ayarlarını aşan bir garanti verilmez.
 
@@ -61,8 +61,8 @@ Uygulama sabit bir manifest sunar:
 
 ```text
 id: /
-name: How Much AI
-short_name: How Much AI
+name: How Much AI — Özel PWA
+short_name: HMA Özel
 start_url: /
 scope: /
 display: standalone
@@ -96,10 +96,12 @@ Kök metadata/viewport kontratı:
 - `initialScale=1`;
 - `viewportFit=cover`;
 - koyu renk şeması ve koyu theme color;
-- Apple web app capable ve `How Much AI` başlığı;
+- Apple web app capable ve `HMA Özel` başlığı;
 - Apple status bar stili `black-translucent`; `#111614` tuval ve üst güvenli alan tek kesintisiz yüzey olarak boyanır;
 - `html lang="tr"`;
 - arama motorları için mevcut `noindex, nofollow` korunur.
+
+Giriş ekranı, belge başlığı ve uygulama ana başlığı tam **How Much AI — Özel PWA** adını kullanır. `HMA Özel` yalnız işletim sisteminin kısa Ana Ekran/uygulama etiketi için kullanılır; yeni ürün hiçbir kurulum yüzeyinde “V2” diye adlandırılmaz.
 
 Manifest ve ikonların tam yolları `self-authenticating-public-paths` izin listesine **tek tek** eklenir. Geniş `/icons/*` veya `/public/*` kimlik doğrulama istisnası açılmaz. Aksi halde iOS'un oturumsuz manifest/ikon istekleri giriş sayfasına yönlenir ve kurulum sessizce bozulur.
 
@@ -131,7 +133,7 @@ Sunucu her hosted push'u tam sürümlü Declarative Web Push biçiminde üretir:
 {
   "web_push": 8030,
   "notification": {
-    "title": "How Much AI",
+    "title": "How Much AI — Özel",
     "lang": "tr-TR",
     "dir": "ltr",
     "body": "...",
@@ -153,7 +155,7 @@ Kontrat:
 - `app_badge: "1"` yalnız gerçek `warning/reset` olayında bulunur; testte yoktur;
 - hesap kimliği, e-posta, endpoint, keyfî URL, keyfî başlık ve ek alan kabul edilmez.
 
-Modern WebKit bu zarfı worker çalışmasa/kaldırılmış olsa bile görünür fallback olarak kullanabilir. Eski tarayıcılarda worker aynı exact şemayı doğrular, sabit yerel ikonlarla `showNotification` çağırır ve payload `navigate` değerini uygulamak yerine kendi kesin `/` kökünü kullanır. JSON bozuk veya şema geçersizse worker push'u sessiz bırakmaz; `How Much AI` başlığı, `Yeni bir kullanım bildirimi var. Ayrıntılar için açın.` gövdesi ve sabit `hma:push:fallback` etiketiyle güvenli genel bildirim gösterir. Sunucu testleri gönderilen her payload'ın deklaratif şemaya uyduğunu garanti eder.
+Modern WebKit bu zarfı worker çalışmasa/kaldırılmış olsa bile görünür fallback olarak kullanabilir. Eski tarayıcılarda worker aynı exact şemayı doğrular, sabit yerel ikonlarla `showNotification` çağırır ve payload `navigate` değerini uygulamak yerine kendi kesin `/` kökünü kullanır. JSON bozuk veya şema geçersizse worker push'u sessiz bırakmaz; `How Much AI — Özel` başlığı, `Yeni bir kullanım bildirimi var. Ayrıntılar için açın.` gövdesi ve sabit `hma:push:fallback` etiketiyle güvenli genel bildirim gösterir. Sunucu testleri gönderilen her payload'ın deklaratif şemaya uyduğunu garanti eder.
 
 ## iPhone etkinleştirme akışı
 
@@ -235,7 +237,9 @@ Durumlar:
 - kullanıcı tarafından durduruldu;
 - maliyet koruması nedeniyle durduruldu.
 
-Bildirim kontrol merkezinde ayrı `Sunucu izlemesi` anahtarı bulunur ve hosted kurulum ilk tamamlandığında varsayılanı açıktır. Kullanıcı kapatırken, provider taramalarının ve gerçek eşik/reset push'larının duracağı açıkça onaylanır; cihaz aboneliği ile test bildirimi yeteneği silinmez. Kasıtlı duruşta 12/30 dakika sayaçları `gecikmiş` veya `kesinti` üretmez. Yeniden açma hemen tek taze tarama başlatır, algılayıcıyı o snapshot ile yeniden tohumlar ve kapalı aralıkta kaçırılmış olabilecek olayları topluca göndermez.
+Bildirim kontrol merkezinde ayrı `Tüm cihazlar için sunucu izlemesi` anahtarı bulunur ve hosted kurulum ilk tamamlandığında varsayılanı açıktır. Bu ortak ayar yerel cihaz anahtarı gibi görünmez. Kullanıcı kapatırken `Gerçek kullanım kontrolleri ve eşik/yenilenme uyarıları tüm kayıtlı cihazlarda durur.` onayı gösterilir; cihaz aboneliği ile test bildirimi yeteneği silinmez. Kasıtlı duruşta 12/30 dakika sayaçları `gecikmiş` veya `kesinti` üretmez. Yeniden açma hemen tek taze tarama başlatır, algılayıcıyı o snapshot ile yeniden tohumlar ve kapalı aralıkta kaçırılmış olabilecek olayları topluca göndermez.
+
+Kontrol merkezi kapsamı metinle ayırır: `Bu cihazda bildirimler` yalnız açık cihazın izin/aboneliğini, `Ortak bildirim kuralları` bütün kayıtlı cihazların eşiklerini, `Tüm cihazlar için sunucu izlemesi` ise ortak provider taramasını yönetir. Ortak parolayla giren herkes son iki ayarı değiştirebilir.
 
 ### 3. Gönderim
 
@@ -358,7 +362,7 @@ Arayüz ve bildirim metinleri Türkçedir. Zaman damgaları depolama ve karşıl
 - mevcut cihaz durum API'sinin endpoint/anahtar sızdırmaması;
 - cihaz kimliğinin yalnız doğru profile üretilmesi, storage kaybı/yeniden kurulumda endpoint upsert'i ve kapatmada iki taraflı silme;
 - tüm monitor sağlık durumları ve 12/30 dakika sınırları;
-- `Sunucu izlemesi` açık/kapalı kontrolü, kasıtlı duruşun gecikme sayılmaması ve yeniden açılışın sessiz yeniden tohumlaması;
+- `Tüm cihazlar için sunucu izlemesi` açık/kapalı kontrolü, kasıtlı duruşun gecikme sayılmaması ve yeniden açılışın sessiz yeniden tohumlaması;
 - 9.000 aylık run tavanı, 15 saniyelik route sınırı, ortak dış-I/O abort/journal rezervi, normal `≤12` ve olaylı `≤20` Convex call bütçesi;
 - görünür panonun tek oturum-korumalı toplu snapshot route'unu en sık 60 saniyede bir kullanması; tek atomik operation'ın iki canlı cihaz/100.000 aylık toplam/20.000 aylık tam-cevap, 256 B revision/unchanged ve 10 KiB full-response sınırlarını keyfî revision'a karşı koruması; doğrudan Convex browser query'si açmaması ve arka plan render'ı dursa da sunucu cron'unun sürmesi;
 - kısmi taramanın başarı gibi gösterilmemesi;
@@ -392,4 +396,4 @@ Arayüz ve bildirim metinleri Türkçedir. Zaman damgaları depolama ve karşıl
 
 ## Başarı ölçütü
 
-Sunucu izlemesi açıkken kullanıcı iPhone PWA'yı veya Windows tarayıcısını kapattıktan sonra izleme çalışmaya devam eder. Gerçek bir eşik/reset geçişi, sağlayıcı ve işletim sistemi gecikmesi hariç bir sonraki beş dakikalık kontrol çevriminde push yoluna girer. Panel, cihaz kaydını, kasıtlı/maliyet-korumalı duruşu, sunucu sağlığını ve push kabulünü ayrı ve dürüst biçimde açıklar.
+Tüm cihazlar için sunucu izlemesi açıkken kullanıcı iPhone PWA'yı veya Windows tarayıcısını kapattıktan sonra izleme çalışmaya devam eder. Gerçek bir eşik/reset geçişi, sağlayıcı ve işletim sistemi gecikmesi hariç bir sonraki beş dakikalık kontrol çevriminde push yoluna girer. Panel, cihaz kaydını, kasıtlı/maliyet-korumalı duruşu, sunucu sağlığını ve push kabulünü ayrı ve dürüst biçimde açıklar.

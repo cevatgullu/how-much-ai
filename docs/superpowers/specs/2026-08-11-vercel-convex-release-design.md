@@ -2,11 +2,13 @@
 
 Tarih: 2026-08-11
 
-Durum: Yayın yönü onaylandı; yazılı şartname son kullanıcı incelemesini bekliyor
+Durum: Ayrı Vercel/Convex takım yönü onaylandı; güncel yazılı şartname son kullanıcı incelemesini bekliyor
 
 ## Amaç
 
-How Much AI'ı terminal gerektirmeden Windows ve iPhone'dan açılabilen, parola korumalı, tek kişilik bir web/PWA olarak yayımlamak. Mevcut Vercel Pro takımından yararlanılır fakat takımın mevcut üretim projesi, alan adı, çevre değişkenleri ve çalışma verisi kesinlikle paylaşılmaz.
+How Much AI'ı terminal gerektirmeden Windows ve iPhone'dan açılabilen, parola korumalı, **tek-kiracılı ve tek ortak parolalı** bir web/PWA olarak yayımlamak. Yeni uygulama aynı Vercel kullanıcı hesabı ve aynı ödeme kartıyla yönetilir; ancak eski V2'nin takımından, kullanım kredisinden, harcama durdurmasından, projesinden, alan adından, çevre değişkenlerinden ve çalışma verisinden tamamen ayrı yeni bir Vercel Pro takımında çalışır.
+
+Bu belgede tasarlanan ürünün görünen adı **How Much AI — Özel PWA**'dır. Kullanıcının daha eski uygulaması **eski V2** olarak yalnız izolasyon hedefidir ve kapsam dışıdır; bulut takım/proje adında veya arayüzde yeni ürünü “V2” diye adlandırmak yasaktır. Eski uygulamadan hesap, kasa veya ayar otomatik taşınmaz.
 
 Seçilen topoloji:
 
@@ -21,20 +23,23 @@ Seçilen topoloji:
 
 Değerlendirilen seçenekler:
 
-1. **Seçilen: Vercel + Convex + PWA.** Terminal olmadan erişim, kapalı uygulamada bildirim ve cihazlar arası tek şifreli kasa sağlar. Mevcut Pro takımında düşük kişisel trafik için ek Vercel kullanımının dahil kotada kalması beklenir.
+1. **Seçilen: ayrı Vercel Pro takımı + ayrı Convex Free takımı + PWA.** Terminal olmadan erişim, kapalı uygulamada bildirim ve cihazlar arası tek şifreli kasa sağlar. Yeni Vercel takımının `$20/ay` taban bedeli ve ayrı `$20/ay` kullanım kredisi vardır; eski V2'nin kredisi, kullanım limiti veya durdurma eylemi bu uygulamadan etkilenmez.
 2. **Windows yerel kurulum + iPhone için ayrı kanal.** Masaüstünde güçlü yerel izolasyon sağlar fakat iPhone arayüzünü ve kapalı uygulama push'unu tek üründe çözmez.
 3. **Native Windows/iOS paketleri.** En derin işletim sistemi bütünleşmesini sağlar ancak iki ayrı uygulama, imzalama/mağaza süreçleri ve çok daha yüksek bakım yükü getirir.
 
-Tek kullanıcılı, tek sayfalık ürün için web/PWA yolu en düşük operasyon yüküyle iki cihazı birlikte çözer.
+Tek kullanıcılı, tek sayfalık ürün için web/PWA yolu en düşük operasyon yüküyle iki cihazı birlikte çözer. Kapalı iPhone/Windows PWA bildirimi ürünün temel sözü olduğu için beş dakikalık sunucu monitorü bu tasarımda korunur; takım izolasyonu monitorü kaldırmak değil maliyet ve arıza etkisini eski V2'den ayırmak içindir.
 
 ## Hesap ve proje izolasyonu
 
-Read-only denetimde Vercel CLI'ın doğru kullanıcıyla, etkin Pro takımında çalıştığı ve takımın mevcut üretim projesinin sağlıklı olduğu doğrulandı. Kişisel kullanıcı/takım kimlikleri sürüm kontrolündeki bu belgede tutulmaz.
+Read-only denetimde Vercel CLI'ın doğru kullanıcıyla çalıştığı, eski V2'nin mevcut takım/projesinin sağlıklı olduğu ve yeni worktree'nin hiçbir Vercel projesine linkli olmadığı doğrulandı. Eski V2 yalnız secretsiz bir değişmezlik baseline'ı almak için okunur; o takımda hiçbir ayar, link, build, deploy veya faturalama mutasyonu yapılmaz. Kişisel kullanıcı/takım kimlikleri sürüm kontrolündeki bu belgede tutulmaz.
+
+Adlandırma netleşmeden önce açılmış geçici `codex/hma-web-v2` branch/worktree etiketi bir bulut veya ürün kimliği değildir. Şartname onayından sonra, uygulama koduna başlamadan önce bu çalışma alanı `how-much-ai-private-pwa` anlamını taşıyan nötr bir branch/worktree adına güvenli biçimde yeniden adlandırılır; eski V2 repository/worktree'si hedef alınmaz.
 
 Yeni kaynaklar:
 
-- ayrı Vercel projesi: `how-much-ai-private`;
-- tercihen tek üyeli yeni bir kişisel Convex takımında ayrı proje/deployment: `how-much-ai-private`;
+- aynı kullanıcı hesabı altında yalnız bu uygulamayı içeren yeni, tek üyeli Vercel Pro takımı;
+- yeni takımda ayrı Vercel projesi: `how-much-ai-private`;
+- aynı Convex kullanıcı hesabı altında, eski projelerden ayrı tek üyeli yeni **Free** takım ve ayrı EU West proje/deployment: `how-much-ai-private`;
 - ayrı VAPID anahtar çifti;
 - her güvenlik rolü için ayrı rastgele secret;
 - yeni, boş şifreli kasa.
@@ -44,33 +49,43 @@ Kesinlikle yapılmayacaklar:
 - mevcut üretim projesinin çevre değişkenlerini kopyalamak veya yeniden kullanmak;
 - mevcut üretim alan adını değiştirmek ya da aynı projeye yeni uygulama eklemek;
 - mevcut projenin build/deploy ayarlarını değiştirmek;
+- eski V2'nin Vercel veya Convex takımında yeni proje, shared environment, integration, resource, domain ya da deployment oluşturmak;
+- alan adını başka projeden koparabilen `--force` benzeri transfer yollarını kullanmak;
 - yerel `.data` veya `.env*` dosyalarını okumak, kopyalamak ya da deploy paketine koymak;
 - bir projenin Convex erişim secret'ını diğerinde kullanmak.
 
-Ayrı Vercel projesi domain, deployment, ayar ve environment namespace'ini ayırır; aynı takımın Owner/Member gibi tüm-proje yetkililerine karşı güvenlik sınırı değildir. Aynı şekilde Convex Team Admin bütün projelerde örtük Project Admin'dir ve takım rolleri üretim verisi/environment görünürlüğü sağlayabilir. Bu kurulumun güven modeli, bu rollerdeki herkesin güvenilir olmasıdır.
+Ayrı proje tek başına yeterli sayılmaz: Vercel kredisi, metered usage, Spend Management ve Owner/Member yetkileri takım çapındadır; Convex Free kotaları ve Team Admin yetkisi de takım çapındadır. Bu nedenle iki platformdaki yeni takım kimlikleri eski V2'nin takım kimliklerinden farklı olmak zorundadır. Aynı kullanıcı girişi ve kart yalnız ortak kontrol/ödeme aracıdır; kullanım kredisini, kotayı, faturayı veya otomatik durdurma etkisini birleştirmez. Ortak kullanıcı hesabının ele geçirilmesi iki takımı da etkileyebileceği için hesapta MFA/passkey zorunludur.
 
-Dış kaynak oluşturulmadan önce iki platformun üye/rol listesi read-only denetlenir. Mevcut Vercel Pro takımı yalnız kullanıcı projeye deploy edebilen veya environment yönetebilen tek üyeyse ya da bu yetkilere sahip diğer bütün roller açıkça güvenilir kabul ediliyorsa kullanılır; rol adının “tam yetkili” olmaması tek başına yeterli izolasyon değildir. Bu şart sağlanmıyorsa yeni ve ayrı bir Vercel takımı maliyet etkisiyle birlikte yeniden onaya sunulur. Convex tarafında varsayılan seçim, diğer projelerden ayrı tek üyeli kişisel takımdır. Secret değerlerinin projeler arasında yeniden kullanılmaması, ayrı proje izolasyonudur; deploy/environment yetkililerinden gizlilik iddiası değildir.
+Dış kaynak oluşturulmadan önce iki platformun üye/rol listesi read-only denetlenir. Yeni Vercel ve Convex takımlarında yalnız kullanıcı Owner/deployer olur; eşe veya arkadaşa PWA parolası vermek platform üyeliği ya da ücretli deployer seat'i açmaz. İleride ikinci deployer daveti, güncel ek seat maliyeti gösterilerek ayrıca onaylanır. Yeni takımda project-linked shared environment variable, takım çapı integration/resource veya ücretli eklenti bulunmaz; bütün runtime secret'lar yalnız yeni projenin ilgili ortamına scoped edilir.
 
-Vercel projesi linklendikten sonra yerel `.vercel/project.json` içindeki yeni proje/org kimliği beklenen hedefle eşleşmeden hiçbir environment veya deploy mutasyonu yapılmaz. Her Vercel CLI çağrısı açık takım scope'u ve bu worktree'nin `--cwd` sınırıyla çalışır. Mevcut üretim projesinin domain/deployment/environment **adları** (değerleri değil) önce ve sonra karşılaştırılır.
+İlk mutasyondan önce secretsiz bir izolasyon manifesti eski V2'nin Git SHA/dirty durumunu; Vercel team/project/deployment/domain kimliklerini, environment **adları ve scope'larını**, integration/resource bağlantılarını ve Spend Management ayarını; Convex team/project/deployment/cron/limit kimliklerini kaydeder. Yeni hedef kimlikleri oluştukça aynı manifeste eklenir. Yeni ve eski Vercel team ID'leri, project ID'leri veya Convex team ID'leri eşitse; worktree dirty ise; hedeflerden biri belirsizse işlem fail-closed durur.
+
+Vercel projesi linklendikten sonra yalnız yeni worktree'deki `.vercel/project.json` içindeki yeni project/org kimliği beklenen hedefle eşleşmeden hiçbir environment veya deploy mutasyonu yapılmaz. Her Vercel CLI çağrısı açık yeni takım scope'u ve bu worktree'nin `--cwd` sınırıyla çalışır; ambient `VERCEL_PROJECT_ID`, CLI hedefi ve link dosyası aynı değilse durur. Eski V2'nin domain/deployment/environment adları, integration/resource bağlantıları, Spend Management ayarı ve Convex kimlikleri yayın öncesi/sonrası baseline ile birebir karşılaştırılır.
+
+Convex bootstrap iki ayrı fail-closed basamaktır. Önce **yalnız yeni takım** oluşturulur; süreç hemen durur, dönen team ID isolation manifestine kaydedilir ve eski team ID'den farklı olduğu doğrulanır. Bu kapı geçmeden project create çağrısı yapılamaz. Ardından project create işlemi açıkça bu doğrulanmış yeni team ID/slug'ına scope edilir; dönen project ID ve parent-team ID yeniden doğrulanır. Ancak ikisi de manifestle eşleştikten sonra deployment, environment, deploy key veya cron oluşturulabilir. Sonraki her Convex create/env/deploy mutasyonundan **önce** release wrapper beklenen yeni team/project/deployment kimliğini, scoped deploy key'in secretsiz SHA-256 fingerprint–hedef eşlemesini ve platformun read-only hedef metadata'sını birlikte doğrular. Ambient `CONVEX_DEPLOYMENT`, geniş kişisel access token veya manifeste kayıtlı olmayan deploy key varsa alt süreç başlatılmaz. CLI hedef metadata'sını mutasyon öncesi doğrulayamıyorsa güvenli varsayım yapılmaz; beklenen yeni proje ekranından yeni scoped key üretilip bağ yeniden kaydedilene kadar işlem durur. `npx convex deploy` ilk hedef doğrulaması olamaz; deploy sonrası authenticated health fingerprint'i ikinci bağımsız kontroldür.
 
 ## Tek kullanıcı ve paylaşım modeli
 
-Bu sürüm gerçek bir tek-kiracılı kurulumdur. Bir parola ile giren herkes aynı hesapları, ayarları ve bildirim kurallarını görür.
+Bu sürüm gerçek bir tek-kiracılı, tek ortak parolalı kurulumdur. Parolayı bilen herkes aynı hesapları, ayarları ve bildirim kurallarını görür ve tam yazma yetkisine sahiptir; salt-okunur paylaşım yoktur. Her yetkili kişi AI hesabı bağlayabilir/kaldırabilir, ortak kuralları değiştirebilir ve sunucu izlemesini bütün kayıtlı cihazlar için durdurabilir.
 
-Eş veya çok güvendiğiniz biri aynı panoyu kullanacaksa aynı parolayı paylaşmak teknik olarak mümkündür; bu ayrı bir kullanıcı hesabı yaratmaz. Arkadaşların kendi AI hesaplarını görmesi istenirse aynı deployment'a davet edilmezler. Her kişi için ayrı Vercel/Convex kurulumu ve ayrı parola/şifreli kasa oluşturulur.
+Eş veya çok güvendiğiniz biri aynı kasayı kullanacaksa aynı parolayı paylaşmak teknik olarak mümkündür; bu ayrı kullanıcı hesabı, ikinci Vercel deployer seat'i veya ikinci `$20` taban ücret oluşturmaz. Aynı kasa, cihaz sınırları, kullanım kredisi ve uygulama maliyet korumaları paylaşılır. Arkadaşların kendi AI hesaplarını ve kasasını kullanması istenirse bu deployment'a davet edilmezler; kişi başına ayrı Vercel/Convex kurulumu, ayrı parola/şifreli kasa ve güncel fiyat değişmediyse vergi/kur hariç ayrı `$20/ay` Pro takım bedeli gerekir.
 
 İlk sürümde davet, kullanıcı tablosu, parola sıfırlama e-postası, rol veya kişi başına hesap görünürlüğü eklenmez.
 
 ## Maliyet kontratı
 
-Read-only takım denetimi, Vercel Pro aboneliğinin etkin ve kullanım kredisinin iki mevcut projeyle ortak olduğunu doğruladı. Güncel çevrimde boş kredi bulunması maliyet garantisi sayılmaz; yakın geçmişte uzak build yükü krediyi tüketmiştir. Bu nedenle How Much AI bütçesi kredi hiç kalmamış gibi **brüt** hesaplanır. Kredi yalnız gerçek faturayı azaltan olası indirimdir.
+Eski V2'nin Vercel takımı ve kredisi bu uygulamanın maliyet hesabına katılmaz. Yeni How Much AI takımı ayrı abonelik/fatura, ayrı Spend Management hesabı ve ayrı kullanım kredisi taşır. Aynı fiziksel kart iki takımda ödeme aracı olabilir; bu durum kredileri veya kullanım limitlerini birleştirmez.
 
 Maliyet sınırları:
 
-- **Vercel:** mevcut Pro takımı kullanılır; ayrı takım açılıp ikinci `$20/ay` taban ücret oluşturulmaz. Yeni proje Web Analytics, Speed Insights, Observability Plus, Blob, Edge Config, Workflow, AI Gateway veya ücretli Marketplace kaynağını otomatik etkinleştirmez.
+- **Vercel:** aynı login ve kart altında yeni tek üyeli Pro takım açılır. Güncel sözleşme bedeli **`$20/ay` taban ücret** olup bir deploying seat ve yalnız bu takıma ait **`$20/ay` kullanım kredisi** içerir. Vergi ve kartın kur/komisyonu bu dolar tutarına dahil değildir. İkinci deployer, ücretli add-on veya Marketplace kaynağı yoktur. Yeni proje Web Analytics, Speed Insights, Observability Plus, Blob, Edge Config, Workflow, AI Gateway veya ücretli Marketplace kaynağını otomatik etkinleştirmez.
 - **Convex:** EU West'te, diğer projelerden ayrı tek üyeli **Free** takım/deployment zorunludur. Starter veya Professional açılmaz. Starter/Professional dahil kullanımı EU West'e uygulanmadığından ücretli plana sessiz geçiş yasaktır; Free EU kurulumu mümkün değilse kaynak oluşturma durur ve maliyet yeniden onaya sunulur.
 - **Web Push:** doğrudan VAPID ile Apple/Microsoft aktarımında üçüncü taraf bildirim aboneliği yoktur.
 - **Alan adı ve mağaza:** ilk sürüm Vercel'in HTTPS alanını ve doğrudan PWA kurulumunu kullanır; özel alan adı veya mağaza ücreti yoktur.
+
+Sunucu izlemesini kapatmak veya uygulamayı hiç kullanmamak aylık `$20` Vercel Pro takım aboneliğini iptal etmez; abonelik ancak takım planı ayrıca kapatılırsa sona erer.
+
+Satın alma mutasyonundan hemen önce resmî [Vercel Pro planı](https://vercel.com/docs/plans/pro-plan), [Spend Management](https://vercel.com/docs/spend-management), [Convex fiyatlandırması](https://www.convex.dev/pricing) ve [Convex limitleri](https://docs.convex.dev/production/state/limits) yeniden okunur. `$20` taban/kredi, Free kapsamı veya bölge koşullarından biri değişmişse takım/proje oluşturulmaz; yeni kesin tutar kullanıcıya yeniden onaya sunulur.
 
 Convex scheduler beş dakikada bir tek yetkili Vercel route çağrısı yapar. Bu ritim 30 günlük ayda 8.640, 31 günlük ayda 8.928 çevrimdir. Run ID scheduler'ın UTC `scheduledTime` değerinden deterministik beş-dakika kovası olarak üretilir; benzersiz indeks aynı kovada yalnız bir planlı çalışmayı kabul eder. Gelecek kovası ve 12 dakikadan eski gecikmiş/replay kovası provider'a ulaşmaz. Kalıcı ve atomik UTC-ay sayacı ayrıca en fazla **9.000 planlı monitor çevrimini** kabul eder. Böylece takvim veya Vercel fatura dönemi sınırında iki aylık kota bir anda harcanamaz. Yinelenen run ID, replay ve 9.000 üzeri çalışma provider çağrısı yapmadan bütçe-korumalı kapanır; manuel yenileme ve test bildirimleri ayrı oran limitine sahiptir.
 
@@ -89,7 +104,7 @@ Cron isteği gövde+metadata bütçesi 2 KiB, başarılı veya hatalı cevap gö
 
 Bu hesap her yetkili cron isteğinin tam **bir** Node Function invocation üretmesine bağlıdır. Next.js 16 `proxy.ts` matcher'ı exact `/api/cron/check` yolunu Routing Middleware'den dışlar; aksi halde aynı istek için ikinci Fluid Compute invocation ve ikinci Fast Origin Transfer oluşabilir. Proxy'nin fail-closed görevleri route içinde yeniden kurulur: üretim secret ortamı eksiksiz doğrulanır, yalnız `POST` ve query'siz exact path kabul edilir, request origin/host sabit `APP_URL` ile eşleşir, 2 KiB üstü gövde reddedilir ve en az 32 karakterlik `CRON_SECRET` constant-time karşılaştırılır. Yanlış istek provider veya Convex'e ulaşmaz. Build/Preview kabul testi gerçek deployment kullanım kaydında bir yetkili cron için `0 Routing Middleware + 1 Function` doğrular; bu kanıt yoksa `$7,39` tavanı geçerli sayılmaz ve Production açılmaz.
 
-Provider HTTP beklemesi active CPU sayılmadığından gerçek tutarın tavandan düşük olması beklenir; ölçümden önce daha dar bir rakam vaat edilmez. `$7,39` yalnız doğru secret'lı planlı monitor trafiğinin kodla sınırlandırılmış route/transfer bütçesidir. Etkileşimli kullanım, ilk yayın build'leri, platformun engellediği yetkisiz/saldırı trafiği, kur farkı ve vergi ayrı kalemlerdir. İlk release'te Git auto-deploy kapalıdır; önce yerel build yapılır, en fazla beş kontrollü uzak build denenir ve yeni projenin toplam build efektif maliyeti `$0,50`ye ulaşırsa kullanıcı onayı olmadan yeni uzak build başlatılmaz. Bu bir sonraki build'i başlatmama kapısıdır; başlamış tek bir uzak build `$0,50` eşiğini aşabilir. Yerel ölçüm ve ilk uzak build süresi sonraki denemelerin bütçesini belirler.
+Provider HTTP beklemesi active CPU sayılmadığından gerçek tutarın tavandan düşük olması beklenir; ölçümden önce daha dar bir rakam vaat edilmez. `$7,39` yalnız doğru secret'lı planlı monitor trafiğinin kodla sınırlandırılmış route/transfer bütçesidir. Tanımlı monitor tavanı ve ilk yayın için ayrılan en fazla `$0,50` uzak-build kapısı birlikte yeni takımın `$20` kullanım kredisinin altındadır; krediye uygun başka tüketim veya eklenti yoksa beklenen Vercel ödemesi `$20/ay` taban bedeldir. Bu, kesin fatura garantisi değildir: etkileşimli kullanım, sonraki build'ler, platformun engellediği yetkisiz/saldırı trafiği, krediye girmeyen ürünler, kur farkı ve vergi ayrı kalemlerdir. İlk release'te Git auto-deploy kapalıdır; önce yerel build yapılır, en fazla beş kontrollü uzak build denenir ve yeni projenin toplam build efektif maliyeti `$0,50`ye ulaşırsa kullanıcı onayı olmadan yeni uzak build başlatılmaz. Bu bir sonraki build'i başlatmama kapısıdır; başlamış tek bir uzak build `$0,50` eşiğini aşabilir. Yerel ölçüm ve ilk uzak build süresi sonraki denemelerin bütçesini belirler.
 
 Mevcut kodun hesap başına tekrarlanan vault/cache çağrıları yedi hesaplı normal soğuk çevrimde yaklaşık 95 Convex function call üretir ve doğrudan yayınlanamaz. Hosted sürüm tek batch-read ve tek batch-commit sınırına taşınır: normal çevrim en fazla 12, refresh/recovery/push-cleanup içeren çevrim en fazla 20 Convex function call kullanır. Bu sayı cron action'ın kendisini, `scheduledTime`/run kabulü için gerekli system-table `runQuery` çağrısını, bütün `ctx.runQuery`/`ctx.runMutation`/`ctx.runAction` çağrılarını, route'un Convex'e dönüş çağrılarını ve en fazla bir uygulama-içi retry'ı birlikte sayar. Final stale-endpoint cleanup tek batch'tir. Aggregate snapshot sorguları, replay-reject, manuel yenileme/test ve gecikmeli işler `≤12/≤20` çevrim sınırına dahil değildir; yine de aşağıdaki deployment warning/disable sınırlarına ve takım Free hard cap'ine dahildir. Bu nedenle `9.000 × 20 = 180.000` yalnız kabul edilmiş planlı monitor trafiğinin tavanıdır, toplam aylık çağrı tahmini değildir.
 
@@ -116,7 +131,7 @@ Free database storage 0,5 GB takım hard cap'idir ve deployment usage-limit metr
 
 Fixture/load testinde 12 hesap ve en az 1.000 deterministik çevrimle 0,5/2/5/15 saniye dağılımları, refresh/recovery, p50/p95/p99, active CPU, memory, batch call sayısı ve kısmi timeout davranışı ölçülür. Hedef p95 `<10 saniye`, p99 `<13 saniye` ve hiçbir route'un 15 saniyeyi geçmemesidir. Yedi gerçek hesapla üç çevrim yalnız smoke testtir; Production öncesi Preview en az 24 saat/288 doğal çevrim çalışır. İlk yedi Production günündeki 2.016 örnek güvenilir p99 ve gerçek maliyet bandını verir; eşik aşılırsa cron bakım moduna alınır.
 
-Vercel ve Convex usage ekranları her uzak build sonrası ve yayından 24 saat, 7 gün ve 30 gün sonra kontrol edilir. Vercel Spend Management takım çapında olduğundan diğer üretim projelerini durdurabilecek hard pause açılmaz; mevcut takım ayarı kullanıcıdan ayrıca izin alınmadan değiştirilmez. How Much AI'ın kendi 9.000-run/15-saniye/batch limitleri proje içi sert korumadır; herhangi bir otomatik ücretli plan yükseltmesi yasaktır.
+Vercel ve Convex usage ekranları her uzak build sonrası ve yayından 24 saat, 7 gün ve 30 gün sonra yalnız yeni takım scope'unda kontrol edilir. Yeni Vercel takımında başka proje bulunmadığı için Spend Management bildirimi ve Production auto-pause açılır; bu eylem eski V2'yi durduramaz. Yeni Pro takımın varsayılan `$200` on-demand bütçesiyle ilk deployu yapmak yasaktır. Hedef, `$20` kredi sonrasında **`$1` on-demand spend eşiği**dir. Vercel dashboard/API `$1` eşiğini veya auto-pause'u desteklemiyorsa varsayılan/yüksek bir değeri kabul etmek yasaktır: ilk Preview deployundan önce işlem durur, platformun izin verdiği en düşük kesin eşik ve vergi etkisi kullanıcıya yeniden onaya sunulur. Spend Management periyodik ölçülen bir arka emniyettir; tam matematiksel fatura tavanı sayılmaz ve `$20` platform ücreti, vergi, seat/add-on veya başlamış çalışmayı geri almaz. How Much AI'ın kendi 9.000-run/15-saniye/batch limitleri birincil sert korumadır; herhangi bir otomatik ücretli plan yükseltmesi yasaktır.
 
 ## Bölge, locale ve gecikme
 
@@ -184,6 +199,8 @@ npx convex deploy --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL --cmd 'npm run b
 - Vercel Preview environment'ında yalnız Preview deploy key bulunur ve sabit release branch adıyla izole Convex Preview backend'i oluşturur/yeniden kullanır.
 - Vercel Production environment'ında yalnız Production deploy key bulunur; anahtar en az yetki olarak sadece `deployment:deploy` taşır.
 - Preview/Production deploy key'leri farklı, proje düzeyinde ve Sensitive'dir; team-shared değildir.
+- Her key oluşturulduğunda secret'ın kendisi değil SHA-256 fingerprint'i, platformun gösterdiği team/project/deployment hedef metadata'sıyla release manifestine bağlanır; build başlamadan wrapper bu bağı yeniden doğrular.
+- `CONVEX_DEPLOYMENT`, kişisel/team-geneli token veya hedefi manifestle eşleşmeyen `CONVEX_DEPLOY_KEY` build ortamında bulunursa `npx convex deploy` çağrılmadan build fail-closed kapanır.
 - Deploy key işten çıkarma, sızıntı veya pipeline değişiminde açıkça revoke edilir; rol değişikliği tek başına anahtarı iptal etmiş sayılmaz.
 - Preview deployment yaratılmadan önce Convex project defaults içinde Preview'a özgü `VAULT_ACCESS_SECRET`, `CRON_SECRET` ve sabit preview `APP_URL` hazırlanır. Defaults yalnız yeni deployment'a kopyalandığından sonraki değişiklikte mevcut Preview backend açıkça güncellenir veya güvenle yeniden oluşturulur.
 - Build, Convex typecheck/codegen/schema/function deploy ve Next production build adımlarından biri başarısızsa Vercel deployment'ı yayımlamaz.
@@ -236,10 +253,13 @@ Zorunlu sıra:
 
 Mevcut başlangıç testinde çalışan eski yerel uygulama `127.0.0.1:37645` portunu tuttuğu için üç runtime-immutability testi `service-port-in-use` ile başarısız olmuştur; 735/738 test geçmiştir. Final tam doğrulamada kullanıcı oturumu korunarak eski runtime kontrollü biçimde durdurulur ve bu üç test yeniden çalıştırılır. Bu çevresel çakışma çözülmeden “tam yeşil” denmez.
 
-### 2. Ayrı Preview altyapısı
+### 2. Ayrı takım ve Preview altyapısı
 
-- rol denetimi geçtikten sonra `how-much-ai-private` Vercel projesi beklenen Pro takımında oluşturulur ve project/org ID guard'ı sabitlenir;
-- yeni tek-üyeli Convex takımında EU West `how-much-ai-private` projesi oluşturulur;
+- son kullanıcı şartnameyi onayladıktan sonra aynı kullanıcı/kart altında yeni tek üyeli Pro takım oluşturulur; `$20/ay` ayrı abonelik, ayrı `$20` kredi ve takım-scoped Spend Management doğrulanır;
+- eski V2 takımından farklı team ID zorunluluğu ve secretsiz baseline manifesti geçtikten sonra `how-much-ai-private` Vercel projesi yalnız yeni Pro takımında oluşturulur ve project/org ID guard'ı sabitlenir;
+- önce yalnız yeni tek üyeli Convex takımı oluşturulur ve team ID'nin eski takımdan farklılığı doğrulanır; sonra EU West `how-much-ai-private` project create işlemi açıkça bu doğrulanmış team ID/slug'ına scope edilir ve dönen parent-team/project ID doğrulanır;
+- yeni takımda başka Vercel/Convex projesi, shared environment, integration/resource veya ücretli eklenti bulunmadığı doğrulanır;
+- yeni Vercel takımının `$1` post-credit Spend Management + auto-pause hedefi doğrulanır; platform bunu desteklemiyorsa Preview oluşturulmadan önce yeni maliyet onayı alınır;
 - release branch için Preview deploy key Vercel'in yalnız Preview/release-branch ortamına Sensitive olarak eklenir;
 - Preview Convex defaults ve Vercel Preview ortamına birbirinden/Production'dan bağımsız secret'lar eklenir;
 - deployment değişse de aynı kalan, yalnız bu proje için bir Vercel preview alias'ı ayrılır;
@@ -280,7 +300,7 @@ Kabul edilen Preview kaydı Git SHA, Vercel deployment URL/ID, sabit preview ali
 ## Rollback ve kurtarma
 
 - Her release kaydı Vercel deployment ID/URL, Git SHA, backend fingerprint ve env sürümünü eşler. Daha önce production olmuş sürüme geri dönüş `vercel rollback <deployment-id-or-url>` ile yapılır; daha önce promoted deployment tekrar promote edilmeye çalışılmaz.
-- Instant Rollback rebuild yapmaz: hedef eski deployment'ın build anındaki env/config snapshot'ı ve cron tanımı geri gelir, fakat Convex backend kodu/şeması geri alınmaz. Bu yüzden yalnız güncel Convex backend ile uyumlu ve aynı geçerli env sürümünü kullanan kayıt “rollback-uygun” olabilir.
+- Instant Rollback rebuild yapmaz ve trafiği hedef eski deployment'ın build anındaki env/config snapshot'ına döndürür; aktif Vercel Cron Jobs tanımları rollback ile güncellenmez. Bu projede scheduler Convex olduğu için Vercel Cron Jobs listesi zaten boş olmak zorundadır. Convex backend kodu/şeması/cron'u da Vercel rollback ile geri alınmaz. Bu yüzden yalnız güncel Convex backend ile uyumlu ve aynı geçerli env sürümünü kullanan kayıt “rollback-uygun” olabilir.
 - Vercel rollback sonrası production-domain auto-assignment kapanır. Hizmet doğrulandıktan sonra düzeltilmiş yeni staged deployment promote edilerek normal akış yeniden açılır.
 - Her `APP_PASSWORD`, `AUTH_SECRET`, `VAULT_ACCESS_SECRET`, `CRON_SECRET`, `VAPID_PRIVATE` veya encryption-key rotasyonundan önceki deployment'lar rollback-uygunsuz işaretlenir. Geri dönüş gerekirse bilinen iyi Git SHA **güncel** secret'larla yeniden build edilip staged olarak doğrulanır.
 - Convex schema/function değişiklikleri bir önceki uygulamayla geriye uyumlu ve eklemeli olmak zorundadır; veri silen migration yoktur. Uyum ispatlanamıyorsa staged production build başlatılmaz.
@@ -309,6 +329,13 @@ Yayın ancak şu koşullar birlikte sağlanırsa tamamlanmış sayılır:
 
 - repository test, typecheck ve production build tamamen yeşil;
 - eski runtime kapatıldıktan sonra üç immutability testi geçiyor;
+- görünen ürün adının `How Much AI — Özel PWA` olduğu, takım/proje/arayüzde yeni ürün için `V2` kullanılmadığı ve ilk girişte ayrı kasa/otomatik taşıma yokluğu açıklandığı;
+- geçici `codex/hma-web-v2` çalışma etiketinin implementasyon başlamadan nötr yeni-ürün adına taşındığı ve eski V2 worktree/repository'sinin hedef alınmadığı;
+- yeni Vercel ve Convex team ID'lerinin eski V2 team ID'lerinden farklı olduğu; Convex team doğrulanmadan project create çağrısının çalışmadığı ve yeni project parent-team ID'sinin doğrulanmış yeni team ID olduğu; secretsiz baseline manifestindeki eski Git/deployment/domain/environment adı-scope/integration/resource/Spend Management/Convex kimliklerinin yayın sonrasında değişmediği;
+- eski, yanlış veya kayıtsız Convex deploy key fixture'ının wrapper tarafından `npx convex deploy` alt süreci başlamadan reddedildiği; Preview/Production key fingerprint–hedef bağlarının beklenen yeni team/project/deployment ID'leriyle eşleştiği ve ambient `CONVEX_DEPLOYMENT`/geniş kişisel token bulunmadığı;
+- yeni Vercel takımının ayrı `$20/ay` aboneliği, ayrı `$20` kullanım kredisi, tek deployer'ı ve yalnız How Much AI projesini içerdiği; yeni Convex takımının ayrı Free kota havuzunda kaldığı;
+- yeni takımda linked shared environment, team integration/resource, ücretli add-on veya Vercel Cron Job bulunmadığı;
+- `$1` post-credit Spend Management + auto-pause hedefinin doğrulandığı veya platform desteklemiyorsa hiçbir Preview/Production deployu yapılmadan exact alt sınır için yeniden onay alındığı;
 - Vercel build local dosya backend'ine düşmüyor ve tam Convex yapılandırmasıyla açılıyor;
 - Preview ve Production'ın farklı Sensitive deploy key kullandığı, Preview key'in yalnız branch preview ve Production key'in yalnız `deployment:deploy` yetkisi taşıdığı;
 - accepted Preview ile staged Production build'in aynı exact Git SHA'dan geldiği ve health fingerprint'in doğru backend'i doğruladığı;
@@ -328,9 +355,9 @@ Yayın ancak şu koşullar birlikte sağlanırsa tamamlanmış sayılır:
 - gerçek iPhone kapalı-PWA push testi ve Windows push testi geçiyor;
 - Vercel/Convex usage ekranında beklenmeyen ücretli kaynak veya otomatik plan yükseltmesi yok;
 - Vercel/Convex rol denetimi güven modelini karşılıyor, projeler EU West/`dub1` kararına uyuyor;
-- yeni linkin exact project/org ID'si doğrulanmış ve takımın mevcut üretim projesinin ayarı, deployment'ı, domain'i ve environment **adları** değişmemiş;
+- yeni linkin exact project/org ID'si doğrulanmış ve eski V2'nin ayarı, deployment'ı, domain'i, environment **adları/scope'ları**, integration/resource bağlantıları, Spend Management ayarı ve Convex kimlikleri değişmemiş;
 - rollback runbook'u rollback-uygun ve secret-rotasyonu sonrası uygunsuz fixture'larla doğrulanmış.
 
 ## Başarı ölçütü
 
-Kullanıcı Windows veya iPhone'da terminal açmadan Vercel HTTPS adresine gider, zorunlu parola ile giriş yapar, PWA'yı kurar ve uygulama kapalıyken kullanım uyarısı alır. Sistem mevcut Vercel Pro faturalama kapsamından yararlanırken takımın diğer üretim projesinden ayrı proje/config namespace'inde kalır; yetkili takım üyeleri açık güven modeline dahildir. Normal kişisel kullanımda ilave maliyet ölçülmüş süre bütçeleriyle düşük tutulur ve gerçek kullanım panellerinden izlenir.
+Kullanıcı Windows veya iPhone'da terminal açmadan yeni How Much AI HTTPS adresine gider, zorunlu parola ile giriş yapar, PWA'yı kurar ve uygulama kapalıyken kullanım uyarısı alır. Yeni uygulama aynı kullanıcı hesabı ve kartla ödenen fakat eski V2'den ayrı kredisi, kullanım limiti, Spend Management eylemi, faturası, Vercel takımı ve Convex Free takımı olan tek-kiracılı bir kurulumdur. Eski V2'nin team/project/domain/env/integration/deployment/veri durumu değişmez. Güncel sabit artış vergi ve kur hariç `$20/ay`dır; ölçülmüş monitor/build tüketiminin yeni takımın ayrı `$20` kredisi içinde kalması hedeflenir ve gerçek kullanım yalnız yeni takım panellerinden izlenir.

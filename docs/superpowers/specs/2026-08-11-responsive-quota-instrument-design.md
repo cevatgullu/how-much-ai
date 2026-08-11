@@ -8,6 +8,8 @@ Durum: Görsel yön onaylandı; yazılı şartname son kullanıcı incelemesini 
 
 How Much AI'ın tek sayfalık panosunu, yedi veya daha fazla hesabı 27 inç 4K Windows ekranında ve iPhone 17 Pro Max'te hızlıca karşılaştırılabilen, yüksek okunabilirlikli bir **kota ölçüm aracına** dönüştürmek.
 
+Hosted ürünün görünen adı **How Much AI — Özel PWA**'dır; eski uygulamayla karışmaması için arayüzde yeni ürüne “V2” denmez. Her yeni tarayıcı/PWA kurulumunda ilk başarılı girişten sonra `Bu Özel PWA eski uygulamadan ayrıdır. Hesaplar ve ayarlar otomatik taşınmadı; kullanmak istediğiniz AI hesaplarını burada yeniden bağlayın.` notu gösterilir. Not, bu cihazda `Anladım` seçilene kadar kalır ve daha sonra Bilgi/Ayarlar yüzeyinden yeniden açılabilir. Kabul durumu yalnız cihazda, sürümlü bir anahtarla tutulur; başka cihazdaki onay bu notu gizlemez. Metin uyarı estetiğinde değil, sakin ve açık bir kurulum notu olarak sunulur.
+
 Bu çalışma aynı zamanda kullanıcının iki sıralama isteğini karşılar:
 
 1. geçerli haftalık yenilenme tarihi en yakın hesap en üstte;
@@ -145,13 +147,13 @@ Klavye odağı veya etkin pointer bir kart içindeyken yeniden sıralama gerekiy
 
 Yapışkan üst şerit üç bölgedir:
 
-1. marka: `How Much AI` ve kısa `Kota cetveli` tanımı;
+1. marka: `How Much AI — Özel PWA` ve kısa `Kota cetveli` tanımı;
 2. sağlık özeti: son başarılı kontrol, izlenen hesap sayısı ve hata varsa sayısı;
 3. eylemler: `Panoyu canlı izle`, tümünü yenileme, bildirimler, hesap ekleme ve çıkış.
 
 Geniş ekranda metinli eylemler, dar ekranda simge ve erişilebilir ad kullanılır. İngilizce/Türkçe karışımı kaldırılır; `html lang="tr"` ve tüm görünür/ARIA metinleri Türkçedir. Claude, ChatGPT ve model adları özel isim olarak değişmez.
 
-`Panoyu canlı izle` yalnız görünür panonun mevcut HttpOnly oturumla korunan tek toplu sunucu snapshot'ını en sık 60 saniyede bir takip etmesini yönetir; tarayıcı Convex'e doğrudan bağlanmaz ve sunucu bildirim monitorünü değiştirmez. Aynı anda en fazla iki görünür cihaz canlı pano lease'i alır; üçüncü cihazda `İki canlı pano kullanımda · Bu cihaz odaklanınca veya elle yenilenir.` açıklaması görünür. Aylık snapshot koruması dolarsa ilk satır yalnız `Canlı pano maliyet korumasında · Son görülen veri {zaman}.` der. Kapalıyken üst şeritte kalıcı `Pano takibi kapalı · Son görülen veri {zaman}.` satırı görünür ve mevcut kartlar güncelmiş gibi sunulmaz. Her iki durumda da altındaki ayrı durum satırı gerçek monitor durumuna göre `Sunucu izlemesi açık · Bildirimler devam ediyor.`, `Sunucu izlemesi kullanıcı tarafından kapatıldı · Yeni kullanım kontrol edilmiyor.` veya `Maliyet koruması etkin · Yeni kullanım kontrol edilmiyor.` der.
+`Panoyu canlı izle` yalnız görünür panonun mevcut HttpOnly oturumla korunan tek toplu sunucu snapshot'ını en sık 60 saniyede bir takip etmesini yönetir; tarayıcı Convex'e doğrudan bağlanmaz ve sunucu bildirim monitorünü değiştirmez. Aynı anda en fazla iki görünür cihaz canlı pano lease'i alır; üçüncü cihazda `İki canlı pano kullanımda · Bu cihaz odaklanınca veya elle yenilenir.` açıklaması görünür. Aylık snapshot koruması dolarsa ilk satır yalnız `Canlı pano maliyet korumasında · Son görülen veri {zaman}.` der. Kapalıyken üst şeritte kalıcı `Pano takibi kapalı · Son görülen veri {zaman}.` satırı görünür ve mevcut kartlar güncelmiş gibi sunulmaz. Her iki durumda da altındaki ayrı durum satırı gerçek monitor durumuna göre `Tüm cihazlar için sunucu izlemesi açık · Bildirimler devam ediyor.`, `Tüm cihazlar için sunucu izlemesi kapalı · Yeni kullanım hiçbir cihaz için kontrol edilmiyor.` veya `Maliyet koruması etkin · Yeni kullanım kontrol edilmiyor.` der.
 
 Bu yerelleştirme sınırı pano, giriş/bootstrap/OAuth geri dönüş sayfaları, hesap ekleme/yeniden bağlama akışları, kullanım kartları, bildirim paneli, modal ve hata/boş durumlarını kapsar. Sağlayıcının ham teknik hata metni doğrudan gösterilmez; Türkçe güvenli özet ve referans kodu kullanılır. Kaynak kodu geliştirici mesajları ve sağlayıcı/model özel isimleri çeviri kapsamı dışındadır.
 
@@ -238,7 +240,7 @@ Kesin eylemler:
 - `Yenile`: tüm hesapların mevcut toplu yenilemesini başlatır;
 - `Hesap`: hesap ekleme modalını açar; erişilebilir adı `Hesap ekle`dir;
 - `Uyarılar`: bildirim kontrol merkezini açar;
-- `Menü`: `Panoyu canlı izle` anahtarı, çıkış ve yasal/güvenlik bilgisini içeren yardımcı alt sayfayı açar. Bu anahtar sunucu bildirim monitorünü kapatmaz; monitor yalnız Bildirimler içindeki `Sunucu izlemesi` kontrolüyle durdurulur.
+- `Menü`: `Panoyu canlı izle` anahtarı, çıkış ve yasal/güvenlik bilgisini içeren yardımcı alt sayfayı açar. Bu anahtar sunucu bildirim monitorünü kapatmaz; monitor yalnız Bildirimler içindeki `Tüm cihazlar için sunucu izlemesi` kontrolüyle durdurulur.
 
 Kompakt sıralama şeridi ayrı bir düğmedir ve üç sıralama seçeneğini içeren alt sayfayı açar. Her iki alt sayfa da `ModalShell` odak kapanı, inert arka plan, Escape/kapatma ve çağıran düğmeye odak dönüşü kontratını kullanır; aynı anda yalnız biri açıktır.
 

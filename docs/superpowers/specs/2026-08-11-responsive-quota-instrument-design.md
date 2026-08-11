@@ -254,6 +254,9 @@ Genel `<960` tek sütun kuralının tek istisnası `orientation: landscape`, `mi
 - Başarılı eski veri görünür kalır fakat `son veri` ve zamanı belirtilir.
 - Yenileme hatası, mevcut son başarılı veriyi silmez.
 - Yeniden bağlama gereken hesap kapalı mobil satırda da belirgindir.
+- `renewal_pending` hesabın son başarılı verisini `son veri` olarak korur ve `Kimlik güvenle yenileniyor · Bu hesap geçici olarak taranmadı.` durumunu kapalı mobil satırda da gösterir; eksik taze veri `%0` sayılmaz.
+- `renewal_unknown` yüksek görünürlükte `Kimlik yenileme sonucu doğrulanamadı · Güvenliğiniz için otomatik tekrar yapılmadı.` ve `Hesabı yeniden bağla` eylemini gösterir. Eski snapshot sıralama metriği sağlayabilir fakat açıkça stale kalır; yeni eşik/reset olayı veya otomatik refresh denenmez.
+- Yeniden bağlama yeni credential generation yazdığında pending/unknown durumunu temizler; daha eski renewal işi kartı tekrar bozuk duruma veya eski credential'a döndüremez.
 - Metrik eksikliği `0%` olarak yorumlanmaz.
 - Sıralama tercihi kaydedilemezse pano çalışmaya devam eder ve Türkçe, eyleme dönük hata gösterir.
 - Pano dili veya saat biçimi yüzünden sağlayıcının ISO zaman damgası değiştirilmez; görüntüleme `tr-TR` ve cihaz saat dilimiyle yapılır.
@@ -298,6 +301,8 @@ Kabul gereksinimleri:
 - mobil satırların bağımsız açılıp kapanması;
 - yeniden sıralamadan sonra açık satır durumunun hesap kimliğiyle korunması;
 - eski/hata/yeniden bağlama durumlarının kapalı satırda görünmesi;
+- `renewal_pending`, `renewal_unknown` ve `renewal_pending · maliyet koruması` durumlarının desktop kartı/mobil kapalı satırda doğru Türkçe metin ve eylemle görünmesi; son veriyi silmemesi veya `%0`a çevirmemesi;
+- stale sıralama metriğinin renewal sırasında açık `son veri` etiketiyle korunması, reconnect sonrası yeni generation snapshot'ı gelene kadar kartın sessizce taze sayılmaması;
 - tüm görünür ve erişilebilir arayüz metninin Türkçe olması;
 - kullanıcının sıralama seçiminin uygun canlı geri bildirim vermesi, pasif yenilemenin ekran okuyucuyu bölmemesi;
 - 12 hesapta üç lane ve `+N` kümelerinin deterministik olması, erişilebilir `<ol>` sırasının doğru kalması.

@@ -36,11 +36,9 @@ export async function POST(req: Request) {
       { status: 421, headers: NO_STORE },
     );
   }
-  const requestOrigin = new URL(req.url).origin;
   const mutationFailure = browserMutationFailure(req);
   if (
     mutationFailure ||
-    requestOrigin !== STRICT_LOCAL_ORIGIN ||
     req.headers.get("origin") !== STRICT_LOCAL_ORIGIN ||
     req.headers.get("sec-fetch-site")?.trim().toLowerCase() !== "same-origin"
   ) {

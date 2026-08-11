@@ -10,7 +10,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STRICT_LOCAL_HOST = "127.0.0.1:37645";
-const STRICT_LOCAL_ORIGIN = "http://127.0.0.1:37645";
 const NO_STORE = { "Cache-Control": "no-store" };
 
 export async function GET(
@@ -24,10 +23,7 @@ export async function GET(
     );
   }
   const requestUrl = new URL(req.url);
-  if (
-    req.headers.get("host") !== STRICT_LOCAL_HOST ||
-    requestUrl.origin !== STRICT_LOCAL_ORIGIN
-  ) {
+  if (req.headers.get("host") !== STRICT_LOCAL_HOST) {
     return NextResponse.json(
       { error: "Bad request" },
       { status: 421, headers: NO_STORE },

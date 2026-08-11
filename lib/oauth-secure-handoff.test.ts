@@ -328,6 +328,69 @@ test("strict handoff launches once, exchanges once, persists, and exposes only g
   }
 });
 
+test("launch accepts Next's internal request origin while retaining the external Host", async () => {
+  const attemptId = await startAttempt();
+  const request = () =>
+    new Request(
+      `http://next-internal.invalid:3000/api/connect/oauth/attempt/launch/${attemptId}`,
+      { headers: { Host: "127.0.0.1:37645" } },
+    );
+
+  const launched = await launchGet(request(), {
+    params: Promise.resolve({ attemptId }),
+  });
+  assert.equal(launched.status, 302);
+  assert.equal(launched.headers.get("cache-control"), "no-store");
+  const location = new URL(launched.headers.get("location") ?? "");
+  assert.match(location.searchParams.get("state"), /^[A-Za-z0-9_-]{43}$/);
+
+  const replay = await launchGet(request(), {
+    params: Promise.resolve({ attemptId }),
+  });
+  assert.notEqual(replay.status, 302);
+  assert.equal((await replay.text()).includes(attemptId), false);
+});
+
+test("callback accepts Next's internal request origin while retaining external Origin", async () => {
+  const code = "internal-origin-code-canary";
+  const attemptId = await startAttempt();
+  const { state } = await launchAttempt(attemptId);
+  const request = () =>
+    new Request("http://next-internal.invalid:3000/api/connect/oauth/attempt/callback", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "127.0.0.1:37645",
+        Origin: "http://127.0.0.1:37645",
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ code, state }),
+    });
+
+  const completed = await callbackPost(request());
+  assert.equal(completed.status, 200);
+  assert.equal(completed.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await completed.json(), { status: "done" });
+  assert.equal(
+    providerCalls.filter((call) => call.url.endsWith("/v1/oauth/token")).length,
+    1,
+  );
+
+  const replay = await callbackPost(request());
+  assert.notEqual(replay.status, 200);
+  const publicResponses = JSON.stringify({
+    completed: { status: "done" },
+    replay: await replay.json(),
+  });
+  for (const canary of [code, state, attemptId, password, accessToken, refreshToken]) {
+    assert.equal(publicResponses.includes(canary), false, canary);
+  }
+  assert.equal(
+    providerCalls.filter((call) => call.url.endsWith("/v1/oauth/token")).length,
+    1,
+  );
+});
+
 test("concurrent callbacks claim synchronously and permit one token exchange", async () => {
   const attemptId = await startAttempt();
   const { state } = await launchAttempt(attemptId);
@@ -577,6 +640,10 @@ test("every public route enforces strict mode, exact host/origin, password, and 
       },
     ),
   );
-  assert.equal(legacy.status, 404);
+  assert.equal(legacy.status, 401);
+  const legacyBody = await legacy.text();
+  for (const canary of ["legacy-code", "legacy-state", password]) {
+    assert.equal(legacyBody.includes(canary), false, canary);
+  }
   assert.equal(providerCalls.length, 0);
 });

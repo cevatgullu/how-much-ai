@@ -6,7 +6,7 @@ Ignore the OpenAI `GPT-5.3-Codex-Spark` weekly quota everywhere in How Much AI w
 
 ## Design
 
-Filter this provider-specific quota at the `normalizeOpenAIUsage` boundary before it becomes a normalized `LimitEntry`. Identify it by OpenAI's stable `metered_feature` value `codex_bengalfox`, with the observed `GPT-5.3-Codex-Spark` name documented by the regression fixture.
+Filter this provider-specific quota at the `normalizeOpenAIUsage` boundary before it becomes a normalized `LimitEntry`. Skip only a weekly-scoped row whose `metered_feature` is exactly `codex_bengalfox` and whose displayed name is exactly `GPT-5.3-Codex-Spark`. Requiring the weekly kind and both identities preserves other models and any non-weekly Spark row.
 
 Filtering at normalization removes the quota consistently from account cards, Peak weekly statistics, local notifications, and cron notifications because all of those consumers use the normalized bars. No UI-specific filtering or notification exception is added.
 

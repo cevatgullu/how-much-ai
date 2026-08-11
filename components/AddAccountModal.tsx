@@ -360,16 +360,14 @@ export function AddAccountModal({
     setCompletionError(null);
 
     let cancelled = false;
-    if (!strictLocal) {
-      void loadOrCreatePkce().then(
-        (bundle) => {
-          if (!cancelled) setOauthBundle(bundle);
-        },
-        () => {
-          if (!cancelled) setError("Couldn't prepare a secure Claude sign-in. Close this dialog and try again.");
-        },
-      );
-    }
+    void loadOrCreatePkce().then(
+      (bundle) => {
+        if (!cancelled) setOauthBundle(bundle);
+      },
+      () => {
+        if (!cancelled) setError("Couldn't prepare a secure Claude sign-in. Close this dialog and try again.");
+      },
+    );
     void (async () => {
       // Self-hosted local quick-connect is available only on the machine running the app.
       try {
@@ -493,7 +491,7 @@ export function AddAccountModal({
   }, [localWorking, finishServerConnect, reconnectAccount?.id]);
 
   const connectPaste = useCallback(async () => {
-    if (strictLocal || !pasted.trim() || working || operationRef.current) return;
+    if (!pasted.trim() || working || operationRef.current) return;
     const oauthFlow = credentialMethod === "private-login";
     const operation = oauthFlow ? "oauth" : "manual";
     const controller = new AbortController();
@@ -586,7 +584,7 @@ export function AddAccountModal({
       if (operationRef.current === operation) operationRef.current = null;
       if (!closedRef.current) setWorking(false);
     }
-  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, strictLocal, working]);
+  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, working]);
 
   // OpenAI: one-click read of this machine's ~/.codex/auth.json.
   const connectOpenAILocal = useCallback(async () => {
@@ -708,7 +706,7 @@ export function AddAccountModal({
   if (!open) return null;
   const requestBusy = working || localWorking || deviceBusy || pairStarting || pairState === "processing";
   const command = DUMP_COMMANDS[os];
-  const oauthUrl = !strictLocal && oauthBundle ? buildAuthorizeUrl(oauthBundle) : null;
+  const oauthUrl = oauthBundle ? buildAuthorizeUrl(oauthBundle) : null;
 
   const successCard = connected && (
     <div className="space-y-3">
@@ -793,7 +791,7 @@ export function AddAccountModal({
                 }}
                 className={`mt-3 ${PRIMARY_LINK} ${!oauthUrl || requestBusy ? "pointer-events-none opacity-50" : ""}`}
               >
-                {oauthUrl ? "Open secure Claude sign-in" : "Preparing secure sign-in…"}
+                Open secure Claude sign-in
               </a>
               <p className="mt-2 text-[11px] leading-relaxed text-faint">
                 Claude opens in a new tab and gives you a one-time authorization code. A <code>claude setup-token</code>{" "}
@@ -901,25 +899,27 @@ export function AddAccountModal({
           >
             {working ? "Connecting…" : credentialMethod === "private-login" ? "Finish secure connection" : "Connect shared session"}
           </button>
-          <button
-            type="button"
-            disabled={requestBusy}
-            onClick={() => {
-              setCredentialMethod((current) =>
-                current === "private-login" ? "existing-session" : "private-login",
-              );
-              setPasted("");
-              setError(null);
-              setCopied(false);
-              setCopyError(null);
-              setOauthOpened(false);
-            }}
-            className="mt-2 inline-flex min-h-11 items-center text-xs font-medium text-muted underline decoration-border underline-offset-4 transition-colors enabled:hover:text-ivory"
-          >
-            {credentialMethod === "private-login"
-              ? "Use my existing Claude Code login instead"
-              : "Use a private app login (recommended)"}
-          </button>
+          {!strictLocal && (
+            <button
+              type="button"
+              disabled={requestBusy}
+              onClick={() => {
+                setCredentialMethod((current) =>
+                  current === "private-login" ? "existing-session" : "private-login",
+                );
+                setPasted("");
+                setError(null);
+                setCopied(false);
+                setCopyError(null);
+                setOauthOpened(false);
+              }}
+              className="mt-2 inline-flex min-h-11 items-center text-xs font-medium text-muted underline decoration-border underline-offset-4 transition-colors enabled:hover:text-ivory"
+            >
+              {credentialMethod === "private-login"
+                ? "Use my existing Claude Code login instead"
+                : "Use a private app login (recommended)"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1132,30 +1132,6 @@ export function AddAccountModal({
     </div>
   );
 
-  const strictConnectorBlock = (
-    <div className="mt-5 rounded-xl border border-coral/35 bg-coral/10 p-5">
-      <div className="flex items-start gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
-          <DesktopIcon className="h-5 w-5" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-ivory">
-            Use the secure Claude connector
-          </p>
-          <p className="mt-1 text-xs leading-relaxed text-muted">
-            Close this dialog and choose the Claude connection action in the
-            secure launcher. It opens a private, temporary Edge profile and
-            completes the one-use handoff directly with this local service.
-          </p>
-          <p className="mt-2 text-[11px] leading-relaxed text-faint">
-            Connection material is not entered into or copied through the
-            dashboard.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-
   return (
     <ModalShell
       open={open}
@@ -1170,8 +1146,6 @@ export function AddAccountModal({
       {providerPicker}
       {provider === "openai" ? (
         openaiBlock
-      ) : strictLocal ? (
-        strictConnectorBlock
       ) : (
       <div className="mt-5">
           {(mode === "paste" || showPaste) && !connected && pasteBlock}

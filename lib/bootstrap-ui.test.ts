@@ -197,7 +197,7 @@ test("the OAuth callback page is strict-only and renders only generic completion
   assert.doesNotMatch(markup, /textarea|input|authorization code|account id/i);
 });
 
-test("strict dashboard connection UI delegates Claude to the connector and never renders browser PKCE or paste controls", () => {
+test("strict dashboard connection UI renders the Claude PKCE form without a launcher-only dead end", () => {
   process.env = validStrictEnvironment();
   const page = HomePage() as { props?: Record<string, unknown> };
   assert.equal(page.props?.strictLocal, true);
@@ -210,12 +210,11 @@ test("strict dashboard connection UI delegates Claude to the connector and never
   const strictMarkup = renderToStaticMarkup(
     createElement(AddAccountModal, { ...sharedProps, strictLocal: true }),
   );
-  assert.match(strictMarkup, /secure claude connector/i);
-  assert.doesNotMatch(
-    strictMarkup,
-    /authorization code|preparing secure sign-in|claude-credentials|private app login/i,
-  );
-  assert.doesNotMatch(strictMarkup, /<textarea/i);
+  assert.match(strictMarkup, /open secure claude sign-in/i);
+  assert.match(strictMarkup, /claude authorization code/i);
+  assert.match(strictMarkup, /<textarea/i);
+  assert.doesNotMatch(strictMarkup, /use the secure claude connector/i);
+  assert.doesNotMatch(strictMarkup, /use my existing claude code login|claude code credentials/i);
 
   const ordinaryMarkup = renderToStaticMarkup(
     createElement(AddAccountModal, { ...sharedProps, strictLocal: false }),

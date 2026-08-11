@@ -132,7 +132,60 @@ function request(
 
 test("strict-local OAuth accepts the public loopback origin through Next's internal URL", async () => {
   const previousEnvironment = process.env;
+  const originalConsoleError = console.error;
+  const logged: unknown[][] = [];
   const strictDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "hmc-oauth-connect-strict-"));
+  process.env = {
+    ...process.env,
+    HMC_STRICT_LOCAL_MODE: "1",
+    HMC_LISTEN_HOST: "127.0.0.1",
+    HMC_LISTEN_PORT: "37645",
+    PORT: "37645",
+    NODE_ENV: "production",
+    APP_PASSWORD: "p".repeat(64),
+    AUTH_SECRET: "s".repeat(64),
+    VAULT_ENCRYPTION_SECRET: "v".repeat(64),
+    VAULT_DATA_DIR: strictDataDir,
+    TRUST_PROXY_IP_HEADERS: "0",
+    ENABLE_LOCAL_CONNECT: "1",
+    NEXT_TELEMETRY_DISABLED: "1",
+  };
+  const strictSessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    const response = await POST(
+      new Request("http://next-internal.invalid:3000/api/connect/oauth", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Host: "127.0.0.1:37645",
+          Origin: "http://127.0.0.1:37645",
+          "Sec-Fetch-Site": "same-origin",
+          Cookie: strictSessionCookie,
+        },
+        body: JSON.stringify({ code: CODE, state: STATE, verifier: VERIFIER }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as Record<string, unknown>;
+    assert.deepEqual(body, { ok: true });
+    const publicEvidence = JSON.stringify({ body, logged });
+    for (const secret of [CODE, VERIFIER, profileAccountId, "oauth@example.com", ACCESS_TOKEN, REFRESH_TOKEN]) {
+      assert.equal(publicEvidence.includes(secret), false);
+    }
+    const stored = await loadAccounts("default");
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].credentialKind, "managed");
+  } finally {
+    console.error = originalConsoleError;
+    process.env = previousEnvironment;
+    await fs.rm(strictDataDir, { recursive: true, force: true });
+  }
+});
+
+test("strict-local OAuth mismatch response never identifies the verified Claude account", async () => {
+  const previousEnvironment = process.env;
+  const strictDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "hmc-oauth-connect-strict-mismatch-"));
   process.env = {
     ...process.env,
     HMC_STRICT_LOCAL_MODE: "1",
@@ -160,16 +213,13 @@ test("strict-local OAuth accepts the public loopback origin through Next's inter
           "Sec-Fetch-Site": "same-origin",
           Cookie: strictSessionCookie,
         },
-        body: JSON.stringify({ code: CODE, state: STATE, verifier: VERIFIER }),
+        body: JSON.stringify({ code: CODE, state: STATE, verifier: VERIFIER, expectedAccountId: "other-account" }),
       }),
     );
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as Record<string, unknown>;
-    assert.equal(JSON.stringify(body).includes(ACCESS_TOKEN), false);
-    assert.equal(JSON.stringify(body).includes(REFRESH_TOKEN), false);
-    const stored = await loadAccounts("default");
-    assert.equal(stored.length, 1);
-    assert.equal(stored[0].credentialKind, "managed");
+    assert.equal(response.status, 409);
+    const body = (await response.json()) as { error: string };
+    assert.equal(body.error.includes(profileAccountId), false);
+    assert.equal(body.error.includes("oauth@example.com"), false);
   } finally {
     process.env = previousEnvironment;
     await fs.rm(strictDataDir, { recursive: true, force: true });

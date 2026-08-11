@@ -95,6 +95,10 @@ export function browserMutationFailure(req: Request): { error: string; status: 4
   if (strictLocal && req.headers.get("host") !== "127.0.0.1:37645") {
     return { error: "Cross-origin request is not allowed", status: 403 };
   }
+  const fetchSite = req.headers.get("sec-fetch-site")?.trim().toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    return { error: "Cross-origin request is not allowed", status: 403 };
+  }
   const suppliedOrigin = req.headers.get("origin")?.trim();
   if (suppliedOrigin) {
     try {
@@ -110,9 +114,5 @@ export function browserMutationFailure(req: Request): { error: string; status: 4
     return null;
   }
 
-  const fetchSite = req.headers.get("sec-fetch-site")?.trim().toLowerCase();
-  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
-    return { error: "Cross-origin request is not allowed", status: 403 };
-  }
   return null;
 }

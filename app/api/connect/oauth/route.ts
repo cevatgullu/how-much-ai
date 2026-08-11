@@ -32,7 +32,8 @@ function upstreamStatus(status: number): number {
 // The authorization code is exchanged once, its credential verifies both usage and profile, and
 // the encrypted vault save completes before a success response. Tokens are never reflected.
 export async function POST(req: Request) {
-  if (strictLocalModeEnabled()) assertStrictLocalEnvironment();
+  const strictLocal = strictLocalModeEnabled();
+  if (strictLocal) assertStrictLocalEnvironment();
   const guard = browserMutationFailure(req);
   if (guard) return NextResponse.json({ error: guard.error }, { status: guard.status });
 
@@ -112,7 +113,9 @@ export async function POST(req: Request) {
   if (expectedAccountId && accountId !== expectedAccountId) {
     return NextResponse.json(
       {
-        error: `This Claude login belongs to ${profile.account?.email ?? "a different account"}. Reconnect the selected account instead.`,
+        error: strictLocal
+          ? "This Claude login does not match the selected account. Reconnect the selected account instead."
+          : `This Claude login belongs to ${profile.account?.email ?? "a different account"}. Reconnect the selected account instead.`,
       },
       { status: 409 },
     );
@@ -120,6 +123,7 @@ export async function POST(req: Request) {
 
   try {
     const info = await saveResolvedAccount(userId, profile, tokens, "managed");
+    if (strictLocal) return NextResponse.json({ ok: true });
     return NextResponse.json({
       ok: true,
       id: info.id,

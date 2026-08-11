@@ -101,6 +101,20 @@ test("strict-local browser mutation guard trusts only its public loopback origin
       ),
       { error: "Cross-origin request is not allowed", status: 403 },
     );
+    for (const fetchSite of ["cross-site", "same-site"]) {
+      assert.deepEqual(
+        browserMutationFailure(
+          new Request("http://next-internal.invalid:3000/api/test", {
+            headers: {
+              Host: "127.0.0.1:37645",
+              Origin: "http://127.0.0.1:37645",
+              "Sec-Fetch-Site": fetchSite,
+            },
+          }),
+        ),
+        { error: "Cross-origin request is not allowed", status: 403 },
+      );
+    }
   } finally {
     if (previousStrictLocalMode === undefined) delete process.env.HMC_STRICT_LOCAL_MODE;
     else process.env.HMC_STRICT_LOCAL_MODE = previousStrictLocalMode;

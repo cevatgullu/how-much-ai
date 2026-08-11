@@ -10,7 +10,7 @@ How Much AI'ı iPhone 17 Pro Max ve Windows'ta kurulabilir bir web uygulamasına
 
 Kritik ürün sözü şudur:
 
-> Kullanım sunucuda 5 dakikada bir kontrol edilir. Sağlayıcı önbelleği, ağ koşulları ve sistem ayarları nedeniyle bildirim birkaç dakika gecikebilir.
+> Sunucu izlemesi açıkken kullanım 5 dakikada bir kontrol edilir. Sağlayıcı önbelleği, ağ koşulları ve sistem ayarları nedeniyle bildirim birkaç dakika gecikebilir.
 
 “Gerçek zamanlı”, “kesin teslim edildi” veya işletim sisteminin Odak/Rahatsız Etme ayarlarını aşan bir garanti verilmez.
 
@@ -47,7 +47,9 @@ Bildirim yolu, ön plandaki React yenilemesinden bağımsızdır:
 5. Oluşan gerçek geçişler, kayıtlı Web Push aboneliklerine VAPID ile standart Declarative Web Push zarfında gönderilir.
 6. iOS/iPadOS 18.4+ zarfı JavaScript olmadan görünür fallback olarak gösterebilir; kayıtlı service worker aynı zarfı eski Safari/Edge/Chrome için doğrulayıp programatik bildirime dönüştürür. Apple/Microsoft push altyapısı PWA veya tarayıcı penceresi kapalı olsa da teslim yolunu işletir.
 
-Uygulama açıkken mevcut otomatik ekran yenilemesi devam eder. Arka planda tarayıcı zamanlayıcısı işletim sistemi tarafından yavaşlatılsa veya süreç tamamen kapansa bile sunucu cron'u devam eder. Bu nedenle bildirim doğruluğu `visibilitychange`, açık sekme veya cihazdaki dakikalık timer'a bağlı değildir.
+Monitor bir UTC ayda en fazla 9.000 planlı çevrimi atomik olarak kabul eder ve Vercel route'u 15 saniyede sert kapanır. Ortak monotonic deadline bütün provider/refresh/push dış I/O'sunu keser ve son 1,5 saniyeyi durable event journal + final commit'e ayırır. Normal çevrim batch-read/batch-commit ile en fazla 12, refresh/recovery/push-cleanup yolu en fazla 20 Convex function call kullanır; action, bütün iç `run*`/route dönüş çağrıları ve tek app retry bu sayıya dahildir. Bütçe, replay veya kota koruması devreye girerse bu durum normal sağlık/kesinti durumundan ayrı saklanır ve panelde açıkça gösterilir.
+
+Uygulama açıkken pano hesap başına polling veya doğrudan Convex browser subscription'ı yapmaz. Mevcut HttpOnly parola oturumuyla korunan tek same-origin aggregate snapshot route'u, `Panoyu canlı izle` açık ve belge görünürken en sık 60 saniyede bir çağrılır; görünür duruma dönüşte bir kez hemen yenilenir. Hidden veya kapalı cihaz periyodik snapshot isteği üretmez. Tek atomik operation aynı anda en fazla iki görünür cihaz lease'ini, aylık 100.000 toplam çağrıyı ve bunların içinde 20.000 tam cevabı korur; sınırdan sonra pano on-focus/manuel moda geçer. İstemci `knownRevision` yollar; operation önce en fazla 256 B revision özetini okur, değişmediyse kartları okumadan en fazla 256 B zarf, değiştiyse ve tam-cevap bütçesi varsa en fazla 10 KiB credential-free tam snapshot döndürür. Eski/uydurma revision tam-cevap bütçesini aşamaz. Manuel `Yenile` eylemi ayrı oran limitli provider yenilemesidir. Arka planda bu görünür pano sorgusu veya render işletim sistemi tarafından yavaşlatılsa ya da süreç tamamen kapansa bile sunucu cron'u devam eder. Bu nedenle bildirim doğruluğu `visibilitychange`, açık sekme veya cihazdaki timer'a bağlı değildir; arka planda yalnız görünür pano çizimi durabilir.
 
 İlk başarılı okuma yalnızca durum tohumlar ve eski uyarıları topluca göndermez. Başarısız, eksik veya önbellekten eski okuma yeni bildirim geçişi üretmez.
 
@@ -229,7 +231,11 @@ Durumlar:
 - taze fakat kısmi;
 - gecikmiş: son uygun çalışma 12 dakikadan eski;
 - kesinti: 30 dakikadan eski;
-- son çalışma başarısız.
+- son çalışma başarısız;
+- kullanıcı tarafından durduruldu;
+- maliyet koruması nedeniyle durduruldu.
+
+Bildirim kontrol merkezinde ayrı `Sunucu izlemesi` anahtarı bulunur ve hosted kurulum ilk tamamlandığında varsayılanı açıktır. Kullanıcı kapatırken, provider taramalarının ve gerçek eşik/reset push'larının duracağı açıkça onaylanır; cihaz aboneliği ile test bildirimi yeteneği silinmez. Kasıtlı duruşta 12/30 dakika sayaçları `gecikmiş` veya `kesinti` üretmez. Yeniden açma hemen tek taze tarama başlatır, algılayıcıyı o snapshot ile yeniden tohumlar ve kapalı aralıkta kaçırılmış olabilecek olayları topluca göndermez.
 
 ### 3. Gönderim
 
@@ -312,6 +318,7 @@ Badging API yalnızca özellik algılanırsa kullanılır. Badge bir sayaç değ
 - Kısmi hesap taraması, başarılı hesapların geçerli olaylarını işleyebilir ancak panel bunu tümüyle başarılı göstermez.
 - Sağlayıcı cache'i veya hata ayrıntısı bildirim gövdesine sızmaz.
 - Saat kayması veya geriye giden reset damgası reset sayılmaz.
+- Aylık run/call koruması tetiklenirse provider taraması yapılmaz, durum `maliyet koruması` olarak görünür ve kullanıcı bunu sıradan provider kesintisi sanmaz.
 
 Cron JSON cevabı ve Convex ping logu hesap e-postası, takma ad, hesap kimliği veya ham hata gövdesi taşımaz. Yalnız opak run ID, denenen/başarılı/hatalı sayıları, kanal sonuç sayıları ve izin verilmiş hata sınıfı bulunur; Convex eylemi cevabın ilk 300 karakterini olduğu gibi loglamaz.
 
@@ -323,7 +330,8 @@ Arayüz ve bildirim metinleri Türkçedir. Zaman damgaları depolama ve karşıl
 
 - PWA kurulumu kimlik doğrulamayı kaldırmaz; her açılış mevcut parola oturum sınırını kullanır.
 - Push aboneliği ve ayar API'leri parola oturumu gerektirir.
-- Cron yolu yalnızca en az 32 karakterlik bağımsız `CRON_SECRET` ile çalışır.
+- Aggregate pano snapshot route'u aynı HttpOnly oturumu doğrular, yalnız credential-free kart projeksiyonu döndürür ve tarayıcıya `VAULT_ACCESS_SECRET` ya da doğrudan Convex query yetkisi vermez.
+- Cron yolu `proxy.ts` Routing Middleware matcher'ından exact olarak çıkarılır; kendi içinde üretim-secret ortamını, query'siz exact path'i, `POST` metodunu, `APP_URL` origin/host eşleşmesini, 2 KiB gövde sınırını ve en az 32 karakterlik bağımsız `CRON_SECRET`ı fail-closed doğrular.
 - VAPID özel anahtarı yalnızca Vercel sunucu ortamındadır; tarayıcıya yalnızca public key gider.
 - Convex işlevleri ayrı `VAULT_ACCESS_SECRET` ile korunur.
 - Service worker kaynağı ve manifest yolları public olabilir; kullanıcı verisi içermez.
@@ -350,6 +358,9 @@ Arayüz ve bildirim metinleri Türkçedir. Zaman damgaları depolama ve karşıl
 - mevcut cihaz durum API'sinin endpoint/anahtar sızdırmaması;
 - cihaz kimliğinin yalnız doğru profile üretilmesi, storage kaybı/yeniden kurulumda endpoint upsert'i ve kapatmada iki taraflı silme;
 - tüm monitor sağlık durumları ve 12/30 dakika sınırları;
+- `Sunucu izlemesi` açık/kapalı kontrolü, kasıtlı duruşun gecikme sayılmaması ve yeniden açılışın sessiz yeniden tohumlaması;
+- 9.000 aylık run tavanı, 15 saniyelik route sınırı, ortak dış-I/O abort/journal rezervi, normal `≤12` ve olaylı `≤20` Convex call bütçesi;
+- görünür panonun tek oturum-korumalı toplu snapshot route'unu en sık 60 saniyede bir kullanması; tek atomik operation'ın iki canlı cihaz/100.000 aylık toplam/20.000 aylık tam-cevap, 256 B revision/unchanged ve 10 KiB full-response sınırlarını keyfî revision'a karşı koruması; doğrudan Convex browser query'si açmaması ve arka plan render'ı dursa da sunucu cron'unun sürmesi;
 - kısmi taramanın başarı gibi gösterilmemesi;
 - üç reset radyo seçeneğinin eski boolean'lara doğru eşlenmesi;
 - eski `recovery=true/everyReset=true` durumunda tek olay;
@@ -362,6 +373,8 @@ Arayüz ve bildirim metinleri Türkçedir. Zaman damgaları depolama ve karşıl
 ### Service worker ve kapalı uygulama
 
 - uygulama açık, arka planda, Safari/Edge penceresi kapalı ve Ana Ekran PWA penceresi kapalı durumlarda cron bağımsızlığı;
+- pano takibi kapalı ve uygulama kapalıyken sunucu izlemesi açıksa cron/push'un sürmesi;
+- sunucu izlemesi kapalıyken tarama/gerçek push olmaması, durumun `kullanıcı tarafından durduruldu` kalması ve yeniden açılışta eski olay yağmuru oluşmaması;
 - iPhone App Switcher'dan PWA penceresi kapatıldıktan sonra gecikmeli testin görünmesi; Ana Ekran'dan uygulama silinmesinin ise aboneliği kaldıran beklenen ayrı durum olması;
 - service worker'ın kimlik doğrulanmış sayfa/API/cache verisi saklamaması;
 - deklaratif `web_push: 8030` zarfının modern WebKit fallback'i ve klasik worker gösterimi;
@@ -379,4 +392,4 @@ Arayüz ve bildirim metinleri Türkçedir. Zaman damgaları depolama ve karşıl
 
 ## Başarı ölçütü
 
-Kullanıcı iPhone PWA'yı veya Windows tarayıcısını kapattıktan sonra sunucu izlemesi çalışmaya devam eder. Gerçek bir eşik/reset geçişi, sağlayıcı ve işletim sistemi gecikmesi hariç bir sonraki beş dakikalık kontrol çevriminde push yoluna girer. Panel, cihaz kaydını, sunucu sağlığını ve push kabulünü ayrı ve dürüst biçimde açıklar.
+Sunucu izlemesi açıkken kullanıcı iPhone PWA'yı veya Windows tarayıcısını kapattıktan sonra izleme çalışmaya devam eder. Gerçek bir eşik/reset geçişi, sağlayıcı ve işletim sistemi gecikmesi hariç bir sonraki beş dakikalık kontrol çevriminde push yoluna girer. Panel, cihaz kaydını, kasıtlı/maliyet-korumalı duruşu, sunucu sağlığını ve push kabulünü ayrı ve dürüst biçimde açıklar.

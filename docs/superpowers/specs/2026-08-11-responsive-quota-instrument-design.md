@@ -147,9 +147,11 @@ Yapışkan üst şerit üç bölgedir:
 
 1. marka: `How Much AI` ve kısa `Kota cetveli` tanımı;
 2. sağlık özeti: son başarılı kontrol, izlenen hesap sayısı ve hata varsa sayısı;
-3. eylemler: otomatik yenileme, tümünü yenileme, bildirimler, hesap ekleme ve çıkış.
+3. eylemler: `Panoyu canlı izle`, tümünü yenileme, bildirimler, hesap ekleme ve çıkış.
 
 Geniş ekranda metinli eylemler, dar ekranda simge ve erişilebilir ad kullanılır. İngilizce/Türkçe karışımı kaldırılır; `html lang="tr"` ve tüm görünür/ARIA metinleri Türkçedir. Claude, ChatGPT ve model adları özel isim olarak değişmez.
+
+`Panoyu canlı izle` yalnız görünür panonun mevcut HttpOnly oturumla korunan tek toplu sunucu snapshot'ını en sık 60 saniyede bir takip etmesini yönetir; tarayıcı Convex'e doğrudan bağlanmaz ve sunucu bildirim monitorünü değiştirmez. Aynı anda en fazla iki görünür cihaz canlı pano lease'i alır; üçüncü cihazda `İki canlı pano kullanımda · Bu cihaz odaklanınca veya elle yenilenir.` açıklaması görünür. Aylık snapshot koruması dolarsa ilk satır yalnız `Canlı pano maliyet korumasında · Son görülen veri {zaman}.` der. Kapalıyken üst şeritte kalıcı `Pano takibi kapalı · Son görülen veri {zaman}.` satırı görünür ve mevcut kartlar güncelmiş gibi sunulmaz. Her iki durumda da altındaki ayrı durum satırı gerçek monitor durumuna göre `Sunucu izlemesi açık · Bildirimler devam ediyor.`, `Sunucu izlemesi kullanıcı tarafından kapatıldı · Yeni kullanım kontrol edilmiyor.` veya `Maliyet koruması etkin · Yeni kullanım kontrol edilmiyor.` der.
 
 Bu yerelleştirme sınırı pano, giriş/bootstrap/OAuth geri dönüş sayfaları, hesap ekleme/yeniden bağlama akışları, kullanım kartları, bildirim paneli, modal ve hata/boş durumlarını kapsar. Sağlayıcının ham teknik hata metni doğrudan gösterilmez; Türkçe güvenli özet ve referans kodu kullanılır. Kaynak kodu geliştirici mesajları ve sağlayıcı/model özel isimleri çeviri kapsamı dışındadır.
 
@@ -236,7 +238,7 @@ Kesin eylemler:
 - `Yenile`: tüm hesapların mevcut toplu yenilemesini başlatır;
 - `Hesap`: hesap ekleme modalını açar; erişilebilir adı `Hesap ekle`dir;
 - `Uyarılar`: bildirim kontrol merkezini açar;
-- `Menü`: otomatik yenileme anahtarı, çıkış ve yasal/güvenlik bilgisini içeren yardımcı alt sayfayı açar.
+- `Menü`: `Panoyu canlı izle` anahtarı, çıkış ve yasal/güvenlik bilgisini içeren yardımcı alt sayfayı açar. Bu anahtar sunucu bildirim monitorünü kapatmaz; monitor yalnız Bildirimler içindeki `Sunucu izlemesi` kontrolüyle durdurulur.
 
 Kompakt sıralama şeridi ayrı bir düğmedir ve üç sıralama seçeneğini içeren alt sayfayı açar. Her iki alt sayfa da `ModalShell` odak kapanı, inert arka plan, Escape/kapatma ve çağıran düğmeye odak dönüşü kontratını kullanır; aynı anda yalnız biri açıktır.
 

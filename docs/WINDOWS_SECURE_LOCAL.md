@@ -1742,9 +1742,29 @@ Treat every update as a new installation candidate:
    manifest, and runtime-immutability gates.
 5. Re-run Defender before any credential state is introduced into the new
    runtime.
-6. Stop the existing tasks, install the newly reviewed manifest, and repeat
-   every Task 10 and Task 12 boundary check before reconnecting or resuming
-   normal operation.
+6. Stop both verified tasks and close the dedicated Edge window. Confirm that
+   both tasks report `Ready`, no process uses the dedicated `edge-profile`, and
+   port `37645` has no listener.
+7. From the fully verified old installation, retain its exact lowercase
+   `install.json` `manifestSha256` as the compare-and-swap anchor. Invoke the
+   reviewed new installer with its normal candidate trust arguments plus
+   `-ExpectedInstalledManifestSha256 <old-manifest-sha256>`. This option is only
+   for a distinct reviewed commit; it is rejected for a fresh state, the wrong
+   old manifest, or a same-commit manifest replacement. Omitting it preserves
+   the fresh-install/exact-rerun-only default.
+8. Repeat every Task 10 and Task 12 boundary check before reconnecting or
+   resuming normal operation.
+
+The offline update holds an exclusive per-state-root lock, re-verifies the old
+runtime, both exact task plans, and the exact Start-menu shortcut, and stages
+all new immutable/control material outside the state root before activation.
+It does not replace or copy `secrets.dpapi`, `vault`, `edge-profile`, or other
+mutable state. Activation keeps private old-release backups and a sibling
+rollback journal until the new startup integrity, tasks, and shortcut all
+verify. A caught activation failure restores the complete old release and
+leaves both tasks stopped. If rollback cannot be proven, do not delete the
+journal or backups; leave the tasks stopped and re-run the same reviewed
+candidate with the same old/new manifest anchors so recovery is deterministic.
 
 Never run `git pull`, an automatic updater, `npm update`, or an unreviewed
 installer against the running installation. A changed provider endpoint or

@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[a-fA-F0-9]{64}$')]
     [string]$ExpectedManifestSha256,
+    [ValidatePattern('^[a-fA-F0-9]{64}$')]
+    [string]$ExpectedInstalledManifestSha256,
     [Parameter(Mandatory)][string]$NodePath,
     [Parameter(Mandatory)]
     [ValidatePattern('^[a-fA-F0-9]{64}$')]
@@ -33,6 +35,13 @@ $installBytes = $null
 $nodeLock = $null
 $ps51Lock = $null
 $sourceEntryLocks = New-Object 'Collections.Generic.List[IO.FileStream]'
+$updateLock = $null
+$updateTransaction = $null
+$updateActivationStarted = $false
+$updateRollbackAttempted = $false
+$updateNewInstall = $null
+$updateNewConfig = $null
+$updateNewLauncherPlan = $null
 $bootstrapHashFiles = [ordered]@{
     start = 'start-secure-local.ps1'
     open = 'open-secure-local.ps1'
@@ -849,6 +858,258 @@ function Write-HmaAtomicExactBytes {
     }
 }
 
+function Get-HmaUpdateTransactionPaths {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$StateRoot)
+
+    $state = [IO.Path]::GetFullPath($StateRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar
+    )
+    $parent = [IO.Path]::GetDirectoryName($state)
+    $stateBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
+        $state.ToLowerInvariant()
+    )
+    try {
+        $key = Get-HmaBytesSha256 -Bytes $stateBytes
+    } finally {
+        [Array]::Clear($stateBytes, 0, $stateBytes.Length)
+    }
+    return [pscustomobject]@{
+        LockPath = Join-Path $parent ('.hma-update-' + $key + '.lock')
+        JournalRoot = Join-Path $parent ('.hma-update-' + $key)
+    }
+}
+
+function Enter-HmaUpdateLock {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LiteralPath)
+
+    $parent = Get-HmaVerifiedExistingPath `
+        -LiteralPath ([IO.Path]::GetDirectoryName($LiteralPath)) `
+        -Directory
+    if (-not (Test-HmaOrdinalEqual `
+            -Left $parent `
+            -Right ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($LiteralPath))) `
+            -IgnoreCase)) {
+        throw 'The update lock path is invalid.'
+    }
+    $created = -not [IO.File]::Exists($LiteralPath)
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open(
+            $LiteralPath,
+            [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+        )
+        if ($created) {
+            Set-HmaPrivateAcl -LiteralPath $LiteralPath
+        } elseif (-not (Test-HmaPrivateAcl -LiteralPath $LiteralPath)) {
+            $stream.Dispose()
+            $stream = $null
+            throw 'The update lock ACL is invalid.'
+        }
+        return $stream
+    } catch {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        throw 'Another secure local update is active.'
+    }
+}
+
+function Assert-HmaUpdateRootPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [Parameter(Mandatory)][string]$StateRoot
+    )
+
+    $expected = (Get-HmaUpdateTransactionPaths -StateRoot $StateRoot).JournalRoot
+    if (-not (Test-HmaOrdinalEqual `
+            -Left ([IO.Path]::GetFullPath($LiteralPath)) `
+            -Right ([IO.Path]::GetFullPath([string]$expected)) `
+            -IgnoreCase) -or
+        [IO.Path]::GetFileName($LiteralPath) -cnotmatch '^\.hma-update-[a-f0-9]{64}$') {
+        throw 'The update journal path is invalid.'
+    }
+}
+
+function Remove-HmaUpdateRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [Parameter(Mandatory)][string]$StateRoot
+    )
+
+    Assert-HmaUpdateRootPath -LiteralPath $LiteralPath -StateRoot $StateRoot
+    if (-not [IO.Directory]::Exists($LiteralPath)) {
+        return
+    }
+    $null = Get-HmaNoFollowTree -Root $LiteralPath
+    [IO.Directory]::Delete($LiteralPath, $true)
+}
+
+function Copy-HmaExactTree {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    if ([IO.File]::Exists($Destination) -or [IO.Directory]::Exists($Destination)) {
+        throw 'An update staging path is occupied.'
+    }
+    [void][IO.Directory]::CreateDirectory($Destination)
+    foreach ($entry in @(Get-HmaNoFollowTree -Root $Source)) {
+        $target = Join-Path $Destination $entry.Relative.Replace(
+            '/',
+            [IO.Path]::DirectorySeparatorChar
+        )
+        if ($entry.IsDirectory) {
+            [void][IO.Directory]::CreateDirectory($target)
+            continue
+        }
+        $parent = [IO.Path]::GetDirectoryName($target)
+        if (-not [IO.Directory]::Exists($parent)) {
+            [void][IO.Directory]::CreateDirectory($parent)
+        }
+        $sourceStream = $null
+        $destinationStream = $null
+        try {
+            $sourceStream = [IO.File]::Open(
+                $entry.FullName,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::Read,
+                [IO.FileShare]::Read
+            )
+            $destinationStream = [IO.File]::Open(
+                $target,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+            )
+            $sourceStream.CopyTo($destinationStream)
+            $destinationStream.Flush($true)
+        } finally {
+            if ($null -ne $destinationStream) { $destinationStream.Dispose() }
+            if ($null -ne $sourceStream) { $sourceStream.Dispose() }
+        }
+    }
+    Set-HmaPrivateAcl -LiteralPath $Destination
+}
+
+function Copy-HmaExactFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    $bytes = [IO.File]::ReadAllBytes(
+        (Get-HmaVerifiedExistingPath -LiteralPath $Source -File)
+    )
+    try {
+        if ([IO.File]::Exists($Destination) -or [IO.Directory]::Exists($Destination)) {
+            throw 'An update staging path is occupied.'
+        }
+        [IO.File]::WriteAllBytes($Destination, $bytes)
+        Set-HmaPrivateAcl -LiteralPath $Destination
+    } finally {
+        [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+}
+
+function Write-HmaUpdateJournal {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JournalRoot,
+        [Parameter(Mandatory)]$Record
+    )
+
+    $destination = Join-Path $JournalRoot 'transaction.json'
+    $temporary = Join-Path $JournalRoot 'transaction.next'
+    $previous = Join-Path $JournalRoot 'transaction.previous'
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
+        (ConvertTo-Json -InputObject $Record -Depth 4 -Compress)
+    )
+    try {
+        [IO.File]::WriteAllBytes($temporary, $bytes)
+        Set-HmaPrivateAcl -LiteralPath $temporary
+        if ([IO.File]::Exists($destination)) {
+            [IO.File]::Replace($temporary, $destination, $previous, $true)
+            if ([IO.File]::Exists($previous)) {
+                [IO.File]::Delete($previous)
+            }
+        } else {
+            [IO.File]::Move($temporary, $destination)
+        }
+    } finally {
+        [Array]::Clear($bytes, 0, $bytes.Length)
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+}
+
+function Get-HmaUpdateJournal {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$JournalRoot)
+
+    $path = Get-HmaVerifiedExistingPath `
+        -LiteralPath (Join-Path $JournalRoot 'transaction.json') `
+        -File
+    $text = [IO.File]::ReadAllText($path)
+    $record = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+    Assert-HmaExactProperties `
+        -InputObject $record `
+        -Expected @(
+            'version',
+            'stateRoot',
+            'oldCommit',
+            'oldManifestSha256',
+            'newCommit',
+            'newManifestSha256',
+            'phase'
+        )
+    if ($record.version -isnot [int] -or [int]$record.version -ne 1 -or
+        $record.stateRoot -isnot [string] -or
+        $record.oldCommit -isnot [string] -or
+        [string]$record.oldCommit -cnotmatch '^[a-fA-F0-9]{40}$' -or
+        $record.newCommit -isnot [string] -or
+        [string]$record.newCommit -cnotmatch '^[a-fA-F0-9]{40}$' -or
+        $record.phase -isnot [string] -or
+        [string]$record.phase -cnotin @(
+            'staging',
+            'staged',
+            'runtime-promoted',
+            'bootstrap-promoted',
+            'control-promoted',
+            'task-1-promoted',
+            'task-2-promoted',
+            'shortcut-promoted',
+            'verified',
+            'rolled-back'
+        )) {
+        throw 'The update journal is invalid.'
+    }
+    Assert-HmaSha256 -Value $record.oldManifestSha256
+    Assert-HmaSha256 -Value $record.newManifestSha256
+    return $record
+}
+
+function Get-HmaPropertyString {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return ''
+    }
+    return [string]$property.Value
+}
+
 function Get-HmaBootstrapHash {
     [CmdletBinding()]
     param(
@@ -926,6 +1187,7 @@ function Get-HmaTaskVerificationRecord {
         Actions = @($task.Actions)
         Triggers = @($task.Triggers)
         Settings = $task.Settings
+        State = Get-HmaPropertyString -InputObject $task -Name 'State'
         Xml = [string]$xml
     }
 }
@@ -1086,6 +1348,619 @@ function Install-HmaStartMenuLauncher {
         }
         $script:launcherStagingRoot = $null
     }
+}
+
+function Assert-HmaOfflineUpdateQuiescent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)]$LauncherPlan
+    )
+
+    foreach ($taskName in $script:registeredTaskNames) {
+        $record = Get-HmaTaskVerificationRecord -TaskName $taskName
+        if ($null -eq $record -or
+            -not (Test-HmaRegisteredTaskPlan `
+                -Task $record `
+                -Config $Config `
+                -StateRoot $StateRoot) -or
+            -not (Test-HmaOrdinalEqual -Left ([string]$record.State) -Right 'Ready')) {
+            throw 'The installed scheduled tasks are not quiescent.'
+        }
+    }
+    if (-not (Test-HmaStartMenuLauncherPlan -Plan $LauncherPlan)) {
+        throw 'The installed Start-menu launcher differs.'
+    }
+    $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+    if (@($listeners | Where-Object { [int]$_.LocalPort -eq 37645 }).Count -ne 0) {
+        throw 'The secure local listener is not quiescent.'
+    }
+    $edgeProfile = Join-Path $StateRoot 'edge-profile'
+    foreach ($process in @(Get-CimInstance `
+            -ClassName Win32_Process `
+            -ErrorAction Stop)) {
+        $commandLine = Get-HmaPropertyString -InputObject $process -Name 'CommandLine'
+        if (-not [string]::IsNullOrWhiteSpace($commandLine) -and
+            $commandLine.IndexOf($edgeProfile, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw 'The dedicated Edge profile is not quiescent.'
+        }
+    }
+}
+
+function Register-HmaExactTaskPlans {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Plans)
+
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $sid
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $sid `
+        -LogonType Interactive `
+        -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet `
+        -MultipleInstances IgnoreNew `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+        -RestartCount 3 `
+        -RestartInterval (New-TimeSpan -Minutes 1)
+    foreach ($plan in @($Plans)) {
+        $action = New-ScheduledTaskAction `
+            -Execute $plan.FilePath `
+            -Argument $plan.ActionArguments
+        Register-ScheduledTask `
+            -TaskName $plan.Name `
+            -Action $action `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+            -Force | Out-Null
+    }
+}
+
+function Test-HmaExactTasksForConfig {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$StateRoot
+    )
+
+    foreach ($taskName in $script:registeredTaskNames) {
+        $record = Get-HmaTaskVerificationRecord -TaskName $taskName
+        if ($null -eq $record -or
+            -not (Test-HmaRegisteredTaskPlan `
+                -Task $record `
+                -Config $Config `
+                -StateRoot $StateRoot)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function New-HmaLauncherPlanAtPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Plan,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    return [pscustomobject][ordered]@{
+        Path = $Path
+        TargetPath = [string]$Plan.TargetPath
+        Arguments = [string]$Plan.Arguments
+        WorkingDirectory = [string]$Plan.WorkingDirectory
+        Description = [string]$Plan.Description
+        IconLocation = [string]$Plan.IconLocation
+        WindowStyle = [int]$Plan.WindowStyle
+        Hotkey = [string]$Plan.Hotkey
+    }
+}
+
+function Start-HmaUpdateTransaction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JournalRoot,
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)]$OldConfig,
+        [Parameter(Mandatory)]$OldTaskRecords,
+        [Parameter(Mandatory)]$OldLauncherPlan,
+        [Parameter(Mandatory)]$NewInstall,
+        [Parameter(Mandatory)][byte[]]$NewInstallBytes,
+        [Parameter(Mandatory)][byte[]]$NewManifestBytes,
+        [Parameter(Mandatory)]$RuntimeEntries,
+        [Parameter(Mandatory)]$RuntimeStreams,
+        [Parameter(Mandatory)]$BootstrapEntries,
+        [Parameter(Mandatory)]$BootstrapStreams,
+        [Parameter(Mandatory)]$NewTaskPlans,
+        [Parameter(Mandatory)]$NewLauncherPlan
+    )
+
+    Assert-HmaUpdateRootPath -LiteralPath $JournalRoot -StateRoot $StateRoot
+    if ([IO.File]::Exists($JournalRoot) -or [IO.Directory]::Exists($JournalRoot)) {
+        throw 'An update journal already exists.'
+    }
+    [void][IO.Directory]::CreateDirectory($JournalRoot)
+    Set-HmaPrivateAcl -LiteralPath $JournalRoot
+    $record = [ordered]@{
+        version = 1
+        stateRoot = $StateRoot
+        oldCommit = [string]$OldConfig.commit
+        oldManifestSha256 = [string]$OldConfig.manifestSha256
+        newCommit = [string]$NewInstall.commit
+        newManifestSha256 = [string]$NewInstall.manifestSha256
+        phase = 'staging'
+    }
+    Write-HmaUpdateJournal -JournalRoot $JournalRoot -Record $record
+
+    $oldRoot = Join-Path $JournalRoot 'old'
+    $candidateRoot = Join-Path $JournalRoot 'candidate'
+    [void][IO.Directory]::CreateDirectory($oldRoot)
+    [void][IO.Directory]::CreateDirectory($candidateRoot)
+    $oldAppBackup = Join-Path $oldRoot 'app'
+    $oldBootstrapBackup = Join-Path $oldRoot 'bootstrap'
+    Copy-HmaExactTree -Source ([string]$OldConfig.appRoot) -Destination $oldAppBackup
+    Copy-HmaExactTree `
+        -Source (Join-Path $StateRoot 'bootstrap') `
+        -Destination $oldBootstrapBackup
+    Copy-HmaExactFile `
+        -Source (Join-Path $StateRoot 'install.json') `
+        -Destination (Join-Path $oldRoot 'install.json')
+    Copy-HmaExactFile `
+        -Source (Join-Path $StateRoot 'integrity.json') `
+        -Destination (Join-Path $oldRoot 'integrity.json')
+    $oldManifest = ConvertFrom-Json `
+        -InputObject ([IO.File]::ReadAllText((Join-Path $oldRoot 'integrity.json'))) `
+        -ErrorAction Stop
+    Assert-HmaExactProperties `
+        -InputObject $oldManifest `
+        -Expected @(
+            'commit',
+            'nodeSha256',
+            'installerSha256',
+            'runtimeFiles',
+            'bootstrapFiles'
+        )
+    if (-not (Test-HmaOrdinalEqual `
+            -Left ([string]$oldManifest.commit) `
+            -Right ([string]$OldConfig.commit))) {
+        throw 'The staged rollback manifest is invalid.'
+    }
+    $oldRuntimeEntries = @(
+        Get-HmaValidatedManifestEntries -Entries $oldManifest.runtimeFiles -Kind runtime
+    )
+    $oldBootstrapEntries = @(
+        Get-HmaValidatedManifestEntries -Entries $oldManifest.bootstrapFiles -Kind bootstrap
+    )
+    Assert-HmaInstalledEntries -Root $oldAppBackup -Entries $oldRuntimeEntries
+    Assert-HmaInstalledEntries `
+        -Root $oldBootstrapBackup `
+        -Entries $oldBootstrapEntries
+    Copy-HmaExactFile `
+        -Source ([string]$OldLauncherPlan.Path) `
+        -Destination (Join-Path $oldRoot 'How Much AI.lnk')
+    foreach ($recordedTask in @($OldTaskRecords)) {
+        $taskPath = Join-Path $oldRoot ([string]$recordedTask.TaskName + '.xml')
+        [IO.File]::WriteAllText(
+            $taskPath,
+            [string]$recordedTask.Xml,
+            (New-Object Text.UTF8Encoding($false))
+        )
+        Set-HmaPrivateAcl -LiteralPath $taskPath
+    }
+
+    $candidateApp = Join-Path $candidateRoot 'app'
+    $candidateBootstrap = Join-Path $candidateRoot 'bootstrap'
+    [void][IO.Directory]::CreateDirectory($candidateApp)
+    [void][IO.Directory]::CreateDirectory($candidateBootstrap)
+    Copy-HmaManifestEntries `
+        -Destination $candidateApp `
+        -Entries $RuntimeEntries `
+        -Streams $RuntimeStreams
+    Copy-HmaManifestEntries `
+        -Destination $candidateBootstrap `
+        -Entries $BootstrapEntries `
+        -Streams $BootstrapStreams
+    Assert-HmaInstalledEntries -Root $candidateApp -Entries $RuntimeEntries
+    Assert-HmaInstalledEntries -Root $candidateBootstrap -Entries $BootstrapEntries
+    [IO.File]::WriteAllBytes((Join-Path $candidateRoot 'install.json'), $NewInstallBytes)
+    [IO.File]::WriteAllBytes((Join-Path $candidateRoot 'integrity.json'), $NewManifestBytes)
+    $taskBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
+        (ConvertTo-Json -InputObject @($NewTaskPlans) -Depth 6 -Compress)
+    )
+    try {
+        [IO.File]::WriteAllBytes((Join-Path $candidateRoot 'tasks.json'), $taskBytes)
+    } finally {
+        [Array]::Clear($taskBytes, 0, $taskBytes.Length)
+    }
+    $candidateLauncherPlan = New-HmaLauncherPlanAtPath `
+        -Plan $NewLauncherPlan `
+        -Path (Join-Path $candidateRoot 'How Much AI.lnk')
+    New-HmaStartMenuShortcutCandidate -Plan $candidateLauncherPlan
+    Set-HmaPrivateAcl -LiteralPath $JournalRoot
+    if (-not (Test-HmaStartMenuLauncherPlan -Plan $candidateLauncherPlan)) {
+        throw 'The staged Start-menu launcher is invalid.'
+    }
+    if (-not (Test-HmaPrivateAcl -LiteralPath $JournalRoot -Recurse)) {
+        throw 'The update journal ACL is invalid.'
+    }
+    $record.phase = 'staged'
+    Write-HmaUpdateJournal -JournalRoot $JournalRoot -Record $record
+    return [pscustomobject]@{
+        Record = $record
+        OldRoot = $oldRoot
+        CandidateRoot = $candidateRoot
+    }
+}
+
+function Set-HmaUpdatePhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Transaction,
+        [Parameter(Mandatory)][string]$Phase
+    )
+
+    $Transaction.Record.phase = $Phase
+    Write-HmaUpdateJournal `
+        -JournalRoot ([IO.Path]::GetDirectoryName([string]$Transaction.OldRoot)) `
+        -Record $Transaction.Record
+}
+
+function Invoke-HmaUpdateActivation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Transaction,
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)]$NewInstall,
+        [Parameter(Mandatory)]$NewTaskPlans,
+        [Parameter(Mandatory)]$NewLauncherPlan
+    )
+
+    $oldRoot = [string]$Transaction.OldRoot
+    $candidateRoot = [string]$Transaction.CandidateRoot
+    $runtimeParent = Join-Path $StateRoot 'runtime'
+    $oldAppRoot = Join-Path $runtimeParent ([string]$Transaction.Record.oldCommit)
+    $newAppRoot = [string]$NewInstall.appRoot
+    Move-Item `
+        -LiteralPath $oldAppRoot `
+        -Destination (Join-Path $oldRoot 'app-original')
+    Move-Item `
+        -LiteralPath (Join-Path $candidateRoot 'app') `
+        -Destination $newAppRoot
+    Set-HmaUpdatePhase -Transaction $Transaction -Phase 'runtime-promoted'
+
+    Move-Item `
+        -LiteralPath (Join-Path $StateRoot 'bootstrap') `
+        -Destination (Join-Path $oldRoot 'bootstrap-original')
+    Move-Item `
+        -LiteralPath (Join-Path $candidateRoot 'bootstrap') `
+        -Destination (Join-Path $StateRoot 'bootstrap')
+    Set-HmaUpdatePhase -Transaction $Transaction -Phase 'bootstrap-promoted'
+
+    foreach ($name in @('integrity.json', 'install.json')) {
+        Move-Item `
+            -LiteralPath (Join-Path $StateRoot $name) `
+            -Destination (Join-Path $oldRoot ($name + '.original'))
+        Move-Item `
+            -LiteralPath (Join-Path $candidateRoot $name) `
+            -Destination (Join-Path $StateRoot $name)
+    }
+    Set-HmaPrivateAcl -LiteralPath $StateRoot
+    Set-HmaUpdatePhase -Transaction $Transaction -Phase 'control-promoted'
+
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $sid
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $sid `
+        -LogonType Interactive `
+        -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet `
+        -MultipleInstances IgnoreNew `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+        -RestartCount 3 `
+        -RestartInterval (New-TimeSpan -Minutes 1)
+    for ($index = 0; $index -lt @($NewTaskPlans).Count; $index += 1) {
+        $plan = @($NewTaskPlans)[$index]
+        $action = New-ScheduledTaskAction `
+            -Execute $plan.FilePath `
+            -Argument $plan.ActionArguments
+        Register-ScheduledTask `
+            -TaskName $plan.Name `
+            -Action $action `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+            -Force | Out-Null
+        Set-HmaUpdatePhase `
+            -Transaction $Transaction `
+            -Phase ('task-' + [string]($index + 1) + '-promoted')
+    }
+
+    $launcherPath = [string]$NewLauncherPlan.Path
+    Move-Item `
+        -LiteralPath $launcherPath `
+        -Destination (Join-Path $oldRoot 'How Much AI.original.lnk')
+    Move-Item `
+        -LiteralPath (Join-Path $candidateRoot 'How Much AI.lnk') `
+        -Destination $launcherPath
+    Set-HmaUpdatePhase -Transaction $Transaction -Phase 'shortcut-promoted'
+
+    $config = Assert-HmaStartupIntegrity -StateRoot $StateRoot
+    if (-not (Test-HmaOrdinalEqual `
+            -Left ([string]$config.manifestSha256) `
+            -Right ([string]$NewInstall.manifestSha256) `
+            -IgnoreCase) -or
+        -not (Test-HmaExactTasksForConfig -Config $config -StateRoot $StateRoot) -or
+        -not (Test-HmaStartMenuLauncherPlan -Plan $NewLauncherPlan)) {
+        throw 'The updated installation did not verify exactly.'
+    }
+    Set-HmaUpdatePhase -Transaction $Transaction -Phase 'verified'
+    return $config
+}
+
+function Restore-HmaUpdateTransaction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Transaction,
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)]$NewInstall,
+        [Parameter(Mandatory)]$NewConfig,
+        [Parameter(Mandatory)]$NewLauncherPlan,
+        [Parameter(Mandatory)][string]$PowerShellPath
+    )
+
+    $oldRoot = [string]$Transaction.OldRoot
+    $oldInstallPath = Get-HmaVerifiedExistingPath `
+        -LiteralPath (Join-Path $oldRoot 'install.json') `
+        -File
+    $oldIntegrityPath = Get-HmaVerifiedExistingPath `
+        -LiteralPath (Join-Path $oldRoot 'integrity.json') `
+        -File
+    if (-not (Test-HmaOrdinalEqual `
+            -Left (Get-HmaSha256 -LiteralPath $oldIntegrityPath) `
+            -Right ([string]$Transaction.Record.oldManifestSha256) `
+            -IgnoreCase)) {
+        throw 'The rollback manifest is invalid.'
+    }
+    $oldInstall = ConvertFrom-Json `
+        -InputObject ([IO.File]::ReadAllText($oldInstallPath)) `
+        -ErrorAction Stop
+    $oldManifest = ConvertFrom-Json `
+        -InputObject ([IO.File]::ReadAllText($oldIntegrityPath)) `
+        -ErrorAction Stop
+    Assert-HmaExactProperties `
+        -InputObject $oldManifest `
+        -Expected @(
+            'commit',
+            'nodeSha256',
+            'installerSha256',
+            'runtimeFiles',
+            'bootstrapFiles'
+        )
+    Assert-HmaExactProperties `
+        -InputObject $oldInstall `
+        -Expected @(
+            'version',
+            'appRoot',
+            'stateRoot',
+            'nodePath',
+            'port',
+            'upstreamBase',
+            'commit',
+            'manifestSha256',
+            'bootstrapHashes'
+        )
+    if (-not (Test-HmaOrdinalEqual `
+            -Left ([string]$oldInstall.manifestSha256) `
+            -Right ([string]$Transaction.Record.oldManifestSha256) `
+            -IgnoreCase) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$oldInstall.commit) `
+            -Right ([string]$Transaction.Record.oldCommit)) -or
+        -not (Test-HmaOrdinalEqual `
+            -Left ([string]$oldManifest.commit) `
+            -Right ([string]$Transaction.Record.oldCommit))) {
+        throw 'The rollback configuration is invalid.'
+    }
+    $oldRuntimeEntries = @(
+        Get-HmaValidatedManifestEntries -Entries $oldManifest.runtimeFiles -Kind runtime
+    )
+    $oldBootstrapEntries = @(
+        Get-HmaValidatedManifestEntries -Entries $oldManifest.bootstrapFiles -Kind bootstrap
+    )
+    Assert-HmaInstalledEntries `
+        -Root (Join-Path $oldRoot 'app') `
+        -Entries $oldRuntimeEntries
+    Assert-HmaInstalledEntries `
+        -Root (Join-Path $oldRoot 'bootstrap') `
+        -Entries $oldBootstrapEntries
+
+    $currentTaskRecords = @{}
+    $currentTasksMatchNew = @{}
+    foreach ($taskName in $script:registeredTaskNames) {
+        $current = Get-HmaTaskVerificationRecord -TaskName $taskName
+        $currentTaskRecords[$taskName] = $current
+        $currentTasksMatchNew[$taskName] = (
+            $null -ne $current -and
+            (Test-HmaRegisteredTaskPlan `
+                -Task $current `
+                -Config $NewConfig `
+                -StateRoot $StateRoot)
+        )
+    }
+    $currentLauncherMatchesNew = (
+        [IO.File]::Exists([string]$NewLauncherPlan.Path) -and
+        (Test-HmaStartMenuLauncherPlan -Plan $NewLauncherPlan)
+    )
+
+    Import-Module `
+        (Join-Path $oldRoot 'bootstrap\SecureLocalRuntime.psm1') `
+        -Force `
+        -ErrorAction Stop
+    $oldTaskPlans = @(
+        New-HmaTaskPlans `
+            -BootstrapRoot (Join-Path $StateRoot 'bootstrap') `
+            -StateRoot $StateRoot `
+            -PowerShellPath $PowerShellPath `
+            -BootstrapHashes $oldInstall.bootstrapHashes
+    )
+    if ($oldTaskPlans.Count -ne 2) {
+        throw 'The rollback task plans are invalid.'
+    }
+    $oldLauncherPlan = New-HmaStartMenuLauncherPlan `
+        -StateRoot $StateRoot `
+        -PowerShellPath $PowerShellPath `
+        -IntegrityHash ([string]$oldInstall.bootstrapHashes.integrity) `
+        -LauncherHash ([string]$oldInstall.bootstrapHashes.launcher)
+    foreach ($taskName in $script:registeredTaskNames) {
+        $current = $currentTaskRecords[$taskName]
+        $matchesOld = (
+            $null -ne $current -and
+            (Test-HmaRegisteredTaskPlan `
+                -Task $current `
+                -Config $oldInstall `
+                -StateRoot $StateRoot)
+        )
+        if ($null -ne $current -and
+            -not $matchesOld -and
+            -not [bool]$currentTasksMatchNew[$taskName]) {
+            throw 'A scheduled task changed during rollback.'
+        }
+        if ($null -ne $current) {
+            Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        }
+    }
+    $launcherPath = [string]$NewLauncherPlan.Path
+    $currentLauncherMatchesOld = (
+        [IO.File]::Exists($launcherPath) -and
+        (Test-HmaStartMenuLauncherPlan -Plan $oldLauncherPlan)
+    )
+    if ([IO.File]::Exists($launcherPath) -and
+        -not $currentLauncherMatchesOld -and
+        -not $currentLauncherMatchesNew) {
+        throw 'The Start-menu launcher changed during rollback.'
+    }
+
+    $newAppRoot = [string]$NewInstall.appRoot
+    if ([IO.Directory]::Exists($newAppRoot)) {
+        $null = Get-HmaNoFollowTree -Root $newAppRoot
+        Move-Item `
+            -LiteralPath $newAppRoot `
+            -Destination (Join-Path $oldRoot ('failed-app-' + [Guid]::NewGuid().ToString('N')))
+    } elseif ([IO.File]::Exists($newAppRoot)) {
+        throw 'The updated runtime path is invalid.'
+    }
+    $oldAppRoot = [string]$oldInstall.appRoot
+    if (-not [IO.Directory]::Exists($oldAppRoot)) {
+        $oldOriginal = Join-Path $oldRoot 'app-original'
+        if ([IO.Directory]::Exists($oldOriginal)) {
+            Move-Item -LiteralPath $oldOriginal -Destination $oldAppRoot
+        } else {
+            Copy-HmaExactTree `
+                -Source (Join-Path $oldRoot 'app') `
+                -Destination $oldAppRoot
+        }
+    }
+    Assert-HmaInstalledEntries -Root $oldAppRoot -Entries $oldRuntimeEntries
+
+    $bootstrapRoot = Join-Path $StateRoot 'bootstrap'
+    if ([IO.Directory]::Exists($bootstrapRoot)) {
+        $bootstrapIsOld = $true
+        try {
+            Assert-HmaInstalledEntries -Root $bootstrapRoot -Entries $oldBootstrapEntries
+        } catch {
+            $bootstrapIsOld = $false
+        }
+        if (-not $bootstrapIsOld) {
+            $null = Get-HmaNoFollowTree -Root $bootstrapRoot
+            Move-Item `
+                -LiteralPath $bootstrapRoot `
+                -Destination (Join-Path $oldRoot ('failed-bootstrap-' + [Guid]::NewGuid().ToString('N')))
+        }
+    } elseif ([IO.File]::Exists($bootstrapRoot)) {
+        throw 'The bootstrap rollback path is invalid.'
+    }
+    if (-not [IO.Directory]::Exists($bootstrapRoot)) {
+        $bootstrapOriginal = Join-Path $oldRoot 'bootstrap-original'
+        if ([IO.Directory]::Exists($bootstrapOriginal)) {
+            Move-Item -LiteralPath $bootstrapOriginal -Destination $bootstrapRoot
+        } else {
+            Copy-HmaExactTree `
+                -Source (Join-Path $oldRoot 'bootstrap') `
+                -Destination $bootstrapRoot
+        }
+    }
+    Assert-HmaInstalledEntries -Root $bootstrapRoot -Entries $oldBootstrapEntries
+
+    foreach ($name in @('integrity.json', 'install.json')) {
+        $destination = Join-Path $StateRoot $name
+        $oldFile = Join-Path $oldRoot $name
+        $oldHash = Get-HmaSha256 -LiteralPath $oldFile
+        $currentHash = if ([IO.File]::Exists($destination)) {
+            Get-HmaSha256 -LiteralPath $destination
+        } else {
+            ''
+        }
+        $newFile = Join-Path ([string]$Transaction.CandidateRoot) $name
+        $newHash = if ([IO.File]::Exists($newFile)) {
+            Get-HmaSha256 -LiteralPath $newFile
+        } elseif ($name -ceq 'integrity.json') {
+            [string]$NewInstall.manifestSha256
+        } elseif ($name -ceq 'install.json') {
+            $newInstallBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
+                (ConvertTo-Json -InputObject $NewInstall -Depth 8 -Compress)
+            )
+            try {
+                Get-HmaBytesSha256 -Bytes $newInstallBytes
+            } finally {
+                [Array]::Clear($newInstallBytes, 0, $newInstallBytes.Length)
+            }
+        } else {
+            ''
+        }
+        if ($currentHash -ne '' -and
+            -not (Test-HmaOrdinalEqual -Left $currentHash -Right $oldHash -IgnoreCase) -and
+            ($newHash -eq '' -or
+                -not (Test-HmaOrdinalEqual -Left $currentHash -Right $newHash -IgnoreCase))) {
+            throw 'A control file changed during rollback.'
+        }
+        if (-not (Test-HmaOrdinalEqual -Left $currentHash -Right $oldHash -IgnoreCase)) {
+            if ([IO.File]::Exists($destination)) {
+                Move-Item `
+                    -LiteralPath $destination `
+                    -Destination (Join-Path $oldRoot ($name + '.failed-' + [Guid]::NewGuid().ToString('N')))
+            }
+            Copy-HmaExactFile -Source $oldFile -Destination $destination
+        }
+    }
+
+    if ($currentLauncherMatchesNew) {
+        Move-Item `
+            -LiteralPath $launcherPath `
+            -Destination (Join-Path $oldRoot ('failed-launcher-' + [Guid]::NewGuid().ToString('N') + '.lnk'))
+    }
+    if (-not [IO.File]::Exists($launcherPath)) {
+        Copy-HmaExactFile `
+            -Source (Join-Path $oldRoot 'How Much AI.lnk') `
+            -Destination $launcherPath
+    }
+    Set-HmaPrivateAcl -LiteralPath $launcherPath
+    Register-HmaExactTaskPlans -Plans $oldTaskPlans
+    foreach ($taskName in $script:registeredTaskNames) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    }
+    Import-Module `
+        (Join-Path $bootstrapRoot 'SecureLocalIntegrity.psm1') `
+        -Force `
+        -ErrorAction Stop
+    $restored = Assert-HmaStartupIntegrity -StateRoot $StateRoot
+    if (-not (Test-HmaExactTasksForConfig -Config $restored -StateRoot $StateRoot) -or
+        -not (Test-HmaStartMenuLauncherPlan -Plan $oldLauncherPlan)) {
+        throw 'The rollback did not verify exactly.'
+    }
+    Set-HmaUpdatePhase -Transaction $Transaction -Phase 'rolled-back'
+    return $restored
 }
 
 try {
@@ -1341,6 +2216,262 @@ namespace HmaInstaller
         -Entries $bootstrapEntries `
         -FileName 'SecureLocalSecrets.psm1'
     $secretsPath = Join-Path $state 'secrets.dpapi'
+    $updatePaths = Get-HmaUpdateTransactionPaths -StateRoot $state
+    $stateExists = [IO.Directory]::Exists($state)
+    if (-not $stateExists -and
+        $PSBoundParameters.ContainsKey('ExpectedInstalledManifestSha256')) {
+        throw 'An installed manifest cannot be expected for a fresh state.'
+    }
+
+    if ($stateExists -and [IO.Directory]::Exists([string]$updatePaths.JournalRoot)) {
+        if (-not $PSBoundParameters.ContainsKey('ExpectedInstalledManifestSha256')) {
+            throw 'The interrupted update requires its installed manifest anchor.'
+        }
+        $updateLock = Enter-HmaUpdateLock -LiteralPath ([string]$updatePaths.LockPath)
+        $journal = Get-HmaUpdateJournal -JournalRoot ([string]$updatePaths.JournalRoot)
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$journal.stateRoot) `
+                -Right $state `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$journal.oldManifestSha256) `
+                -Right $ExpectedInstalledManifestSha256 `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$journal.newManifestSha256) `
+                -Right $ExpectedManifestSha256 `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$journal.newCommit) `
+                -Right $head)) {
+            throw 'The interrupted update anchors differ.'
+        }
+        if ([string]$journal.phase -ceq 'staging') {
+            Remove-HmaUpdateRoot `
+                -LiteralPath ([string]$updatePaths.JournalRoot) `
+                -StateRoot $state
+        } else {
+            Import-HmaReviewedSourceModule `
+                -Source $source `
+                -Entries $bootstrapEntries `
+                -FileName 'SecureLocalRuntime.psm1'
+            $recoveryConfig = ConvertFrom-Json -InputObject $installText -ErrorAction Stop
+            $recoveryTaskPlans = @(
+                New-HmaTaskPlans `
+                    -BootstrapRoot $bootstrapRoot `
+                    -StateRoot $state `
+                    -PowerShellPath $powerShellPath `
+                    -BootstrapHashes $recoveryConfig.bootstrapHashes
+            )
+            $recoveryLauncherPlan = New-HmaStartMenuLauncherPlan `
+                -StateRoot $state `
+                -PowerShellPath $powerShellPath `
+                -IntegrityHash ([string]$recoveryConfig.bootstrapHashes.integrity) `
+                -LauncherHash ([string]$recoveryConfig.bootstrapHashes.launcher)
+            $updateTransaction = [pscustomobject]@{
+                Record = $journal
+                OldRoot = Join-Path ([string]$updatePaths.JournalRoot) 'old'
+                CandidateRoot = Join-Path ([string]$updatePaths.JournalRoot) 'candidate'
+            }
+            $updateNewInstall = $install
+            $updateNewConfig = $recoveryConfig
+            $updateNewLauncherPlan = $recoveryLauncherPlan
+            $updateActivationStarted = $true
+            $updateRollbackAttempted = $true
+            $null = Restore-HmaUpdateTransaction `
+                -Transaction $updateTransaction `
+                -StateRoot $state `
+                -NewInstall $install `
+                -NewConfig $recoveryConfig `
+                -NewLauncherPlan $recoveryLauncherPlan `
+                -PowerShellPath $powerShellPath
+            Remove-HmaUpdateRoot `
+                -LiteralPath ([string]$updatePaths.JournalRoot) `
+                -StateRoot $state
+            $updateActivationStarted = $false
+            $updateTransaction = $null
+            Import-HmaReviewedSourceModule `
+                -Source $source `
+                -Entries $bootstrapEntries `
+                -FileName 'SecureLocalIntegrity.psm1'
+            Import-HmaReviewedSourceModule `
+                -Source $source `
+                -Entries $bootstrapEntries `
+                -FileName 'SecureLocalSecrets.psm1'
+        }
+    }
+
+    $isUpdate = $false
+    $oldConfig = $null
+    if ($stateExists) {
+        $preliminaryInstall = ConvertFrom-Json `
+            -InputObject ([IO.File]::ReadAllText((Join-Path $state 'install.json'))) `
+            -ErrorAction Stop
+        Assert-HmaExactProperties `
+            -InputObject $preliminaryInstall `
+            -Expected @(
+                'version',
+                'appRoot',
+                'stateRoot',
+                'nodePath',
+                'port',
+                'upstreamBase',
+                'commit',
+                'manifestSha256',
+                'bootstrapHashes'
+            )
+        Assert-HmaSha256 -Value $preliminaryInstall.manifestSha256
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$preliminaryInstall.manifestSha256) `
+                -Right $ExpectedManifestSha256 `
+                -IgnoreCase)) {
+            if (Test-HmaOrdinalEqual `
+                    -Left ([string]$preliminaryInstall.commit) `
+                    -Right $head) {
+                throw 'A same-revision manifest replacement is not permitted.'
+            }
+            if (-not $PSBoundParameters.ContainsKey('ExpectedInstalledManifestSha256') -or
+                -not (Test-HmaOrdinalEqual `
+                    -Left ([string]$preliminaryInstall.manifestSha256) `
+                    -Right $ExpectedInstalledManifestSha256 `
+                    -IgnoreCase)) {
+                throw 'The installed manifest compare-and-swap check failed.'
+            }
+            if ($null -eq $updateLock) {
+                $updateLock = Enter-HmaUpdateLock `
+                    -LiteralPath ([string]$updatePaths.LockPath)
+            }
+            $isUpdate = $true
+        }
+    }
+
+    if ($isUpdate) {
+        $oldConfig = Assert-HmaStartupIntegrity -StateRoot $state
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$oldConfig.manifestSha256) `
+                -Right $ExpectedInstalledManifestSha256 `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$oldConfig.stateRoot) `
+                -Right $state `
+                -IgnoreCase) -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$oldConfig.nodePath) `
+                -Right $nodePath `
+                -IgnoreCase) -or
+            [int]$oldConfig.port -ne 37645 -or
+            -not (Test-HmaOrdinalEqual `
+                -Left ([string]$oldConfig.upstreamBase) `
+                -Right $upstreamBase) -or
+            [int]$oldConfig.version -ne 1) {
+            throw 'The installed release is incompatible with the candidate.'
+        }
+        $bundle = Unprotect-HmaSecretBundle -Path $secretsPath
+        Import-Module `
+            (Join-Path $state 'bootstrap\SecureLocalRuntime.psm1') `
+            -Force `
+            -ErrorAction Stop
+        $oldTaskRecords = @()
+        foreach ($taskName in $registeredTaskNames) {
+            $oldTaskRecords += Get-HmaTaskVerificationRecord -TaskName $taskName
+        }
+        $oldLauncherPlan = New-HmaStartMenuLauncherPlan `
+            -StateRoot $state `
+            -PowerShellPath $powerShellPath `
+            -IntegrityHash ([string]$oldConfig.bootstrapHashes.integrity) `
+            -LauncherHash ([string]$oldConfig.bootstrapHashes.launcher)
+        Assert-HmaOfflineUpdateQuiescent `
+            -Config $oldConfig `
+            -StateRoot $state `
+            -LauncherPlan $oldLauncherPlan
+
+        Import-HmaReviewedSourceModule `
+            -Source $source `
+            -Entries $bootstrapEntries `
+            -FileName 'SecureLocalRuntime.psm1'
+        $newConfig = ConvertFrom-Json -InputObject $installText -ErrorAction Stop
+        $newTaskPlans = @(
+            New-HmaTaskPlans `
+                -BootstrapRoot $bootstrapRoot `
+                -StateRoot $state `
+                -PowerShellPath $powerShellPath `
+                -BootstrapHashes $newConfig.bootstrapHashes
+        )
+        if ($newTaskPlans.Count -ne 2) {
+            throw 'The candidate scheduled-task plans are invalid.'
+        }
+        $newLauncherPlan = New-HmaStartMenuLauncherPlan `
+            -StateRoot $state `
+            -PowerShellPath $powerShellPath `
+            -IntegrityHash ([string]$newConfig.bootstrapHashes.integrity) `
+            -LauncherHash ([string]$newConfig.bootstrapHashes.launcher)
+
+        $allLockedStreams = @($sourceEntryLocks)
+        $runtimeLockedStreams = New-Object 'Collections.Generic.List[IO.FileStream]'
+        for ($index = 0; $index -lt $runtimeEntries.Count; $index += 1) {
+            [void]$runtimeLockedStreams.Add($allLockedStreams[$index])
+        }
+        $bootstrapLockedStreams = New-Object 'Collections.Generic.List[IO.FileStream]'
+        for ($index = 0; $index -lt $bootstrapEntries.Count; $index += 1) {
+            [void]$bootstrapLockedStreams.Add(
+                $allLockedStreams[$runtimeEntries.Count + $index]
+            )
+        }
+        $updateTransaction = Start-HmaUpdateTransaction `
+            -JournalRoot ([string]$updatePaths.JournalRoot) `
+            -StateRoot $state `
+            -OldConfig $oldConfig `
+            -OldTaskRecords $oldTaskRecords `
+            -OldLauncherPlan $oldLauncherPlan `
+            -NewInstall $install `
+            -NewInstallBytes $installBytes `
+            -NewManifestBytes $manifestBytes `
+            -RuntimeEntries $runtimeEntries `
+            -RuntimeStreams $runtimeLockedStreams `
+            -BootstrapEntries $bootstrapEntries `
+            -BootstrapStreams $bootstrapLockedStreams `
+            -NewTaskPlans $newTaskPlans `
+            -NewLauncherPlan $newLauncherPlan
+        $updateNewInstall = $install
+        $updateNewConfig = $newConfig
+        $updateNewLauncherPlan = $newLauncherPlan
+        $stagedOldConfig = Assert-HmaStartupIntegrity -StateRoot $state
+        if (-not (Test-HmaOrdinalEqual `
+                -Left ([string]$stagedOldConfig.manifestSha256) `
+                -Right $ExpectedInstalledManifestSha256 `
+                -IgnoreCase)) {
+            throw 'The installed release changed during staging.'
+        }
+        Import-Module `
+            (Join-Path $state 'bootstrap\SecureLocalRuntime.psm1') `
+            -Force `
+            -ErrorAction Stop
+        Assert-HmaOfflineUpdateQuiescent `
+            -Config $stagedOldConfig `
+            -StateRoot $state `
+            -LauncherPlan $oldLauncherPlan
+        Import-HmaReviewedSourceModule `
+            -Source $source `
+            -Entries $bootstrapEntries `
+            -FileName 'SecureLocalRuntime.psm1'
+        $updateActivationStarted = $true
+        $null = Invoke-HmaUpdateActivation `
+            -Transaction $updateTransaction `
+            -StateRoot $state `
+            -NewInstall $install `
+            -NewTaskPlans $newTaskPlans `
+            -NewLauncherPlan $newLauncherPlan
+        Assert-HmaSourceEntryLease `
+            -Entries $allSourceEntries `
+            -Streams $sourceEntryLocks
+        Remove-HmaUpdateRoot `
+            -LiteralPath ([string]$updatePaths.JournalRoot) `
+            -StateRoot $state
+        $updateActivationStarted = $false
+        $updateTransaction = $null
+        return
+    }
+
     if ([IO.Directory]::Exists($state)) {
         $existingConfig = Assert-HmaStartupIntegrity -StateRoot $state
         $existingInstallBytes = [IO.File]::ReadAllBytes((Join-Path $state 'install.json'))
@@ -1601,7 +2732,33 @@ namespace HmaInstaller
         throw 'A retained executable changed.'
     }
 } catch {
-    if ($launcherCreatedByThisRun -and
+    if ($updateActivationStarted -and
+        $null -ne $updateTransaction -and
+        -not $updateRollbackAttempted) {
+        $updateRollbackAttempted = $true
+        try {
+            $null = Restore-HmaUpdateTransaction `
+                -Transaction $updateTransaction `
+                -StateRoot $state `
+                -NewInstall $updateNewInstall `
+                -NewConfig $updateNewConfig `
+                -NewLauncherPlan $updateNewLauncherPlan `
+                -PowerShellPath $powerShellPath
+            Remove-HmaUpdateRoot `
+                -LiteralPath ([IO.Path]::GetDirectoryName([string]$updateTransaction.OldRoot)) `
+                -StateRoot $state
+        } catch {
+        }
+    } elseif ($null -ne $updateTransaction -and -not $updateActivationStarted) {
+        try {
+            Remove-HmaUpdateRoot `
+                -LiteralPath ([IO.Path]::GetDirectoryName([string]$updateTransaction.OldRoot)) `
+                -StateRoot $state
+        } catch {
+        }
+    }
+    if ($null -eq $updateTransaction -and
+        $launcherCreatedByThisRun -and
         $null -ne $launcherCreatedIdentity -and
         $null -ne $launcherPlan -and
         [IO.File]::Exists([string]$launcherPlan.Path)) {
@@ -1628,7 +2785,7 @@ namespace HmaInstaller
         } catch {
         }
     }
-    if ($registrationAttempted) {
+    if ($null -eq $updateTransaction -and $registrationAttempted) {
         foreach ($taskName in $registeredTaskNames) {
             try {
                 Unregister-ScheduledTask `
@@ -1642,6 +2799,9 @@ namespace HmaInstaller
     throw 'Secure local installation failed.'
 } finally {
     Exit-HmaSourceEntryLease -Streams $sourceEntryLocks
+    if ($null -ne $updateLock) {
+        $updateLock.Dispose()
+    }
     if ($null -ne $ps51Lock) {
         $ps51Lock.Dispose()
     }

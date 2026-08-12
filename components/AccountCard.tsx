@@ -39,6 +39,7 @@ export function accountDisplayName(
 
 interface AccountCardProps {
   account: BrowserAccount;
+  strictLocal?: boolean;
   snapshot: AccountSnapshot | undefined;
   metric?: WeeklyAccountMetric;
   fiveHourPeak?: number | null;
@@ -57,6 +58,7 @@ interface AccountCardProps {
 
 export function AccountCard({
   account,
+  strictLocal = false,
   snapshot,
   metric,
   fiveHourPeak,
@@ -580,10 +582,16 @@ export function AccountCard({
           <span
             title={
               managedLogin
-                ? `Private app-owned ${providerName} login; renews automatically without sharing ${cliName}'s session`
+                ? strictLocal
+                  ? `Özel uygulama oturumu; ${cliName} oturumunu paylaşmadan otomatik yenilenir`
+                  : `Private app-owned ${providerName} login; renews automatically without sharing ${cliName}'s session`
                 : setupToken
-                  ? `Legacy inference-only setup token; estimated renewal date ${new Date(account.credentialExpiresAt).toLocaleDateString()}`
-                  : `Shared with ${cliName}; a private app login is more reliable`
+                  ? strictLocal
+                    ? `Eski kurulum belirteci; tahmini yenileme tarihi ${new Date(account.credentialExpiresAt).toLocaleDateString("tr-TR")}`
+                    : `Legacy inference-only setup token; estimated renewal date ${new Date(account.credentialExpiresAt).toLocaleDateString()}`
+                  : strictLocal
+                    ? `${cliName} ile paylaşılır; özel uygulama oturumu daha güvenilirdir`
+                    : `Shared with ${cliName}; a private app login is more reliable`
             }
             className={sharedCliLogin ? "text-[#e3b56e]" : "text-muted"}
           >

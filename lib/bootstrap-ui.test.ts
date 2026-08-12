@@ -82,7 +82,14 @@ const { default: BootstrapPage } = await import("../app/bootstrap/page.tsx");
 const { default: OAuthCallbackPage } = await import(
   "../app/oauth/callback/page.tsx"
 );
-const { AddAccountModal } = await import("../components/AddAccountModal.tsx");
+const addAccountModalModule = await import("../components/AddAccountModal.tsx");
+const {
+  AddAccountModal,
+  AddAccountSuccessCard,
+  ClaudeLocalMachinePanel,
+  ClaudePairingPanel,
+  strictLocalClaudeConnectionErrorText,
+} = addAccountModalModule;
 const openAIDeviceLoginModule = await import("../components/OpenAIDeviceLogin.tsx") as unknown as Record<string, unknown>;
 const { PROVIDER_META } = await import("../components/providers-ui.tsx");
 const { default: HomePage } = await import("../app/page.tsx");
@@ -213,6 +220,10 @@ test("strict dashboard connection UI renders the Claude PKCE form without a laun
   assert.match(strictMarkup, /güvenli claude oturum açma sayfasını aç/i);
   assert.match(strictMarkup, /claude yetkilendirme kodu/i);
   assert.match(strictMarkup, /<textarea/i);
+  assert.match(strictMarkup, /önerilen · bir kez bağla · otomatik yenilenir/i);
+  assert.match(strictMarkup, /bu makinedeki geçerli oturumu kullan/i);
+  assert.match(strictMarkup, /kimlik bilgileri şifreli yerel kasanızda saklanır/i);
+  assert.doesNotMatch(strictMarkup, /recommended|use the claude code login|use this machine|credentials are encrypted/i);
   assert.doesNotMatch(strictMarkup, /use the secure claude connector/i);
   assert.doesNotMatch(strictMarkup, /use my existing claude code login|claude code credentials/i);
 
@@ -222,6 +233,108 @@ test("strict dashboard connection UI renders the Claude PKCE form without a laun
   assert.match(ordinaryMarkup, /bu pano için özel oturumu yetkilendir/i);
   assert.match(ordinaryMarkup, /yetkilendirme kodunu yapıştır/i);
   assert.match(ordinaryMarkup, /<textarea/i);
+});
+
+test("strict-local add-account success, machine, and pairing branches render Turkish controls and statuses", () => {
+  assert.equal(typeof AddAccountSuccessCard, "function");
+  assert.equal(typeof ClaudeLocalMachinePanel, "function");
+  assert.equal(typeof ClaudePairingPanel, "function");
+  if (
+    typeof AddAccountSuccessCard !== "function"
+    || typeof ClaudeLocalMachinePanel !== "function"
+    || typeof ClaudePairingPanel !== "function"
+  ) return;
+
+  const success = renderToStaticMarkup(createElement(AddAccountSuccessCard, {
+    strictLocal: true,
+    connected: { email: "private@example.invalid", label: "Araştırma", plan: "Max" },
+    completionError: null,
+    onRetry() {},
+  }));
+  assert.match(success, /Araştırma bağlandı/);
+  assert.match(success, /kimlik bilgisi güvenle kaydedildi\. Pano eşitleniyor/i);
+  assert.doesNotMatch(success, /connected|credential|dashboard/i);
+
+  const successError = renderToStaticMarkup(createElement(AddAccountSuccessCard, {
+    strictLocal: true,
+    connected: { email: "private@example.invalid", label: "Araştırma" },
+    completionError: "Hesap bağlandı, ancak pano yeniden yüklenemedi.",
+    onRetry() {},
+  }));
+  assert.match(successError, />Pano eşitlemesini yeniden dene</);
+
+  const hostedSuccess = renderToStaticMarkup(createElement(AddAccountSuccessCard, {
+    strictLocal: false,
+    connected: { email: "private@example.invalid", label: "Research" },
+    completionError: null,
+    onRetry() {},
+  }));
+  assert.match(hostedSuccess, /Connected Research/);
+  assert.match(hostedSuccess, /Credential saved securely\. Syncing the dashboard/i);
+
+  const machine = renderToStaticMarkup(createElement(ClaudeLocalMachinePanel, {
+    strictLocal: true,
+    busy: false,
+    working: false,
+    error: null,
+    onConnect() {},
+  }));
+  assert.match(machine, /bu bilgisayardaki claude code oturumunu okuyacağız/i);
+  assert.match(machine, />Bu makineden bağlan</);
+  assert.doesNotMatch(machine, /we(?:&#x27;|')ll|connect from/i);
+
+  const hostedMachine = renderToStaticMarkup(createElement(ClaudeLocalMachinePanel, {
+    strictLocal: false,
+    busy: false,
+    working: false,
+    error: null,
+    onConnect() {},
+  }));
+  assert.match(hostedMachine, /we(?:&#x27;|')ll read the claude code login/i);
+  assert.match(hostedMachine, />Connect from this machine</);
+
+  const pairingStates = ["starting", "waiting", "processing", "expired", "error"] as const;
+  for (const state of pairingStates) {
+    const pairing = renderToStaticMarkup(createElement(ClaudePairingPanel, {
+      strictLocal: true,
+      state,
+      command: state === "waiting" || state === "processing" ? "npx helper" : "",
+      error: state === "error" ? "Eşleştirme hizmetine ulaşılamadı." : null,
+      busy: false,
+      copied: false,
+      onCopy() {},
+      onRetry() {},
+    }));
+    assert.match(pairing, /hesabın açık olduğu yerde tek bir komut çalıştır/i);
+    assert.doesNotMatch(pairing, /run one command|getting|waiting|account verified|try again|>copy</i);
+  }
+
+  const hostedPairing = renderToStaticMarkup(createElement(ClaudePairingPanel, {
+    strictLocal: false,
+    state: "starting",
+    command: "",
+    error: null,
+    busy: false,
+    copied: false,
+    onCopy() {},
+    onRetry() {},
+  }));
+  assert.match(hostedPairing, /Run one command where this account is signed in/);
+  assert.match(hostedPairing, /Getting a single-use pairing code/);
+});
+
+test("strict-local Claude failures discard server detail and retain only a validated opaque reference", () => {
+  assert.equal(typeof strictLocalClaudeConnectionErrorText, "function");
+  if (typeof strictLocalClaudeConnectionErrorText !== "function") return;
+  assert.equal(
+    strictLocalClaudeConnectionErrorText(401, "AnthropicError: private upstream detail", "err_0123456789ab"),
+    "Claude yetkilendirme kodu kabul edilmedi. Yeni bir oturum açıp yeniden deneyin. Referans: err_0123456789ab.",
+  );
+  for (const malformed of ["err_0123456789ab\nsecret", "ERR_0123456789AB", "err_0123456789abc", null]) {
+    const message = strictLocalClaudeConnectionErrorText(502, "AnthropicError: private upstream detail", malformed);
+    assert.equal(message, "Claude bağlantısı tamamlanamadı. Yeniden deneyin.");
+    assert.doesNotMatch(message, /AnthropicError|private upstream detail|secret/);
+  }
 });
 
 test("strict OpenAI selection keeps the same-machine action and never renders credential paste", () => {
@@ -318,5 +431,17 @@ test("document and visual system expose the Turkish local instrument contract", 
   assert.match(css, /@media \(min-width: 2880px\)/);
   assert.match(css, /orientation:\s*landscape[^\{]*min-width:\s*900px[^\{]*max-height:\s*500px/);
   assert.match(css, /env\(safe-area-inset-(?:top|right|bottom|left)\)/);
+  assert.match(
+    css,
+    /@media \(min-width: 960px\) and \(max-width: 1919px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*calc\(100% - 2 \* clamp\(24px, 4vw, 64px\)\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+  );
+  assert.match(
+    css,
+    /@media \(min-width: 1920px\) and \(max-width: 2879px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+  );
+  assert.match(
+    css,
+    /@media \(min-width: 2880px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+  );
   assert.doesNotMatch(css, /(?:radial|linear)-gradient|backdrop-filter|card-lift|@keyframes shimmer/i);
 });

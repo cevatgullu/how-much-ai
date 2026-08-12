@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { DUMP_COMMANDS, parseCredentials } from "@/lib/credentials";
-import { serverErrorText } from "@/lib/error-reference";
+import { safeServerErrorId, serverErrorText } from "@/lib/error-reference";
 import { buildAuthorizeUrl, clearPkce, loadOrCreatePkce, parsePastedCode, type PkceBundle } from "@/lib/oauth";
 import type { BrowserAccount } from "@/lib/types";
 import type { ProviderId } from "@/lib/providers/types";
@@ -62,6 +62,12 @@ const PRIMARY_BUTTON = PRIMARY_BTN;
 const PRIMARY_LINK = PRIMARY_BTN;
 const REQUEST_TIMEOUT_MS = 30_000;
 
+class StrictLocalDisplayError extends Error {}
+
+function connectionDisplayError(strictLocal: boolean, localMessage: string, hostedMessage: string): Error {
+  return strictLocal ? new StrictLocalDisplayError(localMessage) : new Error(hostedMessage);
+}
+
 function timeoutError(action: string): Error {
   return new Error(`${action} timed out after 30 seconds. Check your connection and try again.`);
 }
@@ -78,6 +84,284 @@ async function withDeadline<T>(promise: Promise<T>, action: string): Promise<T> 
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+export function strictLocalClaudeConnectionErrorText(
+  status: number,
+  _serverError: unknown,
+  errorId: unknown,
+): string {
+  const message = status === 401
+    ? "Claude yetkilendirme kodu kabul edilmedi. Yeni bir oturum açıp yeniden deneyin."
+    : "Claude bağlantısı tamamlanamadı. Yeniden deneyin.";
+  const reference = safeServerErrorId(errorId);
+  return reference ? `${message} Referans: ${reference}.` : message;
+}
+
+interface ConnectedInfo {
+  email: string;
+  plan?: string;
+  label?: string;
+}
+
+interface AddAccountSuccessCardProps {
+  strictLocal: boolean;
+  connected: ConnectedInfo;
+  completionError: string | null;
+  onRetry: () => void;
+}
+
+export function AddAccountSuccessCard({
+  strictLocal,
+  connected,
+  completionError,
+  onRetry,
+}: AddAccountSuccessCardProps) {
+  return (
+    <div className="space-y-3">
+      <div
+        role="status"
+        className="flex items-center gap-3 rounded-xl border px-4 py-3.5"
+        style={{
+          borderColor: "color-mix(in srgb, var(--accent) 40%, transparent)",
+          background: "var(--accent-soft)",
+        }}
+      >
+        <span
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+          style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
+        >
+          <CheckIcon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-ivory">
+            {strictLocal
+              ? `${connected.label || connected.email} bağlandı`
+              : `Connected ${connected.label || connected.email}`}
+          </p>
+          <p className="truncate text-xs text-muted">
+            {connected.email}
+            {connected.plan ? ` · ${connected.plan}` : ""}
+          </p>
+        </div>
+      </div>
+      {!completionError && (
+        <p role="status" className="inline-flex items-center gap-2 text-xs text-muted" aria-live="polite">
+          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-[var(--accent-bright)]" />
+          {strictLocal
+            ? "Kimlik bilgisi güvenle kaydedildi. Pano eşitleniyor…"
+            : "Credential saved securely. Syncing the dashboard…"}
+        </p>
+      )}
+      {completionError && (
+        <div role="alert" className="rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-[#ff9c95]">
+          <p>{completionError}</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-2 min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-medium hover:bg-white/5"
+          >
+            {strictLocal ? "Pano eşitlemesini yeniden dene" : "Retry dashboard sync"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface LocalMachineError {
+  message: string;
+  recommendation?: string;
+}
+
+interface ClaudeLocalMachinePanelProps {
+  strictLocal: boolean;
+  busy: boolean;
+  working: boolean;
+  error: LocalMachineError | null;
+  onConnect: () => void;
+  actionRef?: RefObject<HTMLButtonElement | null>;
+}
+
+export function ClaudeLocalMachinePanel({
+  strictLocal,
+  busy,
+  working,
+  error,
+  onConnect,
+  actionRef,
+}: ClaudeLocalMachinePanelProps) {
+  return (
+    <>
+      <div className="rounded-xl border border-border bg-surface p-5">
+        <div className="flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
+            <DesktopIcon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-ivory">{strictLocal ? "Bu makineden bağlan" : "Connect from this machine"}</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              {strictLocal
+                ? "Bu bilgisayardaki Claude Code oturumunu okuyacağız. Bu hızlı seçenek CLI ile dönen oturumu paylaşır ve özel uygulama oturumu kadar güvenilir değildir."
+                : "We'll read the Claude Code login already on this computer. This is quick, but it shares a rotating session with the CLI and is less reliable than the private app login."}
+            </p>
+          </div>
+        </div>
+        <button
+          ref={actionRef}
+          type="button"
+          onClick={onConnect}
+          disabled={busy}
+          className={`mt-4 ${PRIMARY_BUTTON}`}
+        >
+          {working ? (
+            <>
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow" />
+              {strictLocal ? "Bağlanıyor…" : "Connecting…"}
+            </>
+          ) : (
+            <>
+              <DesktopIcon className="h-4 w-4" />
+              {strictLocal ? "Bu makineden bağlan" : "Connect from this machine"}
+            </>
+          )}
+        </button>
+      </div>
+      {error && (
+        <div role="alert" className="mt-4 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2.5 text-xs leading-relaxed text-[#ff9c95]">
+          <p>{error.message}</p>
+          {error.recommendation && <p className="mt-1 text-muted">{error.recommendation}</p>}
+        </div>
+      )}
+    </>
+  );
+}
+
+type PairingPanelState = "starting" | "waiting" | "processing" | "expired" | "error";
+
+interface ClaudePairingPanelProps {
+  strictLocal: boolean;
+  state: PairingPanelState;
+  command: string;
+  error: string | null;
+  busy: boolean;
+  copied: boolean;
+  copyError?: string | null;
+  onCopy: () => void;
+  onRetry: () => void;
+  headingRef?: RefObject<HTMLParagraphElement | null>;
+}
+
+export function ClaudePairingPanel({
+  strictLocal,
+  state,
+  command,
+  error,
+  busy,
+  copied,
+  copyError,
+  onCopy,
+  onRetry,
+  headingRef,
+}: ClaudePairingPanelProps) {
+  const starting = state === "starting";
+  return (
+    <>
+      <div className="flex gap-3">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
+          <TerminalIcon className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p ref={headingRef} tabIndex={-1} className="text-sm text-ivory outline-none">
+            {strictLocal ? "Hesabın açık olduğu yerde tek bir komut çalıştır" : "Run one command where this account is signed in"}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            {strictLocal
+              ? "Claude Code kullandığınız bilgisayarda bu komutu terminale yapıştırın. O makinedeki geçerli dönen oturumu okur ve daha az güvenilir hızlı seçenek olarak buraya bağlar."
+              : "On the computer where you use Claude Code, paste this into a terminal. It reads that machine's current rotating login and connects it here as a less-reliable quick option."}
+          </p>
+          {starting && !command && (
+            <div role="status" className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
+              {strictLocal ? "Tek kullanımlık eşleştirme kodu alınıyor…" : "Getting a single-use pairing code…"}
+            </div>
+          )}
+          {command && (
+            <div className="mt-2.5 flex items-stretch gap-2">
+              <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary">
+                {command}
+              </code>
+              <button
+                type="button"
+                onClick={onCopy}
+                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-muted transition-colors hover:bg-surface-hover hover:text-ivory"
+              >
+                <CopyIcon className="h-3.5 w-3.5" />
+                {copied ? (strictLocal ? "Kopyalandı" : "Copied") : (strictLocal ? "Kopyala" : "Copy")}
+              </button>
+            </div>
+          )}
+          {copyError && (
+            <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">{copyError}</p>
+          )}
+          {command && state === "waiting" && (
+            <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
+              {strictLocal ? "Komutu çalıştırmanız bekleniyor…" : "Waiting for you to run it…"}
+            </div>
+          )}
+          {state === "processing" && (
+            <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted" role="status">
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
+              {strictLocal ? "Hesap doğrulandı — güvenle kaydediliyor…" : "Account verified — saving it securely…"}
+            </div>
+          )}
+          {state === "expired" && (
+            <div className="mt-3 flex items-center gap-3">
+              <span className="text-xs text-[#e3b56e]">Kodun süresi doldu.</span>
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={busy}
+                aria-busy={busy}
+                className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
+              >
+                {busy
+                  ? (strictLocal ? "Kod alınıyor…" : "Getting code…")
+                  : (strictLocal ? "Yeni kod al" : "Get a new code")}
+              </button>
+            </div>
+          )}
+          {state === "error" && (
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <p role="alert" className="text-xs text-[#ff9c95]">
+                {strictLocal ? "Eşleştirme hizmetine ulaşılamadı." : error ?? "Couldn't reach the pairing service."}
+              </p>
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={busy}
+                aria-busy={busy}
+                className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
+              >
+                {busy
+                  ? (strictLocal ? "Yeniden deneniyor…" : "Trying again…")
+                  : (strictLocal ? "Yeniden dene" : "Try again")}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mt-4 rounded-xl border border-border/70 bg-surface/60 p-3.5 text-[11px] leading-relaxed text-faint">
+        <p className="mb-1.5 font-medium text-muted">Ne olur ve neden güvenlidir</p>
+        <ul className="space-y-1">
+          <li>Claude Code&apos;un o makinede kullandığı oturum belirtecini gönderir.</li>
+          <li>HTTPS ile iletilir ve şifreli saklanır; yalnızca panonuz okuyabilir.</li>
+          <li>Yardımcı açık kaynaklıdır; çalıştırmadan önce ne yaptığını inceleyebilirsiniz.</li>
+        </ul>
+      </div>
+    </>
+  );
 }
 
 export function AddAccountModal({
@@ -363,7 +647,13 @@ export function AddAccountModal({
         if (!cancelled) setOauthBundle(bundle);
       },
       () => {
-        if (!cancelled) setError("Couldn't prepare a secure Claude sign-in. Close this dialog and try again.");
+        if (!cancelled) {
+          setError(
+            strictLocal
+              ? "Güvenli Claude oturumu hazırlanamadı. Bu pencereyi kapatıp yeniden deneyin."
+              : "Couldn't prepare a secure Claude sign-in. Close this dialog and try again.",
+          );
+        }
       },
     );
     void (async () => {
@@ -465,7 +755,10 @@ export function AddAccountModal({
       };
       if (!res.ok) {
         setLocalError({
-          message: errText(data.error, "Couldn't connect from this machine."),
+          message: errText(
+            data.error,
+            strictLocal ? "Bu makineden bağlantı kurulamadı." : "Couldn't connect from this machine.",
+          ),
           recommendation: undefined,
         });
         return;
@@ -476,8 +769,12 @@ export function AddAccountModal({
         setLocalError({
           message:
             connectError instanceof Error && connectError.name === "AbortError"
-              ? "Connection timed out after 30 seconds. Check that the app is running and try again."
-              : "Network error — is the app still running?",
+              ? strictLocal
+                ? "Bağlantı 30 saniye içinde tamamlanamadı. Uygulamanın çalıştığını denetleyip yeniden deneyin."
+                : "Connection timed out after 30 seconds. Check that the app is running and try again."
+              : strictLocal
+                ? "Ağ bağlantısı kurulamadı. Uygulamanın çalıştığını denetleyin."
+                : "Network error — is the app still running?",
         });
       }
     } finally {
@@ -486,7 +783,7 @@ export function AddAccountModal({
       if (operationRef.current === "local") operationRef.current = null;
       if (!closedRef.current) setLocalWorking(false);
     }
-  }, [localWorking, finishServerConnect, reconnectAccount?.id]);
+  }, [localWorking, finishServerConnect, reconnectAccount?.id, strictLocal]);
 
   const connectPaste = useCallback(async () => {
     if (!pasted.trim() || working || operationRef.current) return;
@@ -502,14 +799,26 @@ export function AddAccountModal({
       let res: Response;
       if (oauthFlow) {
         if (!oauthBundle) {
-          throw new Error("Secure sign-in is still preparing. Wait a moment and try again.");
+          throw connectionDisplayError(
+            strictLocal,
+            "Güvenli oturum hâlâ hazırlanıyor. Biraz bekleyip yeniden deneyin.",
+            "Secure sign-in is still preparing. Wait a moment and try again.",
+          );
         }
         const authorization = parsePastedCode(pasted);
         if (!authorization.code || !authorization.state) {
-          throw new Error("Paste the complete authorization code from Claude, including the #state suffix.");
+          throw connectionDisplayError(
+            strictLocal,
+            "Claude tarafından gösterilen yetkilendirme kodunun tamamını #state son ekiyle birlikte yapıştırın.",
+            "Paste the complete authorization code from Claude, including the #state suffix.",
+          );
         }
         if (authorization.state !== oauthBundle.state) {
-          throw new Error("That code belongs to an older sign-in attempt. Open Claude sign-in again and paste its new code.");
+          throw connectionDisplayError(
+            strictLocal,
+            "Bu kod önceki bir oturum açma denemesine ait. Claude oturumunu yeniden açıp yeni kodu yapıştırın.",
+            "That code belongs to an older sign-in attempt. Open Claude sign-in again and paste its new code.",
+          );
         }
         res = await fetch("/api/connect/oauth", {
           method: "POST",
@@ -548,17 +857,21 @@ export function AddAccountModal({
         return;
       }
       if (!res.ok) {
-        throw new Error(
-          serverErrorText(
-            data.error,
-            res.status === 401
-              ? oauthFlow
-                ? "Claude rejected that authorization code. Open a fresh sign-in and try again."
-                : "That shared login may already have rotated. Copy a fresh credential and try again."
-              : "Couldn't complete the Claude connection.",
-            data.errorId,
-          ),
-        );
+        throw strictLocal && oauthFlow
+          ? new StrictLocalDisplayError(
+              strictLocalClaudeConnectionErrorText(res.status, data.error, data.errorId),
+            )
+          : new Error(
+              serverErrorText(
+                data.error,
+                res.status === 401
+                  ? oauthFlow
+                    ? "Claude rejected that authorization code. Open a fresh sign-in and try again."
+                    : "That shared login may already have rotated. Copy a fresh credential and try again."
+                  : "Couldn't complete the Claude connection.",
+                data.errorId,
+              ),
+            );
       }
       if (oauthFlow) clearPkce();
       finishServerConnect({
@@ -570,8 +883,14 @@ export function AddAccountModal({
       if (!closedRef.current) {
         setError(
           err instanceof Error && err.name === "AbortError"
-            ? "Connection timed out after 30 seconds. Check your connection and try again."
-            : err instanceof Error
+            ? strictLocal
+              ? "Bağlantı 30 saniye içinde tamamlanamadı. Bağlantınızı denetleyip yeniden deneyin."
+              : "Connection timed out after 30 seconds. Check your connection and try again."
+            : strictLocal && err instanceof StrictLocalDisplayError
+              ? err.message
+              : strictLocal
+                ? "Claude bağlantısı tamamlanamadı. Yeniden deneyin."
+                : err instanceof Error
               ? err.message
               : "Something went wrong — try again.",
         );
@@ -582,7 +901,7 @@ export function AddAccountModal({
       if (operationRef.current === operation) operationRef.current = null;
       if (!closedRef.current) setWorking(false);
     }
-  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, working]);
+  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, strictLocal, working]);
 
   // OpenAI: one-click read of this machine's ~/.codex/auth.json.
   const connectOpenAILocal = useCallback(async () => {
@@ -707,48 +1026,12 @@ export function AddAccountModal({
   const oauthUrl = oauthBundle ? buildAuthorizeUrl(oauthBundle) : null;
 
   const successCard = connected && (
-    <div className="space-y-3">
-      <div
-        role="status"
-        className="flex items-center gap-3 rounded-xl border px-4 py-3.5"
-        style={{
-          borderColor: "color-mix(in srgb, var(--accent) 40%, transparent)",
-          background: "var(--accent-soft)",
-        }}
-      >
-        <span
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
-          style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
-        >
-          <CheckIcon className="h-5 w-5" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-ivory">Connected {connected.label || connected.email}</p>
-          <p className="truncate text-xs text-muted">
-            {connected.email}
-            {connected.plan ? ` · ${connected.plan}` : ""}
-          </p>
-        </div>
-      </div>
-      {!completionError && (
-        <p role="status" className="inline-flex items-center gap-2 text-xs text-muted" aria-live="polite">
-          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-[var(--accent-bright)]" />
-          Credential saved securely. Syncing the dashboard…
-        </p>
-      )}
-      {completionError && (
-        <div role="alert" className="rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-[#ff9c95]">
-          <p>{completionError}</p>
-          <button
-            type="button"
-            onClick={() => void reloadAndClose()}
-            className="mt-2 min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-medium hover:bg-white/5"
-          >
-            Retry dashboard sync
-          </button>
-        </div>
-      )}
-    </div>
+    <AddAccountSuccessCard
+      strictLocal={strictLocal}
+      connected={connected}
+      completionError={completionError}
+      onRetry={() => void reloadAndClose()}
+    />
   );
 
   // The private app-owned OAuth flow is primary. Importing the CLI's current rotating credential is
@@ -771,7 +1054,9 @@ export function AddAccountModal({
           {credentialMethod === "private-login" && (
             <>
               <p className="mt-2 inline-flex rounded-full border border-coral/35 bg-coral/10 px-2.5 py-1 text-[11px] font-medium text-coral-bright">
-                Recommended · connect once · renews automatically
+                {strictLocal
+                  ? "Önerilen · bir kez bağla · otomatik yenilenir"
+                  : "Recommended · connect once · renews automatically"}
               </p>
               <a
                 href={oauthUrl ?? undefined}
@@ -797,7 +1082,9 @@ export function AddAccountModal({
               </p>
               {oauthOpened && (
                 <p role="status" className="mt-2 text-[11px] leading-relaxed text-muted">
-                  Sign-in opened. Approve access, then copy the complete code shown by Claude.
+                  {strictLocal
+                    ? "Oturum açma sayfası açıldı. Erişimi onaylayıp Claude tarafından gösterilen kodun tamamını kopyalayın."
+                    : "Sign-in opened. Approve access, then copy the complete code shown by Claude."}
                 </p>
               )}
             </>
@@ -837,8 +1124,11 @@ export function AddAccountModal({
                         setCopied(true);
                         setTimeout(() => setCopied(false), 2000);
                       },
-                      (copyFailure) =>
-                        setCopyError(copyFailure instanceof Error ? copyFailure.message : "Couldn't copy the command."),
+                      () => setCopyError(
+                        strictLocal
+                          ? "Komut kopyalanamadı. Komutu seçip elle kopyalayın."
+                          : "Couldn't copy the command.",
+                      ),
                     );
                   }}
                   className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-muted transition-colors hover:bg-surface-hover hover:text-ivory"
@@ -956,7 +1246,7 @@ export function AddAccountModal({
           disabled={requestBusy}
           className="inline-flex min-h-11 items-center text-xs font-medium text-muted underline decoration-border underline-offset-4 transition-colors enabled:hover:text-ivory disabled:cursor-not-allowed disabled:opacity-45"
         >
-          Back to the private app login (recommended)
+          {strictLocal ? "Özel uygulama oturumuna dön (önerilen)" : "Back to the private app login (recommended)"}
         </button>
       )}
     </div>
@@ -967,8 +1257,12 @@ export function AddAccountModal({
       <p className="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Eski hızlı alternatif</p>
       <p className="mt-1.5 text-xs leading-relaxed text-muted">
         {mode === "local"
-          ? "Use the Claude Code login on this machine without copying it. This shares the CLI's rotating session and can disconnect when either process renews it."
-          : "Pair the Claude Code login from another machine. This shares that CLI's rotating session and can disconnect when either process renews it."}
+          ? strictLocal
+            ? "Bu makinedeki Claude Code oturumunu kopyalamadan kullanın. CLI ile dönen oturum paylaşılır; süreçlerden biri yenilediğinde bağlantı kesilebilir."
+            : "Use the Claude Code login on this machine without copying it. This shares the CLI's rotating session and can disconnect when either process renews it."
+          : strictLocal
+            ? "Başka bir makinedeki Claude Code oturumunu eşleştirin. CLI ile dönen oturum paylaşılır; süreçlerden biri yenilediğinde bağlantı kesilebilir."
+            : "Pair the Claude Code login from another machine. This shares that CLI's rotating session and can disconnect when either process renews it."}
       </p>
       <button
         type="button"
@@ -983,10 +1277,12 @@ export function AddAccountModal({
       >
         {mode === "pair" && pairStarting && <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />}
         {mode === "local"
-          ? "Use this machine's current login"
+          ? strictLocal
+            ? "Bu makinedeki geçerli oturumu kullan"
+            : "Use this machine's current login"
           : pairStarting
-            ? "Getting a pairing code…"
-            : "Use the device pairing helper"}
+            ? strictLocal ? "Eşleştirme kodu alınıyor…" : "Getting a pairing code…"
+            : strictLocal ? "Cihaz eşleştirme yardımcısını kullan" : "Use the device pairing helper"}
       </button>
     </div>
   );
@@ -1135,7 +1431,11 @@ export function AddAccountModal({
       open={open}
       title={reconnectAccount ? `${reconnectAccount.label || reconnectAccount.email} hesabını yeniden bağla` : "Hesap bağla"}
       description={
-        reconnectAccount ? "Authorize this same account so its expired session can be replaced without changing its dashboard identity." : undefined
+        reconnectAccount
+          ? strictLocal
+            ? "Bu hesabı, panodaki kimliğini değiştirmeden süresi dolan oturumunu yenilemek için yeniden yetkilendirin."
+            : "Authorize this same account so its expired session can be replaced without changing its dashboard identity."
+          : undefined
       }
       onClose={onClose}
       dismissible={!requestBusy && (!connected || Boolean(completionError))}
@@ -1155,45 +1455,14 @@ export function AddAccountModal({
                 successCard
               ) : (
                 <>
-                  <div className="rounded-xl border border-border bg-surface p-5">
-                    <div className="flex items-start gap-3">
-                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
-                        <DesktopIcon className="h-5 w-5" />
-                      </span>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-ivory">Bu makineden bağlan</p>
-                        <p className="mt-1 text-xs leading-relaxed text-muted">
-                          We&apos;ll read the Claude Code login already on this computer. This is quick, but it shares a
-                          rotating session with the CLI and is less reliable than the private app login.
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      ref={localActionRef}
-                      type="button"
-                      onClick={connectLocal}
-                      disabled={requestBusy}
-                      className={`mt-4 ${PRIMARY_BUTTON}`}
-                    >
-                      {localWorking ? (
-                        <>
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow" />
-                          Connecting…
-                        </>
-                      ) : (
-                        <>
-                          <DesktopIcon className="h-4 w-4" />
-                          Connect from this machine
-                        </>
-                      )}
-                    </button>
-                  </div>
-                  {localError && (
-                    <div role="alert" className="mt-4 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2.5 text-xs leading-relaxed text-[#ff9c95]">
-                      <p>{localError.message}</p>
-                      {localError.recommendation && <p className="mt-1 text-muted">{localError.recommendation}</p>}
-                    </div>
-                  )}
+                  <ClaudeLocalMachinePanel
+                    strictLocal={strictLocal}
+                    busy={requestBusy}
+                    working={localWorking}
+                    error={localError}
+                    onConnect={connectLocal}
+                    actionRef={localActionRef}
+                  />
                   {pasteFallback}
                 </>
               )}
@@ -1206,106 +1475,31 @@ export function AddAccountModal({
                 successCard
               ) : (
                 <>
-                  <div className="flex gap-3">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
-                      <TerminalIcon className="h-3.5 w-3.5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p ref={pairHeadingRef} tabIndex={-1} className="text-sm text-ivory outline-none">
-                        Run one command where this account is signed in
-                      </p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted">
-                        On the computer where you use Claude Code, paste this into a terminal. It reads that
-                        machine&apos;s current rotating login and connects it here as a less-reliable quick option.
-                      </p>
-                      {pairStarting && !pairCommand && (
-                        <div role="status" className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
-                          Getting a single-use pairing code…
-                        </div>
-                      )}
-                      {pairCommand && <div className="mt-2.5 flex items-stretch gap-2">
-                        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary">
-                          {pairCommand}
-                        </code>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPairCopyError(null);
-                            void copyText(pairCommand).then(
-                              () => {
-                                setPairCopied(true);
-                                setTimeout(() => setPairCopied(false), 2000);
-                              },
-                              (copyFailure) =>
-                                setPairCopyError(copyFailure instanceof Error ? copyFailure.message : "Couldn't copy the command."),
-                            );
-                          }}
-                          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-muted transition-colors hover:bg-surface-hover hover:text-ivory"
-                        >
-                          <CopyIcon className="h-3.5 w-3.5" />
-                          {pairCopied ? "Copied" : "Copy"}
-                        </button>
-                      </div>}
-                      {pairCopyError && (
-                        <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
-                          {pairCopyError}
-                        </p>
-                      )}
-
-                      {pairCommand && pairState === "waiting" && !pairStarting && (
-                        <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
-                          Waiting for you to run it…
-                        </div>
-                      )}
-                      {pairState === "processing" && (
-                        <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted" role="status">
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
-                          Account verified — saving it securely…
-                        </div>
-                      )}
-                      {pairState === "expired" && (
-                        <div className="mt-3 flex items-center gap-3">
-                          <span className="text-xs text-[#e3b56e]">Kodun süresi doldu.</span>
-                          <button
-                            type="button"
-                            onClick={() => void startPairing()}
-                            disabled={requestBusy}
-                            aria-busy={pairStarting}
-                            className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
-                          >
-                            {pairStarting ? "Getting code…" : "Get a new code"}
-                          </button>
-                        </div>
-                      )}
-                      {pairState === "error" && (
-                        <div className="mt-3 flex flex-wrap items-center gap-3">
-                          <p role="alert" className="text-xs text-[#ff9c95]">
-                            {pairError ?? "Couldn't reach the pairing service."}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => void startPairing()}
-                            disabled={requestBusy}
-                            aria-busy={pairStarting}
-                            className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
-                          >
-                            {pairStarting ? "Trying again…" : "Try again"}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="mt-4 rounded-xl border border-border/70 bg-surface/60 p-3.5 text-[11px] leading-relaxed text-faint">
-                    <p className="mb-1.5 font-medium text-muted">Ne olur ve neden güvenlidir</p>
-                    <ul className="space-y-1">
-                      <li>Claude Code&apos;un o makinede kullandığı oturum belirtecini gönderir.</li>
-                      <li>HTTPS ile iletilir ve şifreli saklanır; yalnızca panonuz okuyabilir.</li>
-                      <li>Yardımcı açık kaynaklıdır; çalıştırmadan önce ne yaptığını inceleyebilirsiniz.</li>
-                    </ul>
-                  </div>
+                  <ClaudePairingPanel
+                    strictLocal={strictLocal}
+                    state={pairStarting ? "starting" : pairState}
+                    command={pairCommand}
+                    error={pairError}
+                    busy={requestBusy}
+                    copied={pairCopied}
+                    copyError={pairCopyError}
+                    headingRef={pairHeadingRef}
+                    onCopy={() => {
+                      setPairCopyError(null);
+                      void copyText(pairCommand).then(
+                        () => {
+                          setPairCopied(true);
+                          setTimeout(() => setPairCopied(false), 2000);
+                        },
+                        () => setPairCopyError(
+                          strictLocal
+                            ? "Komut kopyalanamadı. Komutu seçip elle kopyalayın."
+                            : "Couldn't copy the command.",
+                        ),
+                      );
+                    }}
+                    onRetry={() => void startPairing()}
+                  />
                   {pasteFallback}
                 </>
               )}
@@ -1313,9 +1507,9 @@ export function AddAccountModal({
           )}
 
           <p className="mt-5 border-t border-border/60 pt-4 text-[11px] leading-relaxed text-faint">
-              Credentials are encrypted in your private vault and used only for account checks with Anthropic. The
-              recommended login has its own renewable session, so your normal Claude Code CLI cannot rotate it away.
-              Quick connect imports the CLI&apos;s shared session and may need replacement if another process refreshes it first.
+              {strictLocal
+                ? "Kimlik bilgileri şifreli yerel kasanızda saklanır ve yalnızca Anthropic hesap kontrolleri için kullanılır. Önerilen oturumun kendine ait yenilenebilir oturumu vardır; normal Claude Code CLI bunu döndüremez. Hızlı bağlantı, CLI'ın paylaşılan oturumunu içe aktarır ve başka bir süreç önce yenilerse değiştirilmesi gerekebilir."
+                : "Credentials are encrypted in your private vault and used only for account checks with Anthropic. The recommended login has its own renewable session, so your normal Claude Code CLI cannot rotate it away. Quick connect imports the CLI's shared session and may need replacement if another process refreshes it first."}
           </p>
       </div>
       )}

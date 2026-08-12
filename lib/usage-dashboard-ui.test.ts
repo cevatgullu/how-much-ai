@@ -74,6 +74,7 @@ const {
   DashboardAccountList,
   accountProviderOrdinals,
   commitDashboardSnapshot,
+  dashboardVaultRecoveryNotice,
   dashboardOrderViewReducer,
   dashboardAccountRows,
   dashboardMetricForNow,
@@ -81,6 +82,7 @@ const {
   saveDashboardSortMode,
   scheduleDashboardAccountScroll,
   scheduleDashboardOrderScroll,
+  strictLocalDashboardMessage,
 } = await import("../components/Dashboard.tsx");
 
 after(() => moduleHooks.deregister());
@@ -154,6 +156,7 @@ function renderAccountCard(
     fiveHourPeak: 84,
     now: NOW,
     providerOrdinal,
+    strictLocal: true,
     mobileExpanded: false,
     ...accountCardHandlers,
     ...overrides,
@@ -500,6 +503,31 @@ test("OpenAI account guidance names ChatGPT while preserving login-kind badges",
   assert.doesNotMatch(sharedMarkup, /claude code oturumunu paylaşır/i);
 });
 
+test("credential badges expose Turkish tooltips for every local credential kind", () => {
+  const cases: Array<[BrowserAccount["credentialKind"], RegExp]> = [
+    ["managed", /özel uygulama oturumu; codex cli oturumunu paylaşmadan otomatik yenilenir/i],
+    ["long_lived", /eski kurulum belirteci; tahmini yenileme tarihi/i],
+    ["rotating", /codex cli ile paylaşılır; özel uygulama oturumu daha güvenilirdir/i],
+  ];
+  for (const [credentialKind, expectedTitle] of cases) {
+    const markup = renderAccountCard(
+      { ...account(`tooltip-${credentialKind}`, "openai"), credentialKind },
+      { status: "idle" },
+    );
+    assert.match(markup, expectedTitle);
+    assert.doesNotMatch(markup, /Private app-owned|Legacy inference-only|Shared with Codex CLI/i);
+  }
+  assert.match(
+    renderAccountCard(
+      { ...account("hosted-tooltip", "openai"), credentialKind: "managed" },
+      { status: "idle" },
+      1,
+      { strictLocal: false },
+    ),
+    /Private app-owned ChatGPT login; renews automatically without sharing Codex CLI(?:&#x27;|')s session/i,
+  );
+});
+
 test("settled dashboard rows reorder presentation only while preserving source ordinals, keys, and expanded ids", () => {
   const accounts = [
     account("claude-first"),
@@ -718,4 +746,31 @@ test("forced-colors mode preserves canvas, text, and progress distinction", () =
   assert.match(css, /Canvas/);
   assert.match(css, /CanvasText/);
   assert.match(css, /Highlight/);
+});
+
+test("strict-local dashboard recovery and preference messages are Turkish while hosted copy stays unchanged", () => {
+  assert.equal(typeof strictLocalDashboardMessage, "function");
+  if (typeof strictLocalDashboardMessage !== "function") return;
+  assert.equal(
+    strictLocalDashboardMessage(true, "auto_refresh_save_failed"),
+    "Otomatik yenileme tercihi bu cihaza kaydedilemedi.",
+  );
+  assert.equal(
+    strictLocalDashboardMessage(true, "vault_unreadable"),
+    "Yeniden yüklemek kayıtlı kasanın kilidini açamaz. Aşağıdaki kurtarma seçeneklerini kullanın veya önceki şifreleme anahtarını geri yükleyin.",
+  );
+  assert.equal(
+    strictLocalDashboardMessage(false, "auto_refresh_save_failed"),
+    "Couldn't save the auto-refresh preference on this device.",
+  );
+  assert.equal(typeof dashboardVaultRecoveryNotice, "function");
+  if (typeof dashboardVaultRecoveryNotice !== "function") return;
+  assert.equal(
+    dashboardVaultRecoveryNotice(true, { archive: "vault.archive", backupArchive: "backup.archive" }),
+    "Okunamayan kasa vault.archive olarak, okunamayan son iyi yedeği de backup.archive olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.",
+  );
+  assert.equal(
+    dashboardVaultRecoveryNotice(false, { archive: "vault.archive" }),
+    "The unreadable vault was preserved as vault.archive. You can now connect your accounts again.",
+  );
 });

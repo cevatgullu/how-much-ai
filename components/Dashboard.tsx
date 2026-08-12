@@ -17,6 +17,7 @@ import {
   fetchVault,
   persistVaultMutations,
   VaultRequestError,
+  type VaultRecoveryResult,
   type VaultSnapshot,
 } from "@/lib/vault-client";
 import { extractBars, formatClock, parseResetTimestamp, planLabel } from "@/lib/format";
@@ -59,6 +60,36 @@ function useNow(intervalMs: number): number {
 
 function errText(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+type StrictLocalDashboardMessageKey = "auto_refresh_save_failed" | "vault_unreadable";
+
+export function strictLocalDashboardMessage(
+  strictLocal: boolean,
+  key: StrictLocalDashboardMessageKey,
+): string {
+  if (key === "auto_refresh_save_failed") {
+    return strictLocal
+      ? "Otomatik yenileme tercihi bu cihaza kaydedilemedi."
+      : "Couldn't save the auto-refresh preference on this device.";
+  }
+  return strictLocal
+    ? "Yeniden yüklemek kayıtlı kasanın kilidini açamaz. Aşağıdaki kurtarma seçeneklerini kullanın veya önceki şifreleme anahtarını geri yükleyin."
+    : "Reloading cannot unlock the saved vault. Use the recovery options below, or restore its previous encryption secret.";
+}
+
+export function dashboardVaultRecoveryNotice(
+  strictLocal: boolean,
+  recovery: VaultRecoveryResult,
+): string {
+  if (strictLocal) {
+    return recovery.backupArchive
+      ? `Okunamayan kasa ${recovery.archive} olarak, okunamayan son iyi yedeği de ${recovery.backupArchive} olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.`
+      : `Okunamayan kasa ${recovery.archive} olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.`;
+  }
+  return recovery.backupArchive
+    ? `The unreadable vault was preserved as ${recovery.archive}, and its unreadable last-known-good backup was preserved as ${recovery.backupArchive}. You can now connect your accounts again.`
+    : `The unreadable vault was preserved as ${recovery.archive}. You can now connect your accounts again.`;
 }
 
 const LOCAL_LABEL_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
@@ -219,6 +250,7 @@ export function dashboardAccountRows(
 
 interface DashboardAccountListProps {
   accounts: readonly BrowserAccount[];
+  strictLocal?: boolean;
   visibleAccountIds: readonly string[];
   snapshots: Readonly<Record<string, AccountSnapshot>>;
   metrics: readonly WeeklyAccountMetric[];
@@ -236,6 +268,7 @@ interface DashboardAccountListProps {
 
 export function DashboardAccountList({
   accounts,
+  strictLocal = false,
   visibleAccountIds,
   snapshots,
   metrics,
@@ -267,6 +300,7 @@ export function DashboardAccountList({
           >
             <AccountCard
               account={row.account}
+              strictLocal={strictLocal}
               snapshot={snapshots[row.account.id]}
               metric={dashboardMetricForNow(row.metric, now)}
               fiveHourPeak={deriveFiveHourPeak(usageBars)}
@@ -605,11 +639,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       const loaded = await loadVault();
       if (!loaded) throw new Error("The old vault was archived, but the new empty vault couldn't be loaded.");
       setActionError(null);
-      setVaultRecoveryNotice(
-        recovery.backupArchive
-          ? `The unreadable vault was preserved as ${recovery.archive}, and its unreadable last-known-good backup was preserved as ${recovery.backupArchive}. You can now connect your accounts again.`
-          : `The unreadable vault was preserved as ${recovery.archive}. You can now connect your accounts again.`,
-      );
+      setVaultRecoveryNotice(dashboardVaultRecoveryNotice(strictLocal, recovery));
     } catch (error) {
       dispatchVaultUi({
         type: "recovery_failed",
@@ -618,7 +648,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     } finally {
       setVaultRecoveryBusy(false);
     }
-  }, [loadVault, vaultRecoveryBusy]);
+  }, [loadVault, strictLocal, vaultRecoveryBusy]);
 
   useEffect(() => {
     const settings = loadSettings();
@@ -632,11 +662,11 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     if (vaultState !== "ready") return;
     const current = loadSettings();
     if (!saveSettings({ ...current, autoRefresh })) {
-      setPreferenceError("Couldn't save the auto-refresh preference on this device.");
+      setPreferenceError(strictLocalDashboardMessage(strictLocal, "auto_refresh_save_failed"));
     } else {
       setPreferenceError(null);
     }
-  }, [autoRefresh, vaultState]);
+  }, [autoRefresh, strictLocal, vaultState]);
 
   const refreshAccount = useCallback(
     async (id: string): Promise<boolean> => {
@@ -883,9 +913,9 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     setActionError(null);
     if (vaultState !== "ready") {
       setActionError(
-        vaultState === "error"
+          vaultState === "error"
           ? vaultUnreadable
-            ? "Reloading cannot unlock the saved vault. Use the recovery options below, or restore its previous encryption secret."
+            ? strictLocalDashboardMessage(strictLocal, "vault_unreadable")
             : "Kayıtlı hesaplar kullanılamıyor. Aşağıdan yeniden yüklemeyi deneyin."
           : "Kayıtlı hesaplar denetleniyor…",
       );
@@ -893,7 +923,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     }
     setReconnectAccount(null);
     setModalOpen(true);
-  }, [vaultError, vaultState, vaultUnreadable]);
+  }, [strictLocal, vaultError, vaultState, vaultUnreadable]);
 
   const closeModal = useCallback(() => {
     setModalOpen(false);
@@ -1213,6 +1243,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             </section>
             <DashboardAccountList
               accounts={accounts}
+              strictLocal={strictLocal}
               visibleAccountIds={orderState.visibleAccountIds}
               snapshots={snapshots}
               metrics={settledMetrics}

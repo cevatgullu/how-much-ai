@@ -251,6 +251,7 @@ test("ready local notifications serialize by arrival and survive a rejecting tas
         getActiveAccounts: () => activeAccounts,
         loadLocalSettings: () => ({
           autoRefresh: true,
+          sortMode: "source",
           localNotifications: { remainingWarnings: true, resetNotifications: true },
         }),
         process: async (input: { accountLabel: string }) => {
@@ -293,6 +294,7 @@ test("queued execution skips removed targets and hosted mode never reads local s
       settingsReads += 1;
       return {
         autoRefresh: true,
+        sortMode: "source",
         localNotifications: { remainingWarnings: true, resetNotifications: true },
       };
     },

@@ -231,12 +231,15 @@ test("renders compact readings with account and winning limit identities", () =>
     summary,
     accountsById: new Map(accounts.map((value) => [value.id, value])),
     providerOrdinals: new Map([["highest", 1], ["nearest", 1]]),
+    now: Date.parse("2026-08-12T12:00:00.000Z"),
   }));
 
   assert.match(markup, />Hesap<[\s\S]*>2</);
   assert.match(markup, />En yüksek haftalık kullanım<[\s\S]*Yoğun hesap[\s\S]*%88[\s\S]*Opus haftalık limiti/);
   assert.match(markup, />En yakın haftalık yenilenme<[\s\S]*Yakın yenileme[\s\S]*Bağlı uygulamalar haftalık limiti/);
   assert.match(markup, /<time[^>]*dateTime="2026-08-14T12:00:00.000Z"/);
+  assert.match(markup, /2 gün sonra[\s\S]*14 Ağu/);
+  assert.doesNotMatch(markup, />2026-08-14T12:00:00\.000Z</);
   assert.doesNotMatch(markup, /@private\.invalid/);
 });
 

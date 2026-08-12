@@ -1239,6 +1239,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                 summary={quotaSummary}
                 accountsById={accountsById}
                 providerOrdinals={providerOrdinals}
+                now={now}
               />
             </section>
             <DashboardAccountList

@@ -2,12 +2,14 @@
 
 import type { WeeklyAccountMetric, WeeklyAccountSummary } from "@/lib/quota-metrics";
 import type { BrowserAccount } from "@/lib/types";
+import { formatResetSchedule } from "@/lib/format";
 import { accountDisplayName } from "./AccountCard";
 
 export interface QuotaReadingsProps {
   summary: WeeklyAccountSummary;
   accountsById: ReadonlyMap<string, BrowserAccount>;
   providerOrdinals: ReadonlyMap<string, number>;
+  now: number;
 }
 
 export function quotaRulerAccountName(
@@ -29,9 +31,10 @@ function metricAccountName(
   return quotaRulerAccountName(accountsById.get(metric.accountId), providerOrdinals.get(metric.accountId));
 }
 
-export function QuotaReadings({ summary, accountsById, providerOrdinals }: QuotaReadingsProps) {
+export function QuotaReadings({ summary, accountsById, providerOrdinals, now }: QuotaReadingsProps) {
   const highest = summary.highestUsage;
   const nearest = summary.nearestReset;
+  const nearestSchedule = formatResetSchedule(nearest?.nearestWeeklyResetAt ?? null, now);
   return (
     <dl className="quota-readings grid min-w-0 gap-3" aria-label="Kota özeti">
       <div className="min-w-0 border-t border-border pt-2">
@@ -57,9 +60,11 @@ export function QuotaReadings({ summary, accountsById, providerOrdinals }: Quota
             <>
               <span>{metricAccountName(nearest, accountsById, providerOrdinals)}</span>{" "}
               <span className="text-faint">{nearest.nearestWeeklyResetLabel ?? "Haftalık limit"}</span>{" "}
-              {nearest.nearestWeeklyResetAt ? (
+              {nearest.nearestWeeklyResetAt && nearestSchedule ? (
                 <time className="font-mono text-xs tabular-nums" dateTime={nearest.nearestWeeklyResetAt}>
-                  {nearest.nearestWeeklyResetAt}
+                  {nearestSchedule.state === "past"
+                    ? "yenilenme verisi bekleniyor"
+                    : `${nearestSchedule.countdown} · ${nearestSchedule.exact}`}
                 </time>
               ) : null}
             </>

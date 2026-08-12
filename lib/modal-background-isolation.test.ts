@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   ModalBackgroundIsolation,
   syncModalStackLayers,
@@ -114,4 +116,12 @@ test("modal layers follow open order through reverse openings and reopenings", (
   syncModalStackLayers(stack);
   assert.equal(laterInDom.style.zIndex, "50");
   assert.equal(earlierInDom.style.zIndex, "51");
+});
+
+test("sheet placement stays inside the existing modal stack implementation", () => {
+  const source = readFileSync(fileURLToPath(new URL("../components/ModalShell.tsx", import.meta.url)), "utf8");
+  assert.match(source, /placement\?: "center" \| "sheet"/);
+  assert.match(source, /data-placement=\{placement\}/);
+  assert.equal((source.match(/registerModal\(root, panel, previousFocus\)/g) ?? []).length, 1);
+  assert.equal((source.match(/registration\.unregister\(\)/g) ?? []).length, 1);
 });

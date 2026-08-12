@@ -110,6 +110,7 @@ interface ModalShellProps {
   children: ReactNode;
   dismissible?: boolean;
   maxWidthClassName?: string;
+  placement?: "center" | "sheet";
 }
 
 export function ModalShell({
@@ -120,6 +121,7 @@ export function ModalShell({
   children,
   dismissible = true,
   maxWidthClassName = "max-w-lg",
+  placement = "center",
 }: ModalShellProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -191,21 +193,29 @@ export function ModalShell({
   if (!open) return null;
 
   return (
-    <div ref={rootRef} className="fixed inset-0 z-50 overflow-y-auto overscroll-contain p-3 sm:p-6">
+    <div
+      ref={rootRef}
+      className={`fixed inset-0 z-50 overflow-y-auto overscroll-contain ${placement === "sheet" ? "px-3 pt-3" : "p-3 sm:p-6"}`}
+    >
       <div
         aria-hidden="true"
-        className="animate-fade-in fixed inset-0 bg-black/65 backdrop-blur-sm"
+        className="animate-fade-in fixed inset-0 bg-black/65"
         onMouseDown={() => dismissible && onClose()}
       />
-      <div className="relative flex min-h-full items-center justify-center">
+      <div className={`relative flex min-h-full justify-center ${placement === "sheet" ? "items-end" : "items-center"}`}>
         <div
           ref={panelRef}
           role="dialog"
           aria-modal="true"
           aria-labelledby={titleId}
           aria-describedby={description ? descriptionId : undefined}
+          data-placement={placement}
           tabIndex={-1}
-          className={`animate-modal-in modal-scroll relative max-h-[calc(100dvh-1.5rem)] w-full overflow-y-auto rounded-2xl border border-border bg-bg-raised p-5 shadow-2xl outline-none sm:max-h-[calc(100dvh-3rem)] sm:p-6 ${maxWidthClassName}`}
+          className={`animate-modal-in modal-scroll relative w-full overflow-y-auto border border-border bg-bg-raised p-5 outline-none sm:p-6 ${
+            placement === "sheet"
+              ? "max-h-[calc(100dvh-0.75rem)] rounded-t-2xl border-b-0"
+              : "max-h-[calc(100dvh-1.5rem)] rounded-2xl sm:max-h-[calc(100dvh-3rem)]"
+          } ${maxWidthClassName}`}
         >
           <div className="flex items-start justify-between gap-4">
             <div>

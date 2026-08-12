@@ -19,17 +19,32 @@ import {
   VaultRequestError,
   type VaultSnapshot,
 } from "@/lib/vault-client";
-import { extractBars, formatClock, planLabel } from "@/lib/format";
-import { AccountCard, accountDisplayName } from "@/components/AccountCard";
-import { providerMeta } from "@/components/providers-ui";
+import { extractBars, formatClock, parseResetTimestamp, planLabel } from "@/lib/format";
+import { AccountCard, deriveFiveHourPeak } from "@/components/AccountCard";
 import { AddAccountModal } from "@/components/AddAccountModal";
 import { NotificationsPanel } from "@/components/NotificationsPanel";
-import { SignOutButton } from "@/components/SignOutButton";
-import { BellIcon, PlusIcon, RefreshIcon, StarburstIcon } from "@/components/Icons";
+import { PlusIcon, StarburstIcon } from "@/components/Icons";
+import { DashboardHeader } from "@/components/DashboardHeader";
+import { DashboardSheets, type DashboardSheet } from "@/components/DashboardSheets";
+import { MobileCommandBar } from "@/components/MobileCommandBar";
+import { QuotaRuler } from "@/components/QuotaRuler";
+import { QuotaReadings } from "@/components/QuotaReadings";
 import {
   dashboardVaultReducer,
   initialDashboardVaultState,
 } from "@/components/dashboard-vault-state";
+import {
+  dashboardOrderReducer,
+  initialDashboardOrderState,
+  resolvedDashboardOrder,
+  type InteractionChannel,
+} from "@/lib/dashboard-order-state";
+import {
+  deriveWeeklyAccountMetrics,
+  summarizeWeeklyAccountMetrics,
+  type QuotaSortMode,
+  type WeeklyAccountMetric,
+} from "@/lib/quota-metrics";
 
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -56,6 +71,163 @@ export function accountProviderOrdinals(
     counts.set(provider, ordinal);
     return [account.id, ordinal] as const;
   }));
+}
+
+export function commitDashboardSnapshot(
+  snapshots: Readonly<Record<string, AccountSnapshot>>,
+  accountId: string,
+  updater: (snapshot: AccountSnapshot | undefined) => AccountSnapshot,
+): Record<string, AccountSnapshot> {
+  return { ...snapshots, [accountId]: updater(snapshots[accountId]) };
+}
+
+export function saveDashboardSortMode(
+  mode: QuotaSortMode,
+  load: () => Settings = loadSettings,
+  save: (settings: Settings) => boolean = saveSettings,
+): boolean {
+  return save({ ...load(), sortMode: mode });
+}
+
+export function dashboardMetricForNow(metric: WeeklyAccountMetric, now: number): WeeklyAccountMetric {
+  const resetAt = metric.nearestWeeklyResetAt === null
+    ? null
+    : parseResetTimestamp(metric.nearestWeeklyResetAt);
+  if (resetAt === null || resetAt >= now) return metric;
+  return {
+    ...metric,
+    nearestWeeklyResetAt: null,
+    nearestWeeklyResetKey: null,
+    nearestWeeklyResetLabel: "yenilenme verisi bekleniyor",
+  };
+}
+
+interface ScrollableAccountElement {
+  scrollIntoView(options?: ScrollIntoViewOptions): void;
+}
+
+export function scheduleDashboardAccountScroll(
+  element: ScrollableAccountElement | null,
+  schedule: (callback: () => void) => unknown = (callback) => requestAnimationFrame(callback),
+): boolean {
+  if (!element) return false;
+  schedule(() => element.scrollIntoView({ block: "nearest" }));
+  return true;
+}
+
+export interface DashboardAccountRow {
+  key: string;
+  account: BrowserAccount;
+  metric: WeeklyAccountMetric;
+  providerOrdinal: number;
+  mobileExpanded: boolean;
+}
+
+function emptyDashboardMetric(accountId: string, sourceIndex: number): WeeklyAccountMetric {
+  return {
+    accountId,
+    sourceIndex,
+    highestWeeklyUsedPercent: null,
+    highestWeeklyLimitKey: null,
+    highestWeeklyLimitLabel: null,
+    nearestWeeklyResetAt: null,
+    nearestWeeklyResetKey: null,
+    nearestWeeklyResetLabel: null,
+    hasFreshReading: false,
+  };
+}
+
+export function dashboardAccountRows(
+  accounts: readonly BrowserAccount[],
+  visibleAccountIds: readonly string[],
+  metrics: readonly WeeklyAccountMetric[],
+  providerOrdinals: ReadonlyMap<string, number>,
+  expandedAccountIds: ReadonlySet<string>,
+): DashboardAccountRow[] {
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
+  const metricsById = new Map(metrics.map((metric) => [metric.accountId, metric]));
+  return visibleAccountIds.flatMap((accountId) => {
+    const account = accountsById.get(accountId);
+    if (!account) return [];
+    const sourceIndex = accounts.findIndex((candidate) => candidate.id === accountId);
+    return [{
+      key: accountId,
+      account,
+      metric: metricsById.get(accountId) ?? emptyDashboardMetric(accountId, sourceIndex),
+      providerOrdinal: providerOrdinals.get(accountId) ?? 1,
+      mobileExpanded: expandedAccountIds.has(accountId),
+    }];
+  });
+}
+
+interface DashboardAccountListProps {
+  accounts: readonly BrowserAccount[];
+  visibleAccountIds: readonly string[];
+  snapshots: Readonly<Record<string, AccountSnapshot>>;
+  metrics: readonly WeeklyAccountMetric[];
+  providerOrdinals: ReadonlyMap<string, number>;
+  expandedAccountIds: ReadonlySet<string>;
+  now: number;
+  setAccountElement?: (accountId: string, element: HTMLLIElement | null) => void;
+  onMobileExpandedChange: (accountId: string, expanded: boolean) => void;
+  onInteractionFenceChange: (accountId: string, channel: InteractionChannel, active: boolean) => void;
+  onRefresh: (accountId: string) => void;
+  onRemove: (accountId: string) => void;
+  onReconnect?: (account: BrowserAccount) => void;
+  onRename: (accountId: string, label: string | undefined) => void;
+}
+
+export function DashboardAccountList({
+  accounts,
+  visibleAccountIds,
+  snapshots,
+  metrics,
+  providerOrdinals,
+  expandedAccountIds,
+  now,
+  setAccountElement,
+  onMobileExpandedChange,
+  onInteractionFenceChange,
+  onRefresh,
+  onRemove,
+  onReconnect,
+  onRename,
+}: DashboardAccountListProps) {
+  const rows = dashboardAccountRows(accounts, visibleAccountIds, metrics, providerOrdinals, expandedAccountIds);
+  return (
+    <ol role="list" className="dashboard-account-list grid list-none grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
+      {rows.map((row) => {
+        const usageBars = row.account.id in snapshots && snapshots[row.account.id]?.usage
+          ? extractBars(snapshots[row.account.id]!.usage!)
+          : [];
+        return (
+          <li
+            key={row.key}
+            className="dashboard-account-item min-w-0"
+            data-dashboard-account={row.account.id}
+            data-dashboard-key={row.key}
+            ref={(element) => setAccountElement?.(row.account.id, element)}
+          >
+            <AccountCard
+              account={row.account}
+              snapshot={snapshots[row.account.id]}
+              metric={dashboardMetricForNow(row.metric, now)}
+              fiveHourPeak={deriveFiveHourPeak(usageBars)}
+              now={now}
+              providerOrdinal={row.providerOrdinal}
+              mobileExpanded={row.mobileExpanded}
+              onMobileExpandedChange={(expanded) => onMobileExpandedChange(row.account.id, expanded)}
+              onInteractionFenceChange={(channel, active) => onInteractionFenceChange(row.account.id, channel, active)}
+              onRefresh={() => onRefresh(row.account.id)}
+              onRemove={() => onRemove(row.account.id)}
+              onReconnect={onReconnect ? () => onReconnect(row.account) : undefined}
+              onRename={(label) => onRename(row.account.id, label)}
+            />
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 export function localAccountLabel(
@@ -190,8 +362,11 @@ interface DashboardProps {
 }
 
 export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
+  const snapshotsRef = useRef<Record<string, AccountSnapshot>>({});
   const [accounts, setAccounts] = useState<BrowserAccount[]>([]);
-  const [snapshots, setSnapshots] = useState<Record<string, AccountSnapshot>>({});
+  const [snapshots, setSnapshots] = useState<Record<string, AccountSnapshot>>(
+    () => snapshotsRef.current,
+  );
   const [vaultUi, dispatchVaultUi] = useReducer(dashboardVaultReducer, initialDashboardVaultState);
   const {
     status: vaultState,
@@ -206,8 +381,16 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [reconnectAccount, setReconnectAccount] = useState<BrowserAccount | null>(null);
   const [notifyOpen, setNotifyOpen] = useState(false);
+  const [activeSheet, setActiveSheet] = useState<DashboardSheet>(null);
   const [localNotifyStatus, setLocalNotifyStatus] = useState<LocalNotifyRuntimeStatus>("idle");
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [orderState, dispatchOrder] = useReducer(
+    dashboardOrderReducer,
+    undefined,
+    () => initialDashboardOrderState([], "source"),
+  );
+  const [settledMetrics, setSettledMetrics] = useState<WeeklyAccountMetric[]>([]);
+  const [expandedAccountIds, setExpandedAccountIds] = useState<ReadonlySet<string>>(() => new Set());
   const [lastRefreshAll, setLastRefreshAll] = useState<{ at: number; updated: number; total: number } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "error">("idle");
@@ -215,8 +398,10 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const [preferenceError, setPreferenceError] = useState<string | null>(null);
   const accountsRef = useRef<BrowserAccount[]>([]);
   accountsRef.current = accounts;
-  const snapshotsRef = useRef<Record<string, AccountSnapshot>>({});
-  snapshotsRef.current = snapshots;
+  const orderModeRef = useRef<QuotaSortMode>("source");
+  orderModeRef.current = orderState.mode;
+  const acceptedEpochRef = useRef(0);
+  const accountElementsRef = useRef(new Map<string, HTMLLIElement>());
   const serverVaultRef = useRef<VaultSnapshot | null>(null);
   const failedMutationsRef = useRef<VaultMutation[]>([]);
   const persistChain = useRef<Promise<void>>(Promise.resolve());
@@ -234,13 +419,59 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const now = useNow(30_000);
   const vaultUnreadable = vaultErrorCode === "VAULT_UNREADABLE";
 
+  const replaceSnapshots = useCallback((next: Record<string, AccountSnapshot>) => {
+    snapshotsRef.current = next;
+    setSnapshots(next);
+  }, []);
+
+  const commitSnapshot = useCallback((
+    accountId: string,
+    updater: (snapshot: AccountSnapshot | undefined) => AccountSnapshot,
+  ) => {
+    const next = commitDashboardSnapshot(snapshotsRef.current, accountId, updater);
+    snapshotsRef.current = next;
+    setSnapshots(next);
+  }, []);
+
+  const acceptSettledSnapshots = useCallback(() => {
+    const acceptedAt = Math.max(Date.now(), acceptedEpochRef.current + 1);
+    acceptedEpochRef.current = acceptedAt;
+    const metrics = deriveWeeklyAccountMetrics(accountsRef.current, snapshotsRef.current, acceptedAt);
+    setSettledMetrics(metrics);
+    dispatchOrder({
+      type: "candidate_order",
+      accountIds: resolvedDashboardOrder(metrics, orderModeRef.current),
+      acceptedEpoch: acceptedAt,
+    });
+  }, []);
+
   const adoptSuccessfulVaultSnapshot = useCallback((snapshot: VaultSnapshot) => {
     serverVaultRef.current = snapshot;
     accountsRef.current = snapshot.accounts;
     setAccounts(snapshot.accounts);
+    dispatchOrder({
+      type: "accounts_changed",
+      accountIds: snapshot.accounts.map((account) => account.id),
+    });
     dispatchVaultUi({ type: "load_succeeded" });
     setSyncError(null);
   }, []);
+
+  useEffect(() => {
+    const accountIds = accounts.map((account) => account.id);
+    dispatchOrder({ type: "accounts_changed", accountIds });
+    setSettledMetrics((current) => {
+      const currentById = new Map(current.map((metric) => [metric.accountId, metric]));
+      return accountIds.map((accountId, sourceIndex) => ({
+        ...(currentById.get(accountId) ?? emptyDashboardMetric(accountId, sourceIndex)),
+        sourceIndex,
+      }));
+    });
+    setExpandedAccountIds((current) => {
+      const active = new Set(accountIds);
+      return new Set([...current].filter((accountId) => active.has(accountId)));
+    });
+  }, [accounts]);
 
   const queueSave = useCallback((mutation?: VaultMutation) => {
     const revision = ++saveRevision.current;
@@ -333,7 +564,10 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   }, [loadVault, vaultRecoveryBusy]);
 
   useEffect(() => {
-    setAutoRefresh(loadSettings().autoRefresh);
+    const settings = loadSettings();
+    setAutoRefresh(settings.autoRefresh);
+    orderModeRef.current = settings.sortMode;
+    dispatchOrder({ type: "sort_changed", mode: settings.sortMode, accountIds: [] });
     void loadVault();
   }, [loadVault]);
 
@@ -350,17 +584,15 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const refreshAccount = useCallback(
     async (id: string): Promise<boolean> => {
       if (inFlight.current.has(id)) return false;
-      const existingSnapshot = snapshotsRef.current[id];
-      if (
-        existingSnapshot?.status === "reauth" ||
-        (existingSnapshot?.cooldownUntil ?? 0) > Date.now()
-      ) {
-        return false;
-      }
       inFlight.current.add(id);
       try {
+        const existingSnapshot = snapshotsRef.current[id];
+        if (
+          existingSnapshot?.status === "reauth" ||
+          (existingSnapshot?.cooldownUntil ?? 0) > Date.now()
+        ) return false;
         if (!accountsRef.current.some((account) => account.id === id)) return false;
-        setSnapshots((prev) => ({ ...prev, [id]: { ...prev[id], status: "loading" } }));
+        commitSnapshot(id, (previous) => ({ ...previous, status: "loading" }));
 
         // Send the account id so the server can key its shared cache + single-flight refresh lock
         // (lib/usage-service). The refresh token is single-use, so this coordination — not the
@@ -378,15 +610,12 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         }
         const data: UsageResponse & { error?: string } = await res.json().catch(() => ({}) as never);
         if (!res.ok) {
-          setSnapshots((prev) => ({
-            ...prev,
-            [id]: {
-              ...prev[id],
+          commitSnapshot(id, (previous) => ({
+              ...previous,
               status: "error",
               error: errText(data.error, `Usage request failed (${res.status}).`),
               cooldownUntil: data.cooldownUntil,
               stale: data.stale,
-            },
           }));
           return false;
         }
@@ -397,9 +626,12 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
 
         // Dead token: the account must be re-added. Never retry-storm (the server is in cooldown).
         if (data.status === "reauth") {
-          setSnapshots((prev) => ({
-            ...prev,
-            [id]: { ...prev[id], status: "reauth", error: data.error, cooldownUntil: data.cooldownUntil, stale: true },
+          commitSnapshot(id, (previous) => ({
+            ...previous,
+            status: "reauth",
+            error: data.error,
+            cooldownUntil: data.cooldownUntil,
+            stale: true,
           }));
           return false;
         }
@@ -408,23 +640,17 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         // cached value yet — in the latter case keep the current view and let the next poll resolve it.
         if (!data.usage) {
           if (data.status === "error" || data.error) {
-            setSnapshots((prev) => ({
-              ...prev,
-              [id]: {
-                ...prev[id],
+            commitSnapshot(id, (previous) => ({
+                ...previous,
                 status: "error",
                 error: errText(data.error, "Couldn't load usage."),
                 cooldownUntil: data.cooldownUntil,
                 stale: data.stale,
-              },
             }));
           } else {
-            setSnapshots((prev) => ({
-              ...prev,
-              [id]: prev[id]?.usage
-                ? { ...prev[id], status: "ready", stale: true }
-                : { ...prev[id], status: "error", error: "Usage is still refreshing — retry in a moment." },
-            }));
+            commitSnapshot(id, (previous) => previous?.usage
+              ? { ...previous, status: "ready", stale: true }
+              : { ...previous, status: "error", error: "Usage is still refreshing — retry in a moment." });
           }
           return false;
         }
@@ -462,9 +688,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             queueSave(mutation);
           }
         }
-        setSnapshots((prev) => ({
-          ...prev,
-          [id]: {
+        commitSnapshot(id, () => ({
             status: "ready",
             usage,
             profile: data.profile,
@@ -473,7 +697,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             fetchedAt: data.fetchedAt ?? Date.now(),
             stale: !!data.stale,
             cooldownUntil: data.cooldownUntil,
-          },
         }));
         if (
           strictLocal &&
@@ -497,25 +720,35 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         return !data.stale;
       } catch {
         if (accountsRef.current.some((a) => a.id === id)) {
-          setSnapshots((prev) => ({
-            ...prev,
-            [id]: { ...prev[id], status: "error", error: "Network error — is the connection up?" },
+          commitSnapshot(id, (previous) => ({
+            ...previous,
+            status: "error",
+            error: "Network error — is the connection up?",
           }));
         }
         return false;
       } finally {
         inFlight.current.delete(id);
+        dispatchOrder({ type: "account_settled", accountId: id });
       }
     },
-    [queueSave, strictLocal],
+    [commitSnapshot, queueSave, strictLocal],
   );
 
   const refreshAll = useCallback(async () => {
     const ids = accountsRef.current.map((account) => account.id);
     if (ids.length === 0) return;
+    dispatchOrder({ type: "batch_started", accountIds: ids });
     const summary = await refreshAllAccounts(ids, refreshAccount);
+    acceptSettledSnapshots();
     setLastRefreshAll({ at: Date.now(), ...summary });
-  }, [refreshAccount]);
+  }, [acceptSettledSnapshots, refreshAccount]);
+
+  const refreshSingleAccount = useCallback(async (accountId: string) => {
+    dispatchOrder({ type: "batch_started", accountIds: [accountId] });
+    await refreshAccount(accountId);
+    acceptSettledSnapshots();
+  }, [acceptSettledSnapshots, refreshAccount]);
 
   // The local + pairing connect flows add the account to the vault SERVER-side (never handing the
   // token to the browser), so after one succeeds we re-pull the vault and refresh the newcomer.
@@ -535,9 +768,8 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       const resetSnapshots = Object.fromEntries(
         snapshot.accounts.map((account) => [account.id, { status: "idle" as const }]),
       );
-      snapshotsRef.current = resetSnapshots;
-      setSnapshots(resetSnapshots);
-      void Promise.all(snapshot.accounts.map((a) => refreshAccount(a.id)));
+      replaceSnapshots(resetSnapshots);
+      void refreshAll();
     } catch (error) {
       if (readGeneration !== null && readGeneration !== vaultReadGeneration.current) return;
       const message = error instanceof Error ? error.message : "Couldn't reload saved accounts.";
@@ -546,7 +778,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     } finally {
       if (explicitReadStarted) explicitVaultReads.current = Math.max(0, explicitVaultReads.current - 1);
     }
-  }, [adoptSuccessfulVaultSnapshot, refreshAccount]);
+  }, [adoptSuccessfulVaultSnapshot, refreshAll, replaceSnapshots]);
 
   useEffect(() => {
     if (vaultState === "ready") void refreshAll();
@@ -632,14 +864,12 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       accountsRef.current = next;
       setAccounts(next);
       queueSave({ op: "remove", accountId: id });
-      setSnapshots((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
+      const nextSnapshots = { ...snapshotsRef.current };
+      delete nextSnapshots[id];
+      replaceSnapshots(nextSnapshots);
       requestAnimationFrame(() => addAccountButtonRef.current?.focus({ preventScroll: true }));
     },
-    [queueSave],
+    [queueSave, replaceSnapshots],
   );
 
   const renameAccount = useCallback(
@@ -667,12 +897,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     return accounts.every((a) => (a.provider ?? "anthropic") === first) ? first : "anthropic";
   }, [accounts]);
 
-  // Header copy follows one connected provider; mixed or empty dashboards use the neutral "AI".
-  const monitorLabel = useMemo(() => {
-    const present = new Set(accounts.map((a) => a.provider ?? "anthropic"));
-    return present.size === 1 ? providerMeta([...present][0]).label : "AI";
-  }, [accounts]);
-
   const providerOrdinals = useMemo(() => accountProviderOrdinals(accounts), [accounts]);
 
   useEffect(() => {
@@ -685,24 +909,27 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     };
   }, [pageProvider]);
 
-  const stats = useMemo(() => {
-    let peakSession: { percent: number; displayName: string } | null = null;
-    let peakWeekly: { percent: number; displayName: string } | null = null;
-    for (const account of accounts) {
-      const usage = snapshots[account.id]?.usage;
-      if (!usage) continue;
-      for (const bar of extractBars(usage)) {
-        const isSession = bar.key.startsWith("session") || bar.key === "five_hour";
-        const target = isSession ? peakSession : peakWeekly;
-        if (!target || bar.usedPercent > target.percent) {
-          const entry = { percent: bar.usedPercent, displayName: accountDisplayName(account) };
-          if (isSession) peakSession = entry;
-          else peakWeekly = entry;
-        }
-      }
-    }
-    return { peakSession, peakWeekly };
-  }, [accounts, snapshots]);
+  const presentedMetrics = useMemo(
+    () => settledMetrics.map((metric) => dashboardMetricForNow(metric, now)),
+    [now, settledMetrics],
+  );
+  const accountsById = useMemo(
+    () => new Map(accounts.map((account) => [account.id, account])),
+    [accounts],
+  );
+  const quotaSummary = useMemo(
+    () => summarizeWeeklyAccountMetrics(presentedMetrics),
+    [presentedMetrics],
+  );
+  const sortUnavailable = orderState.mode === "weekly-usage"
+    ? !settledMetrics.some((metric) => metric.highestWeeklyUsedPercent !== null)
+    : orderState.mode === "weekly-reset"
+      ? !presentedMetrics.some((metric) => metric.nearestWeeklyResetAt !== null)
+      : false;
+  const readyAccounts = accounts.filter((account) => snapshots[account.id]?.status === "ready").length;
+  const healthLabel = accounts.length === 0
+    ? "İlk veri bekleniyor"
+    : `${readyAccounts}/${accounts.length} hesap güncel`;
 
   const retrySave = useCallback(() => queueSave(), [queueSave]);
   const retryPreference = useCallback(() => {
@@ -710,82 +937,69 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     if (saveSettings({ ...current, autoRefresh })) setPreferenceError(null);
   }, [autoRefresh]);
 
+  const changeSortMode = useCallback((mode: QuotaSortMode) => {
+    orderModeRef.current = mode;
+    dispatchOrder({
+      type: "sort_changed",
+      mode,
+      accountIds: resolvedDashboardOrder(settledMetrics, mode),
+    });
+    if (saveDashboardSortMode(mode)) setPreferenceError(null);
+    else setPreferenceError("Sıralama tercihi bu cihaza kaydedilemedi.");
+    setActiveSheet(null);
+  }, [settledMetrics]);
+
+  const setAccountElement = useCallback((accountId: string, element: HTMLLIElement | null) => {
+    if (element) accountElementsRef.current.set(accountId, element);
+    else accountElementsRef.current.delete(accountId);
+  }, []);
+
+  const changeExpandedAccount = useCallback((accountId: string, expanded: boolean) => {
+    setExpandedAccountIds((current) => {
+      const next = new Set(current);
+      if (expanded) next.add(accountId);
+      else next.delete(accountId);
+      return next;
+    });
+  }, []);
+
+  const changeInteractionFence = useCallback((
+    accountId: string,
+    channel: InteractionChannel,
+    active: boolean,
+  ) => {
+    if (active) {
+      dispatchOrder({ type: "interaction_enter", accountId, channel });
+      return;
+    }
+    const remainingFocus = orderState.focusAccountIds.filter((id) => channel !== "focus" || id !== accountId);
+    const remainingPointer = orderState.pointerAccountIds.filter((id) => channel !== "pointer" || id !== accountId);
+    const releasePending = orderState.pendingAccountIds !== null
+      && remainingFocus.length === 0
+      && remainingPointer.length === 0;
+    dispatchOrder({ type: "interaction_leave", accountId, channel });
+    if (releasePending) scheduleDashboardAccountScroll(accountElementsRef.current.get(accountId) ?? null);
+  }, [orderState.focusAccountIds, orderState.pendingAccountIds, orderState.pointerAccountIds]);
+
   return (
     <div className="flex min-h-screen flex-col">
       <a href="#dashboard-main" className="skip-link">
         Skip to dashboard content
       </a>
-      <header className="sticky top-0 z-40 border-b border-border/70 bg-bg/80 backdrop-blur-md">
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2 px-3 py-3 sm:gap-4 sm:px-6">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-            <StarburstIcon className="h-5 w-5 shrink-0 text-coral sm:h-6 sm:w-6" />
-            <div>
-              <h1 className="sr-only">{monitorLabel} usage monitor</h1>
-              <p aria-hidden="true" className="font-display hidden text-lg leading-none text-ivory xs:block sm:text-xl">How Much AI</p>
-              <p className="mt-0.5 hidden text-[11px] text-faint sm:block">{monitorLabel} account monitor</p>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
-            <button
-              type="button"
-              onClick={() => setAutoRefresh((v) => !v)}
-              role="switch"
-              aria-checked={autoRefresh}
-              aria-label={autoRefresh ? "Pause automatic refresh" : "Resume automatic refresh"}
-              title={
-                autoRefresh
-                  ? "Automatic checks are on (every minute; upstream readings may be cached) — click to pause"
-                  : "Automatic checks are paused — click to resume"
-              }
-              className={`inline-flex h-11 w-11 items-center justify-center gap-2 rounded-xl border text-xs font-medium transition-all xs:w-auto xs:rounded-full xs:px-3 ${
-                autoRefresh ? "text-coral-bright" : "border-border text-faint hover:text-muted"
-              }`}
-              style={
-                autoRefresh
-                  ? { borderColor: "color-mix(in srgb, var(--accent) 40%, transparent)" }
-                  : undefined
-              }
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${autoRefresh ? "bg-coral" : "bg-faint"}`}
-                style={autoRefresh ? { boxShadow: "0 0 6px var(--accent)" } : undefined}
-              />
-              <span className="hidden xs:inline">{autoRefresh ? "Auto" : "Paused"}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void refreshAll()}
-              disabled={refreshing || accounts.length === 0}
-              aria-label="Refresh all accounts"
-              title="Refresh all accounts"
-              className="inline-flex h-11 w-11 items-center justify-center gap-2 rounded-xl border border-border text-sm font-medium text-muted transition-all enabled:hover:border-border-light enabled:hover:bg-surface-hover enabled:hover:text-ivory disabled:opacity-40 sm:w-auto sm:px-3.5"
-            >
-              <RefreshIcon className={`h-4 w-4 ${refreshing ? "animate-spin-slow" : ""}`} />
-              <span className="hidden sm:inline">Refresh</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setNotifyOpen(true)}
-              aria-label="Notifications"
-              title="Notifications"
-              className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border text-muted transition-all hover:border-border-light hover:bg-surface-hover hover:text-ivory"
-            >
-              <BellIcon className="h-4 w-4" />
-            </button>
-            <button
-              ref={addAccountButtonRef}
-              type="button"
-              onClick={handleAddClick}
-              aria-label="Add account"
-              className="inline-flex h-11 w-11 items-center justify-center gap-1.5 rounded-xl bg-coral text-sm font-medium text-white shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)] transition-all enabled:hover:shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] disabled:opacity-50 sm:w-auto sm:px-3.5"
-            >
-              <PlusIcon className="h-4 w-4" />
-              <span className="hidden sm:inline">Add account</span>
-            </button>
-            {showSignOut && <SignOutButton onError={setActionError} />}
-          </div>
-        </div>
-      </header>
+      <DashboardHeader
+        healthLabel={healthLabel}
+        autoRefresh={autoRefresh}
+        sortMode={orderState.mode}
+        sortUnavailable={sortUnavailable}
+        refreshing={refreshing}
+        canRefresh={accounts.length > 0}
+        addAccountButtonRef={addAccountButtonRef}
+        onRefresh={() => void refreshAll()}
+        onAddAccount={handleAddClick}
+        onNotifications={() => setNotifyOpen(true)}
+        onSort={() => setActiveSheet("sort")}
+        onMenu={() => setActiveSheet("menu")}
+      />
 
       <main
         id="dashboard-main"
@@ -932,55 +1146,34 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           </div>
         ) : (
           <>
-            {accounts.length >= 2 && (
-              <div className="animate-rise mb-6 grid grid-cols-2 gap-2 xs:grid-cols-3 sm:gap-3">
-                <div className="col-span-2 rounded-xl border border-border bg-surface px-3 py-3 xs:col-span-1 sm:px-4">
-                  <p className="text-[11px] uppercase tracking-wide text-faint">Accounts</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-ivory">{accounts.length}</p>
-                </div>
-                <div className="min-w-0 rounded-xl border border-border bg-surface px-3 py-3 sm:px-4">
-                  <p className="text-[11px] uppercase tracking-wide text-faint">Peak session</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-ivory">
-                    {stats.peakSession ? `${Math.round(stats.peakSession.percent)}%` : "—"}
-                  </p>
-                  {stats.peakSession && (
-                    <p title={stats.peakSession.displayName} className="truncate text-[11px] text-faint">
-                      {stats.peakSession.displayName}
-                    </p>
-                  )}
-                </div>
-                <div className="min-w-0 rounded-xl border border-border bg-surface px-3 py-3 sm:px-4">
-                  <p className="text-[11px] uppercase tracking-wide text-faint">Peak weekly</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-ivory">
-                    {stats.peakWeekly ? `${Math.round(stats.peakWeekly.percent)}%` : "—"}
-                  </p>
-                  {stats.peakWeekly && (
-                    <p title={stats.peakWeekly.displayName} className="truncate text-[11px] text-faint">
-                      {stats.peakWeekly.displayName}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-            <ol role="list" className="grid list-none grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
-              {accounts.map((account, i) => (
-                <li key={account.id}>
-                  <AccountCard
-                    account={account}
-                    snapshot={snapshots[account.id]}
-                    now={now}
-                    index={i}
-                    providerOrdinal={providerOrdinals.get(account.id)!}
-                    onRefresh={() => void refreshAccount(account.id)}
-                    onRemove={() => removeAccount(account.id)}
-                    onReconnect={
-                      strictLocal ? undefined : () => reconnect(account)
-                    }
-                    onRename={(label) => renameAccount(account.id, label)}
-                  />
-                </li>
-              ))}
-            </ol>
+            <section className="quota-instrument-overview mb-6 grid min-w-0 gap-4" aria-label="Kota görünümü">
+              <QuotaRuler
+                metrics={presentedMetrics}
+                accountsById={accountsById}
+                providerOrdinals={providerOrdinals}
+              />
+              <QuotaReadings
+                summary={quotaSummary}
+                accountsById={accountsById}
+                providerOrdinals={providerOrdinals}
+              />
+            </section>
+            <DashboardAccountList
+              accounts={accounts}
+              visibleAccountIds={orderState.visibleAccountIds}
+              snapshots={snapshots}
+              metrics={settledMetrics}
+              providerOrdinals={providerOrdinals}
+              expandedAccountIds={expandedAccountIds}
+              now={now}
+              setAccountElement={setAccountElement}
+              onMobileExpandedChange={changeExpandedAccount}
+              onInteractionFenceChange={changeInteractionFence}
+              onRefresh={(accountId) => void refreshSingleAccount(accountId)}
+              onRemove={removeAccount}
+              onReconnect={strictLocal ? undefined : reconnect}
+              onRename={renameAccount}
+            />
           </>
         )}
       </main>
@@ -999,6 +1192,25 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           )}
         </div>
       </footer>
+
+      <MobileCommandBar
+        refreshing={refreshing}
+        canRefresh={accounts.length > 0}
+        onRefresh={() => void refreshAll()}
+        onAddAccount={handleAddClick}
+        onNotifications={() => setNotifyOpen(true)}
+        onMenu={() => setActiveSheet("menu")}
+      />
+      <DashboardSheets
+        activeSheet={activeSheet}
+        sortMode={orderState.mode}
+        autoRefresh={autoRefresh}
+        showSignOut={showSignOut}
+        onClose={() => setActiveSheet(null)}
+        onSortModeChange={changeSortMode}
+        onAutoRefreshChange={setAutoRefresh}
+        onSignOutError={setActionError}
+      />
 
       <AddAccountModal
         open={modalOpen}

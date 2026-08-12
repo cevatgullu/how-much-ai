@@ -367,8 +367,15 @@ test("hosted push status contains a rejecting client loader generically", async 
 test("manual and automatic refreshes share the nonblocking refreshAccount path", () => {
   const source = readFileSync(path.join(projectRoot, "components", "Dashboard.tsx"), "utf8");
   assert.match(source, /refreshAllAccounts\(ids, refreshAccount\)/);
-  assert.match(source, /onRefresh=\{\(\) => void refreshAccount\(account\.id\)\}/);
+  assert.match(source, /refreshSingleAccount\(accountId\)/);
   assert.match(source, /setInterval\(\(\) => void refreshAll\(\), 60_000\)/);
   assert.match(source, /void localNotifyQueueRef\.current\.enqueue\(/);
   assert.doesNotMatch(source, /await localNotifyQueueRef\.current\.enqueue\(/);
+  assert.doesNotMatch(source, /document\.hidden/);
+  assert.doesNotMatch(source, /document\.visibilityState/);
+  assert.doesNotMatch(source, /visibilitychange/);
+  assert.match(
+    source,
+    /if \(vaultState !== "ready" \|\| !autoRefresh\) return;[\s\S]*?setInterval\(\(\) => void refreshAll\(\), 60_000\)/,
+  );
 });

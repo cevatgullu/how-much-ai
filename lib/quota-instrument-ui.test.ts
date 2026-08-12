@@ -54,6 +54,10 @@ const moduleHooks = registerHooks({
 });
 
 const { QuotaReadings } = await import("../components/QuotaReadings.tsx");
+const { DashboardHeader } = await import("../components/DashboardHeader.tsx");
+const { DashboardSheets } = await import("../components/DashboardSheets.tsx");
+const { MobileCommandBar } = await import("../components/MobileCommandBar.tsx");
+const { ModalShell } = await import("../components/ModalShell.tsx");
 const {
   QuotaRuler,
   focusQuotaRulerRef,
@@ -252,4 +256,110 @@ test("popup focus effect enters the dialog and can restore the originating trigg
   assert.deepEqual(calls.at(-1), { target: "trigger", preventScroll: true });
   assert.equal(scheduleQuotaRulerRefFocus("missing", triggerRefs, (callback) => scheduled.push(callback)), false);
   assert.equal(scheduled.length, 1);
+});
+
+test("local dashboard controls expose exact Turkish sorting and compact actions without hosted claims", () => {
+  const noop = () => {};
+  const header = renderToStaticMarkup(createElement(DashboardHeader, {
+    healthLabel: "2 hesap güncel",
+    autoRefresh: true,
+    sortMode: "weekly-usage",
+    sortUnavailable: false,
+    refreshing: false,
+    canRefresh: true,
+    onRefresh: noop,
+    onAddAccount: noop,
+    onNotifications: noop,
+    onSort: noop,
+    onMenu: noop,
+  }));
+  assert.match(header, />How Much AI</);
+  assert.match(header, />En çok haftalık kullanım</);
+  assert.match(header, /aria-label="Hesap ekle"/);
+  assert.doesNotMatch(header, /role="switch"/);
+
+  const sortSheet = renderToStaticMarkup(createElement(DashboardSheets, {
+    activeSheet: "sort",
+    sortMode: "weekly-usage",
+    autoRefresh: true,
+    showSignOut: false,
+    onClose: noop,
+    onSortModeChange: noop,
+    onAutoRefreshChange: noop,
+    onSignOutError: noop,
+  }));
+  assert.equal((sortSheet.match(/type="radio"/g) ?? []).length, 3);
+  assert.match(sortSheet, />Kayıt sırası</);
+  assert.match(sortSheet, />En çok haftalık kullanım</);
+  assert.match(sortSheet, />En yakın haftalık yenilenme</);
+  assert.match(sortSheet, /<input(?=[^>]*value="weekly-usage")(?=[^>]*checked="")[^>]*>/);
+  assert.doesNotMatch(sortSheet, /role="switch"/);
+
+  const menuSheet = renderToStaticMarkup(createElement(DashboardSheets, {
+    activeSheet: "menu",
+    sortMode: "weekly-usage",
+    autoRefresh: true,
+    showSignOut: true,
+    onClose: noop,
+    onSortModeChange: noop,
+    onAutoRefreshChange: noop,
+    onSignOutError: noop,
+  }));
+  assert.match(menuSheet, />Otomatik yenileme</);
+  assert.match(menuSheet, /role="switch"[^>]*aria-checked="true"/);
+  assert.match(menuSheet, /şifrelenmiş yerel kasada/);
+  assert.match(menuSheet, /aria-label="Sign out"/);
+
+  const commands = renderToStaticMarkup(createElement(MobileCommandBar, {
+    refreshing: false,
+    canRefresh: true,
+    onRefresh: noop,
+    onAddAccount: noop,
+    onNotifications: noop,
+    onMenu: noop,
+  }));
+  const labels = [...commands.matchAll(/<button[^>]*aria-label="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(labels, ["Yenile", "Hesap ekle", "Uyarılar", "Menü"]);
+  assert.match(commands, />Yenile<[\s\S]*>Hesap<[\s\S]*>Uyarılar<[\s\S]*>Menü</);
+
+  const allControls = `${header}${sortSheet}${menuSheet}${commands}`;
+  assert.doesNotMatch(allControls, /canlı görünüm|sunucu izleyici|PWA|bulut|cloud|server monitor/i);
+});
+
+test("compact controls explain unavailable weekly sorting without changing the selected mode", () => {
+  const markup = renderToStaticMarkup(createElement(DashboardHeader, {
+    healthLabel: "İlk veri bekleniyor",
+    autoRefresh: true,
+    sortMode: "weekly-reset",
+    sortUnavailable: true,
+    refreshing: false,
+    canRefresh: true,
+    onRefresh() {},
+    onAddAccount() {},
+    onNotifications() {},
+    onSort() {},
+    onMenu() {},
+  }));
+  assert.match(markup, />En yakın haftalık yenilenme</);
+  assert.match(markup, />Sıralamak için kullanılabilir haftalık veri yok</);
+});
+
+test("ModalShell renders center and sheet placements through the same dialog boundary", () => {
+  const center = renderToStaticMarkup(createElement(ModalShell, {
+    open: true,
+    title: "Merkez",
+    onClose() {},
+    children: createElement("p", null, "İçerik"),
+  }));
+  const sheet = renderToStaticMarkup(createElement(ModalShell, {
+    open: true,
+    title: "Menü",
+    placement: "sheet",
+    onClose() {},
+    children: createElement("p", null, "İçerik"),
+  }));
+  assert.match(center, /role="dialog"[^>]*data-placement="center"/);
+  assert.match(sheet, /role="dialog"[^>]*data-placement="sheet"/);
+  assert.equal((center.match(/aria-modal="true"/g) ?? []).length, 1);
+  assert.equal((sheet.match(/aria-modal="true"/g) ?? []).length, 1);
 });

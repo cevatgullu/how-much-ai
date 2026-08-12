@@ -65,7 +65,20 @@ const moduleHooks = registerHooks({
 
 const { UsageBar } = await import("../components/UsageBar.tsx");
 const { AccountCard, deriveFiveHourPeak } = await import("../components/AccountCard.tsx");
-const { accountProviderOrdinals } = await import("../components/Dashboard.tsx");
+const {
+  dashboardOrderReducer,
+  initialDashboardOrderState,
+  resolvedDashboardOrder,
+} = await import("./dashboard-order-state.ts");
+const {
+  DashboardAccountList,
+  accountProviderOrdinals,
+  commitDashboardSnapshot,
+  dashboardAccountRows,
+  dashboardMetricForNow,
+  saveDashboardSortMode,
+  scheduleDashboardAccountScroll,
+} = await import("../components/Dashboard.tsx");
 
 after(() => moduleHooks.deregister());
 
@@ -484,12 +497,132 @@ test("OpenAI account guidance names ChatGPT while preserving login-kind badges",
   assert.doesNotMatch(sharedMarkup, /shares claude code/i);
 });
 
-test("dashboard source wires provider ordinals into a direct ordered card list", () => {
-  const source = readFileSync(path.join(projectRoot, "components", "Dashboard.tsx"), "utf8");
-  assert.match(source, /const providerOrdinals = useMemo/);
-  assert.match(source, /useMemo\(\(\) => accountProviderOrdinals\(accounts\), \[accounts\]\)/);
-  assert.match(source, /<ol role="list" className="grid [^"]*">\s*\{accounts\.map/s);
-  assert.match(source, /accounts\.map\(\(account, i\) => \(\s*<li key=\{account\.id\}>\s*<AccountCard[\s\S]*?providerOrdinal=\{providerOrdinals\.get\(account\.id\)!\}/);
+test("settled dashboard rows reorder presentation only while preserving source ordinals, keys, and expanded ids", () => {
+  const accounts = [
+    account("claude-first"),
+    account("chatgpt", "openai"),
+    account("claude-second"),
+  ];
+  const metrics = [
+    metric("claude-first", { sourceIndex: 0, highestWeeklyUsedPercent: 20 }),
+    metric("chatgpt", { sourceIndex: 1, highestWeeklyUsedPercent: 90 }),
+    metric("claude-second", { sourceIndex: 2, highestWeeklyUsedPercent: 60 }),
+  ];
+  const snapshots = Object.fromEntries(accounts.map((value) => [value.id, {
+    status: "ready" as const,
+    usage: { seven_day: { utilization: metrics.find((entry) => entry.accountId === value.id)!.highestWeeklyUsedPercent } },
+  }]));
+  const ordinals = accountProviderOrdinals(accounts);
+  const expandedIds = new Set(["claude-first"]);
+  let state = initialDashboardOrderState(accounts.map((value) => value.id), "weekly-usage");
+
+  const renderList = () => renderToStaticMarkup(createElement(DashboardAccountList, {
+    accounts,
+    visibleAccountIds: state.visibleAccountIds,
+    snapshots,
+    metrics,
+    providerOrdinals: ordinals,
+    expandedAccountIds: expandedIds,
+    now: NOW,
+    onMobileExpandedChange() {},
+    onInteractionFenceChange() {},
+    onRefresh() {},
+    onRemove() {},
+    onRename() {},
+  }));
+  const renderedIds = (markup: string) => [...markup.matchAll(/<li[^>]*data-dashboard-account="([^"]+)"/g)].map((match) => match[1]);
+
+  assert.deepEqual(renderedIds(renderList()), ["claude-first", "chatgpt", "claude-second"], "initial render stays in source order");
+  state = dashboardOrderReducer(state, { type: "batch_started", accountIds: accounts.map((value) => value.id) });
+  state = dashboardOrderReducer(state, { type: "account_settled", accountId: "chatgpt" });
+  state = dashboardOrderReducer(state, {
+    type: "candidate_order",
+    accountIds: resolvedDashboardOrder(metrics, "weekly-usage"),
+    acceptedEpoch: 10,
+  });
+  assert.deepEqual(renderedIds(renderList()), ["claude-first", "chatgpt", "claude-second"], "partial results never jump");
+  state = dashboardOrderReducer(state, { type: "account_settled", accountId: "claude-first" });
+  state = dashboardOrderReducer(state, { type: "account_settled", accountId: "claude-second" });
+  state = dashboardOrderReducer(state, {
+    type: "candidate_order",
+    accountIds: resolvedDashboardOrder(metrics, "weekly-usage"),
+    acceptedEpoch: 11,
+  });
+
+  const reordered = renderList();
+  assert.deepEqual(renderedIds(reordered), ["chatgpt", "claude-second", "claude-first"]);
+  assert.deepEqual(
+    [...reordered.matchAll(/<h2 id="[^"]+" class="[^"]*">((?:Claude|ChatGPT) \d+)<\/h2>/g)].map((match) => match[1]),
+    ["ChatGPT 1", "Claude 2", "Claude 1"],
+  );
+  assert.match(reordered, /data-ledger-expand="claude-first"[^>]*aria-expanded="true"/);
+  assert.deepEqual(dashboardAccountRows(accounts, state.visibleAccountIds, metrics, ordinals, expandedIds).map((row) => row.key), state.visibleAccountIds);
+  assert.deepEqual(accounts.map((value) => value.id), ["claude-first", "chatgpt", "claude-second"], "source accounts stay untouched");
+});
+
+test("one-account settlement can accept one order and missing metrics fall back stably to source", () => {
+  const metrics = [
+    metric("source-a", { sourceIndex: 0, highestWeeklyUsedPercent: null, nearestWeeklyResetAt: null }),
+    metric("source-b", { sourceIndex: 1, highestWeeklyUsedPercent: null, nearestWeeklyResetAt: null }),
+  ];
+  assert.deepEqual(resolvedDashboardOrder(metrics, "weekly-usage"), ["source-a", "source-b"]);
+  assert.deepEqual(resolvedDashboardOrder(metrics, "weekly-reset"), ["source-a", "source-b"]);
+
+  let state = initialDashboardOrderState(["source-a"], "weekly-usage");
+  state = dashboardOrderReducer(state, { type: "batch_started", accountIds: ["source-a"] });
+  state = dashboardOrderReducer(state, { type: "account_settled", accountId: "source-a" });
+  state = dashboardOrderReducer(state, { type: "candidate_order", accountIds: ["source-a"], acceptedEpoch: 3 });
+  assert.deepEqual(state.visibleAccountIds, ["source-a"]);
+  assert.equal(state.acceptedEpoch, 3);
+});
+
+test("snapshot commits are atomic and sort persistence writes the exact mode", () => {
+  const original: Record<string, AccountSnapshot> = { a: { status: "idle" } };
+  const first = commitDashboardSnapshot(original, "a", (previous) => ({ ...previous, status: "loading" }));
+  const second = commitDashboardSnapshot(first, "b", () => ({ status: "ready" }));
+  assert.notEqual(first, original);
+  assert.notEqual(second, first);
+  assert.deepEqual(original, { a: { status: "idle" } });
+  assert.deepEqual(second, { a: { status: "loading" }, b: { status: "ready" } });
+
+  let saved: unknown = null;
+  assert.equal(saveDashboardSortMode(
+    "weekly-reset",
+    () => ({
+      autoRefresh: false,
+      sortMode: "source",
+      localNotifications: { remainingWarnings: true, resetNotifications: false },
+    }),
+    (settings) => { saved = settings; return true; },
+  ), true);
+  assert.deepEqual(saved, {
+    autoRefresh: false,
+    sortMode: "weekly-reset",
+    localNotifications: { remainingWarnings: true, resetNotifications: false },
+  });
+});
+
+test("expired frozen reset copy changes with the clock without changing the accepted order", () => {
+  const frozen = metric("expired", {
+    nearestWeeklyResetAt: "2026-07-31T19:59:00.000Z",
+    nearestWeeklyResetLabel: "Haftalık limit",
+  });
+  const acceptedOrder = resolvedDashboardOrder([frozen], "weekly-reset");
+  const presented = dashboardMetricForNow(frozen, NOW);
+  assert.equal(presented.nearestWeeklyResetAt, null);
+  assert.equal(presented.nearestWeeklyResetLabel, "yenilenme verisi bekleniyor");
+  assert.deepEqual(resolvedDashboardOrder([frozen], "weekly-reset"), acceptedOrder);
+});
+
+test("deferred reorder scrolls the released account into the nearest view after interaction", () => {
+  const calls: Array<{ block?: ScrollLogicalPosition }> = [];
+  const scheduled: Array<() => void> = [];
+  const element = { scrollIntoView(options?: ScrollIntoViewOptions) { calls.push(options ?? {}); } };
+  assert.equal(scheduleDashboardAccountScroll(element, (callback) => scheduled.push(callback)), true);
+  assert.deepEqual(calls, []);
+  scheduled[0]?.();
+  assert.deepEqual(calls, [{ block: "nearest" }]);
+  assert.equal(scheduleDashboardAccountScroll(null, (callback) => scheduled.push(callback)), false);
 });
 
 test("forced-colors mode preserves canvas, text, and progress distinction", () => {

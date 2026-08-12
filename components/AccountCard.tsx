@@ -62,7 +62,7 @@ export function AccountCard({
   fiveHourPeak,
   now,
   providerOrdinal,
-  mobileExpanded = false,
+  mobileExpanded,
   onMobileExpandedChange,
   onInteractionFenceChange,
   onRefresh,
@@ -100,6 +100,11 @@ export function AccountCard({
       ? { ...bar, label: "Codex · 5 saatlik limit" }
       : bar)
     : null;
+  const controlledMobileLedger = metric !== undefined
+    && fiveHourPeak !== undefined
+    && mobileExpanded !== undefined
+    && onMobileExpandedChange !== undefined;
+  const expanded = mobileExpanded ?? false;
   const resolvedFiveHourPeak = fiveHourPeak === undefined
     ? deriveFiveHourPeak(bars ?? [])
     : fiveHourPeak;
@@ -266,7 +271,7 @@ export function AccountCard({
         cancelRemove();
       }}
     >
-      <div className="hidden min-w-0 flex-col gap-3 min-[960px]:flex xs:flex-row xs:items-start xs:justify-between">
+      <div className={`${controlledMobileLedger ? "hidden min-[960px]:flex" : "flex"} min-w-0 flex-col gap-3 xs:flex-row xs:items-start xs:justify-between`}>
         <div className="flex min-w-0 items-center gap-3">
           <div
             aria-hidden="true"
@@ -346,17 +351,18 @@ export function AccountCard({
         </div>
       </div>
 
-      <div
-        data-ledger-account={account.id}
-        data-ledger-state={ledgerState}
-        className="min-w-0 min-[960px]:hidden"
-      >
+      {controlledMobileLedger && (
+        <div
+          data-ledger-account={account.id}
+          data-ledger-state={ledgerState}
+          className="min-w-0 min-[960px]:hidden"
+        >
         <button
           type="button"
           data-ledger-expand={account.id}
-          aria-expanded={mobileExpanded}
+          aria-expanded={expanded}
           aria-controls={ledgerPanelId}
-          onClick={() => onMobileExpandedChange?.(!mobileExpanded)}
+          onClick={() => onMobileExpandedChange(!expanded)}
           className="block min-h-11 w-full min-w-0 text-left"
         >
           <span className="flex min-w-0 items-start justify-between gap-3">
@@ -394,7 +400,7 @@ export function AccountCard({
         <section
           id={ledgerPanelId}
           data-ledger-panel={account.id}
-          hidden={!mobileExpanded}
+          hidden={!expanded}
           className="mt-4 min-w-0 space-y-4"
         >
           <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -432,7 +438,8 @@ export function AccountCard({
             {renderUsageDetails()}
           </div>
         </section>
-      </div>
+        </div>
+      )}
 
       {editing && (
         <input
@@ -549,7 +556,7 @@ export function AccountCard({
         </div>
       )}
 
-      <div className={`mt-5 hidden min-w-0 flex-1 space-y-4 transition-opacity duration-300 min-[960px]:block ${loading && hasBars ? "opacity-60" : ""}`}>
+      <div className={`mt-5 ${controlledMobileLedger ? "hidden min-[960px]:block" : "block"} min-w-0 flex-1 space-y-4 transition-opacity duration-300 ${loading && hasBars ? "opacity-60" : ""}`}>
         {renderUsageDetails()}
       </div>
 

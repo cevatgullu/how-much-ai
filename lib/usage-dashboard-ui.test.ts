@@ -144,6 +144,37 @@ function renderAccountCard(
   }));
 }
 
+test("the existing Dashboard prop shape keeps one reachable card presentation before controlled integration", () => {
+  const accountValue = account("legacy-dashboard", "openai");
+  const markup = renderToStaticMarkup(createElement(AccountCard, {
+    account: accountValue,
+    snapshot: {
+      status: "ready",
+      usage: {
+        five_hour: { utilization: 37, resets_at: RESET_AT },
+        seven_day: { utilization: 68, resets_at: RESET_AT },
+      },
+    },
+    now: NOW,
+    index: 0,
+    providerOrdinal: 1,
+    onRefresh() {},
+    onRemove() {},
+    onRename() {},
+  }));
+
+  assert.doesNotMatch(markup, /data-ledger-expand=/, "an uncontrolled card must not replace reachable content with a no-op expander");
+  assert.doesNotMatch(markup, /class="hidden min-w-0 flex-col gap-3 min-\[960px\]:flex/);
+  assert.doesNotMatch(markup, /class="mt-5 hidden min-w-0 flex-1/);
+  assert.match(markup, />ChatGPT 1</);
+  assert.match(markup, /aria-label="Rename Private legacy-dashboard"/);
+  assert.match(markup, /aria-label="Refresh Private legacy-dashboard"/);
+  assert.match(markup, /aria-label="Remove Private legacy-dashboard"/);
+  assert.equal((markup.match(/role="progressbar"/g) ?? []).length, 2);
+  assert.match(markup, /aria-valuenow="37"/);
+  assert.match(markup, /aria-valuenow="68"/);
+});
+
 test("five-hour peak uses only the highest real session row without mutating bars", () => {
   const bars = [
     usageBar(71, { key: "weekly_all", kind: "weekly_all" }),

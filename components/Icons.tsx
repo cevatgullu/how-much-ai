@@ -29,6 +29,15 @@ export function RefreshIcon({ className }: { className?: string }) {
   );
 }
 
+export function RulerIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M3 17h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M4 17v-5M8 17v-3M12 17V9M16 17v-3M20 17v-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>

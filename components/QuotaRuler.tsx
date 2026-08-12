@@ -26,6 +26,56 @@ export function quotaRulerPopupReducer(state: string | null, action: QuotaRulerP
   return state;
 }
 
+interface QuotaRulerFocusTarget {
+  focus(options?: FocusOptions): void;
+}
+
+export function focusQuotaRulerRef(
+  clusterId: string | null,
+  refs: ReadonlyMap<string, QuotaRulerFocusTarget>,
+): boolean {
+  if (!clusterId) return false;
+  const target = refs.get(clusterId);
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  return true;
+}
+
+export function scheduleQuotaRulerRefFocus(
+  clusterId: string | null,
+  refs: ReadonlyMap<string, QuotaRulerFocusTarget>,
+  schedule: (callback: () => void) => unknown = (callback) => requestAnimationFrame(callback),
+): boolean {
+  if (!clusterId || !refs.has(clusterId)) return false;
+  schedule(() => focusQuotaRulerRef(clusterId, refs));
+  return true;
+}
+
+export interface QuotaRulerPopupGeometry {
+  triggerCenterX: number;
+  dialogLeft: number;
+  dialogWidth: number;
+}
+
+export function quotaRulerPopupGeometry(
+  centerX: number,
+  rulerWidth: number,
+  triggerWidth = 44,
+  preferredDialogWidth = 256,
+  inset = 8,
+): QuotaRulerPopupGeometry {
+  const width = Math.max(0, rulerWidth);
+  const safeInset = Math.min(Math.max(0, inset), width / 2);
+  const triggerEdge = Math.min(width / 2, safeInset + Math.max(0, triggerWidth) / 2);
+  const triggerCenterX = Math.min(width - triggerEdge, Math.max(triggerEdge, centerX));
+  const dialogWidth = Math.max(0, Math.min(preferredDialogWidth, width - safeInset * 2));
+  const dialogLeft = Math.min(
+    width - safeInset - dialogWidth,
+    Math.max(safeInset, centerX - dialogWidth / 2),
+  );
+  return { triggerCenterX, dialogLeft, dialogWidth };
+}
+
 const PRIMARY_TICKS = [0, 50, 85, 100] as const;
 const SECONDARY_TICKS = [25, 75] as const;
 const FALLBACK_TRACK_WIDTH = 640;
@@ -87,6 +137,7 @@ export function QuotaRuler({ metrics, accountsById, providerOrdinals }: QuotaRul
   const trackRef = useRef<HTMLDivElement>(null);
   const labelRefs = useRef(new Map<string, HTMLSpanElement>());
   const clusterButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const clusterDialogRefs = useRef(new Map<string, HTMLDivElement>());
   const [trackWidth, setTrackWidth] = useState(FALLBACK_TRACK_WIDTH);
   const [labelWidths, setLabelWidths] = useState<Readonly<Record<string, number>>>({});
   const [openClusterId, dispatchPopup] = useReducer(quotaRulerPopupReducer, null);
@@ -139,11 +190,15 @@ export function QuotaRuler({ metrics, accountsById, providerOrdinals }: QuotaRul
     return () => observer.disconnect();
   }, [layout.placements.length]);
 
+  useEffect(() => {
+    focusQuotaRulerRef(openClusterId, clusterDialogRefs.current);
+  }, [openClusterId]);
+
   const closePopup = (restoreFocus = true) => {
     const closingId = openClusterId;
     dispatchPopup({ type: "close" });
     if (restoreFocus && closingId) {
-      requestAnimationFrame(() => clusterButtonRefs.current.get(closingId)?.focus({ preventScroll: true }));
+      scheduleQuotaRulerRefFocus(closingId, clusterButtonRefs.current);
     }
   };
 
@@ -187,8 +242,14 @@ export function QuotaRuler({ metrics, accountsById, providerOrdinals }: QuotaRul
         {layout.clusters.map((cluster) => {
           const open = openClusterId === cluster.id;
           const popupId = `${cluster.id}-popup`;
+          const geometry = quotaRulerPopupGeometry(cluster.centerX, trackWidth);
           return (
-            <div key={cluster.id} className="absolute top-[142px] -translate-x-1/2" style={{ left: cluster.centerX }}>
+            <div
+              key={cluster.id}
+              data-ruler-cluster-center={geometry.triggerCenterX}
+              className="absolute top-[142px]"
+              style={{ left: geometry.triggerCenterX }}
+            >
               <button
                 ref={(node) => {
                   if (node) clusterButtonRefs.current.set(cluster.id, node);
@@ -199,7 +260,7 @@ export function QuotaRuler({ metrics, accountsById, providerOrdinals }: QuotaRul
                 aria-label={`${cluster.members.length} hesaplık kümeyi aç`}
                 aria-expanded={open}
                 aria-controls={popupId}
-                className="min-h-11 min-w-11 rounded-md border border-border bg-surface px-2 font-mono text-sm tabular-nums text-ivory"
+                className="h-11 w-11 -translate-x-1/2 rounded-md border border-border bg-surface p-0 font-mono text-sm tabular-nums text-ivory"
                 onClick={() => open ? closePopup(false) : dispatchPopup({ type: "open", clusterId: cluster.id })}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" && event.key !== "Escape") return;
@@ -211,11 +272,22 @@ export function QuotaRuler({ metrics, accountsById, providerOrdinals }: QuotaRul
                 +{cluster.members.length}
               </button>
               <div
+                ref={(node) => {
+                  if (node) clusterDialogRefs.current.set(cluster.id, node);
+                  else clusterDialogRefs.current.delete(cluster.id);
+                }}
                 id={popupId}
                 role="dialog"
+                tabIndex={-1}
                 aria-label={`${cluster.members.length} hesaplık kota kümesi`}
                 hidden={!open}
-                className="absolute left-1/2 z-10 mt-2 w-64 -translate-x-1/2 rounded-lg border border-border bg-surface p-3 text-sm text-ivory"
+                data-ruler-popup-left={geometry.dialogLeft}
+                data-ruler-popup-width={geometry.dialogWidth}
+                className="absolute z-10 mt-2 rounded-lg border border-border bg-surface p-3 text-sm text-ivory outline-none focus-visible:ring-2 focus-visible:ring-current"
+                style={{
+                  left: geometry.dialogLeft - geometry.triggerCenterX,
+                  width: geometry.dialogWidth,
+                }}
                 onKeyDown={(event) => {
                   if (event.key !== "Escape") return;
                   event.preventDefault();
@@ -240,8 +312,17 @@ export function QuotaRuler({ metrics, accountsById, providerOrdinals }: QuotaRul
         ))}
         {highest ? (
           <span
-            className="absolute top-8 max-w-[60%] -translate-x-1/2 truncate text-xs text-faint"
-            style={{ left: `${clampedPercent(highest.highestWeeklyUsedPercent ?? 0)}%` }}
+            data-ruler-mobile-peak=""
+            className="absolute top-8 truncate text-xs text-faint"
+            style={{
+              left: 8,
+              right: 8,
+              textAlign: (highest.highestWeeklyUsedPercent ?? 0) <= 25
+                ? "left"
+                : (highest.highestWeeklyUsedPercent ?? 0) >= 75
+                  ? "right"
+                  : "center",
+            }}
           >
             En yoğun · {quotaRulerAccountName(accountsById.get(highest.accountId), providerOrdinals.get(highest.accountId))}{" "}
             <span className="font-mono tabular-nums">%{Math.round(highest.highestWeeklyUsedPercent ?? 0)}</span>

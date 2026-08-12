@@ -54,7 +54,13 @@ const moduleHooks = registerHooks({
 });
 
 const { QuotaReadings } = await import("../components/QuotaReadings.tsx");
-const { QuotaRuler, quotaRulerPopupReducer } = await import("../components/QuotaRuler.tsx");
+const {
+  QuotaRuler,
+  focusQuotaRulerRef,
+  quotaRulerPopupGeometry,
+  quotaRulerPopupReducer,
+  scheduleQuotaRulerRefFocus,
+} = await import("../components/QuotaRuler.tsx");
 
 after(() => moduleHooks.deregister());
 
@@ -145,6 +151,58 @@ test("renders dense +N clusters as named buttons with accessible member content"
   assert.match(markup, /Hesap 4[\s\S]*Hesap 7/);
 });
 
+test("clamps edge cluster triggers and dialogs independently within the ruler", () => {
+  assert.deepEqual(quotaRulerPopupGeometry(0, 640), {
+    triggerCenterX: 30,
+    dialogLeft: 8,
+    dialogWidth: 256,
+  });
+  assert.deepEqual(quotaRulerPopupGeometry(640, 640), {
+    triggerCenterX: 610,
+    dialogLeft: 376,
+    dialogWidth: 256,
+  });
+
+  const accounts = Array.from({ length: 14 }, (_, index) => account(
+    `edge-${index}`,
+    "anthropic",
+    { label: `Çok uzun kenar hesabı ${index + 1}` },
+  ));
+  const metrics = accounts.map((value, index) => metric(
+    value.id,
+    index,
+    index < 7 ? 0 : 100,
+    "Çok uzun haftalık kullanım limiti",
+  ));
+  const markup = renderToStaticMarkup(createElement(QuotaRuler, {
+    metrics,
+    accountsById: new Map(accounts.map((value) => [value.id, value])),
+    providerOrdinals: new Map(accounts.map((value, index) => [value.id, index + 1])),
+  }));
+
+  assert.match(markup, /data-ruler-cluster-center="30"[^>]*style="left:30px"/);
+  assert.match(markup, /data-ruler-popup-left="8"[^>]*data-ruler-popup-width="256"[^>]*style="left:-22px;width:256px"/);
+  assert.match(markup, /data-ruler-cluster-center="610"[^>]*style="left:610px"/);
+  assert.match(markup, /data-ruler-popup-left="376"[^>]*data-ruler-popup-width="256"[^>]*style="left:-234px;width:256px"/);
+});
+
+test("keeps long mobile En yoğun labels inside both 0% and 100% ruler edges", () => {
+  for (const [percent, alignment] of [[0, "left"], [100, "right"]] as const) {
+    const edgeAccount = account(`mobile-${percent}`, "anthropic", {
+      label: "Çok uzun ve taşmaması gereken kişisel kota hesabı",
+    });
+    const markup = renderToStaticMarkup(createElement(QuotaRuler, {
+      metrics: [metric(edgeAccount.id, 0, percent, "Çok uzun haftalık kullanım limiti")],
+      accountsById: new Map([[edgeAccount.id, edgeAccount]]),
+      providerOrdinals: new Map([[edgeAccount.id, 1]]),
+    }));
+    const mobileLabel = markup.match(/<span data-ruler-mobile-peak=""[^>]*>[\s\S]*?En yoğun[\s\S]*?<\/span>/)?.[0] ?? "";
+    assert.match(mobileLabel, /style="left:8px;right:8px;text-align:/);
+    assert.match(mobileLabel, new RegExp(`text-align:${alignment}`));
+    assert.doesNotMatch(mobileLabel, /translate-x-1\/2/);
+  }
+});
+
 test("renders compact readings with account and winning limit identities", () => {
   const accounts = [
     account("highest", "anthropic", { label: "Yoğun hesap" }),
@@ -172,4 +230,26 @@ test("quota ruler popup reducer opens and closes through pointer and keyboard ac
   assert.equal(quotaRulerPopupReducer(null, { type: "key", key: "Enter", clusterId: "cluster-b" }), "cluster-b");
   assert.equal(quotaRulerPopupReducer("cluster-b", { type: "key", key: "Escape" }), null);
   assert.equal(quotaRulerPopupReducer("cluster-b", { type: "key", key: "ArrowDown", clusterId: "cluster-c" }), "cluster-b");
+});
+
+test("popup focus effect enters the dialog and can restore the originating trigger", () => {
+  const calls: Array<{ target: string; preventScroll: boolean | undefined }> = [];
+  const refs = new Map([
+    ["cluster-a", { focus(options?: FocusOptions) { calls.push({ target: "dialog", preventScroll: options?.preventScroll }); } }],
+  ]);
+
+  assert.equal(focusQuotaRulerRef("cluster-a", refs), true);
+  assert.equal(focusQuotaRulerRef("missing", refs), false);
+  assert.deepEqual(calls, [{ target: "dialog", preventScroll: true }]);
+
+  const triggerRefs = new Map([
+    ["cluster-a", { focus(options?: FocusOptions) { calls.push({ target: "trigger", preventScroll: options?.preventScroll }); } }],
+  ]);
+  const scheduled: Array<() => void> = [];
+  assert.equal(scheduleQuotaRulerRefFocus("cluster-a", triggerRefs, (callback) => scheduled.push(callback)), true);
+  assert.deepEqual(calls, [{ target: "dialog", preventScroll: true }]);
+  scheduled[0]?.();
+  assert.deepEqual(calls.at(-1), { target: "trigger", preventScroll: true });
+  assert.equal(scheduleQuotaRulerRefFocus("missing", triggerRefs, (callback) => scheduled.push(callback)), false);
+  assert.equal(scheduled.length, 1);
 });

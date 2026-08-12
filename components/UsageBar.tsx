@@ -40,8 +40,8 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
   return (
     <div>
       <div className="grid gap-y-1 xs:grid-cols-[minmax(0,1fr)_auto] xs:items-baseline xs:gap-x-3 xs:gap-y-0">
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span id={labelId} title={bar.label} className="min-w-0 truncate text-[13px] text-muted">
+        <span className="flex min-w-0 flex-wrap items-baseline gap-2">
+          <span id={labelId} title={bar.label} className="min-w-0 break-words text-[13px] text-muted">
             {bar.label}
           </span>
           {state && (
@@ -51,14 +51,14 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
           )}
         </span>
         <span className="flex min-w-0 items-baseline justify-between gap-2 xs:shrink-0 xs:justify-end">
-          <span className="text-[11px] text-faint">%{remaining} kaldı</span>
+          <span className="text-[11px] tabular-nums text-faint">%{remaining} kaldı</span>
           <span className="ml-auto shrink-0 text-right text-sm font-semibold tabular-nums text-ivory">
             Kullanılan: %{used}
           </span>
         </span>
       </div>
       {reset && (
-        <time dateTime={bar.resetsAt ?? undefined} className="mt-1 block text-[11px] text-faint">
+        <time dateTime={bar.resetsAt ?? undefined} className="mt-1 block min-w-0 break-words text-[11px] tabular-nums text-faint">
           {[reset.countdown, reset.exact].filter(Boolean).join(" · ")}
         </time>
       )}

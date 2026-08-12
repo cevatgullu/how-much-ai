@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { AccountSnapshot, BrowserAccount } from "@/lib/types";
-import { extractBars, formatClock } from "@/lib/format";
+import { extractBars, formatClock, formatResetSchedule, type NormalizedUsageBar } from "@/lib/format";
+import type { InteractionChannel } from "@/lib/dashboard-order-state";
+import type { WeeklyAccountMetric } from "@/lib/quota-metrics";
 import { UsageBar } from "./UsageBar";
 import { RefreshIcon, XIcon } from "./Icons";
 import { providerMeta } from "./providers-ui";
@@ -20,6 +22,15 @@ function freshnessAge(timestamp: number, now: number): string {
   return `${Math.floor(hours / 24)} gün önce`;
 }
 
+export function deriveFiveHourPeak(bars: readonly NormalizedUsageBar[]): number | null {
+  let peak: number | null = null;
+  for (const bar of bars) {
+    if (bar.kind !== "session") continue;
+    peak = peak === null ? bar.usedPercent : Math.max(peak, bar.usedPercent);
+  }
+  return peak;
+}
+
 export function accountDisplayName(
   account: Pick<BrowserAccount, "label" | "fullName" | "email">,
 ): string {
@@ -29,9 +40,15 @@ export function accountDisplayName(
 interface AccountCardProps {
   account: BrowserAccount;
   snapshot: AccountSnapshot | undefined;
+  metric?: WeeklyAccountMetric;
+  fiveHourPeak?: number | null;
   now: number;
-  index: number;
+  /** Transitional until Dashboard supplies the controlled Task 6 contract. */
+  index?: number;
   providerOrdinal: number;
+  mobileExpanded?: boolean;
+  onMobileExpandedChange?: (expanded: boolean) => void;
+  onInteractionFenceChange?: (channel: InteractionChannel, active: boolean) => void;
   onRefresh: () => void;
   onRemove: () => void;
   onReconnect?: () => void;
@@ -41,9 +58,13 @@ interface AccountCardProps {
 export function AccountCard({
   account,
   snapshot,
+  metric,
+  fiveHourPeak,
   now,
-  index,
   providerOrdinal,
+  mobileExpanded = false,
+  onMobileExpandedChange,
+  onInteractionFenceChange,
   onRefresh,
   onRemove,
   onReconnect,
@@ -53,13 +74,14 @@ export function AccountCard({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const renameButtonRef = useRef<HTMLButtonElement>(null);
-  const removeButtonRef = useRef<HTMLButtonElement>(null);
+  const renameTriggerRef = useRef<HTMLButtonElement>(null);
+  const removeTriggerRef = useRef<HTMLButtonElement>(null);
   const cancelRemoveRef = useRef<HTMLButtonElement>(null);
   const headingId = useId();
   const freshnessId = useId();
   const removeTitleId = useId();
   const removeDescriptionId = useId();
+  const ledgerPanelId = `${useId().replace(/[^a-zA-Z0-9_-]/g, "")}-ledger-panel`;
 
   useEffect(() => {
     if (!confirmRemove) return;
@@ -78,6 +100,9 @@ export function AccountCard({
       ? { ...bar, label: "Codex · 5 saatlik limit" }
       : bar)
     : null;
+  const resolvedFiveHourPeak = fiveHourPeak === undefined
+    ? deriveFiveHourPeak(bars ?? [])
+    : fiveHourPeak;
   const hasBars = !!bars && bars.length > 0;
   // Stale = the server is showing its last-good reading because Anthropic rate-limited the upstream
   // poll (a cooldown), not a live fetch. We keep the bars but flag their age.
@@ -104,14 +129,38 @@ export function AccountCard({
   const cooldownMinutes = Math.max(1, Math.ceil(cooldownRemaining / 60_000));
   const refreshDisabled = loading || status === "reauth" || cooldownRemaining > 0;
   const initial = displayName.charAt(0).toUpperCase() || "?";
+  const weeklyPeak = metric?.highestWeeklyUsedPercent ?? null;
+  const nearestReset = formatResetSchedule(metric?.nearestWeeklyResetAt ?? null, now);
+  const ledgerState = status === "reauth"
+    ? "reauth"
+    : status === "error"
+      ? "error"
+      : status === "loading"
+        ? "loading"
+        : stale
+          ? "stale"
+          : status === "ready"
+            ? "ready"
+            : "idle";
+  const ledgerStateLabel = ledgerState === "reauth"
+    ? "Yeniden bağlanma gerekli"
+    : ledgerState === "error"
+      ? "Yenileme başarısız"
+      : ledgerState === "loading"
+        ? "Yenileniyor"
+        : ledgerState === "stale"
+          ? "Güncel değil"
+          : ledgerState === "ready"
+            ? "Güncel"
+            : "İlk veri bekleniyor";
 
   const restoreRenameFocus = () => {
-    requestAnimationFrame(() => renameButtonRef.current?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => renameTriggerRef.current?.focus({ preventScroll: true }));
   };
 
   const cancelRemove = () => {
     setConfirmRemove(false);
-    requestAnimationFrame(() => removeButtonRef.current?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => removeTriggerRef.current?.focus({ preventScroll: true }));
   };
 
   const commitRename = (restoreFocus = false) => {
@@ -121,21 +170,103 @@ export function AccountCard({
     if (restoreFocus) restoreRenameFocus();
   };
 
+  const beginRename = (trigger: HTMLButtonElement) => {
+    renameTriggerRef.current = trigger;
+    setDraft(account.label ?? "");
+    setEditing(true);
+  };
+
+  const beginRemove = (trigger: HTMLButtonElement) => {
+    removeTriggerRef.current = trigger;
+    setConfirmRemove(true);
+  };
+
+  const renderUsageDetails = (): ReactNode => status === "reauth" ? (
+    <div role="alert" className="flex min-w-0 flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
+      <p className="min-w-0 break-words text-sm leading-relaxed text-muted">
+        {managedLogin
+          ? `This private app login expired or was revoked. Sign in with ${providerName} again to restore automatic renewal.`
+          : setupToken
+            ? "This legacy inference-only setup token expired or was revoked. Replace it to restore checks."
+            : `This shared ${cliName} session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard.`}
+      </p>
+      {onReconnect ? (
+        <button
+          type="button"
+          onClick={onReconnect}
+          aria-label={`Reconnect ${displayName}`}
+          className="accent-btn min-h-11 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
+        >
+          {managedLogin ? "Reconnect private login" : setupToken ? "Replace with private login" : "Reconnect reliably"}
+        </button>
+      ) : (
+        <p className="text-xs font-medium text-ivory">
+          {account.provider === "openai"
+            ? "Reconnect this ChatGPT account to replace it."
+            : "Use the secure launcher's Claude connector to replace it."}
+        </p>
+      )}
+    </div>
+  ) : hasBars ? (
+    <>
+      {bars.map((bar) => (
+        <UsageBar
+          key={bar.key}
+          bar={bar}
+          now={now}
+          stale={oldData}
+          freshnessDescriptionId={freshnessText ? freshnessId : undefined}
+        />
+      ))}
+    </>
+  ) : status === "error" ? (
+    <div role="status" className="flex min-w-0 flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
+      <p className="min-w-0 break-words text-sm text-muted">{snapshot?.error ?? "Couldn't load usage."}</p>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={cooldownRemaining > 0}
+        className="min-h-11 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-ivory transition-colors enabled:hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {cooldownRemaining > 0 ? `Retry in ${cooldownMinutes} min` : "Retry"}
+      </button>
+    </div>
+  ) : status === "ready" ? (
+    <div className="rounded-xl border border-border bg-bg-raised p-4">
+      <p className="text-sm text-muted">No usage limits reported yet for this account.</p>
+    </div>
+  ) : (
+    <div className="space-y-4" aria-hidden>
+      {[0, 1, 2].map((item) => (
+        <div key={item}>
+          <div className="skeleton h-3 w-2/5 rounded" />
+          <div className="skeleton mt-2 h-2 w-full rounded-full" />
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <article
       aria-labelledby={headingId}
       data-provider={account.provider ?? "anthropic"}
       data-stale={oldData || undefined}
-      className="animate-rise card-lift flex h-full min-w-0 flex-col rounded-2xl border border-border bg-surface p-5"
-      style={{ animationDelay: `${Math.min(index, 8) * 70}ms` }}
+      className="flex h-full min-w-0 flex-col rounded-2xl border border-border bg-surface p-5"
       aria-busy={loading}
+      onFocusCapture={() => onInteractionFenceChange?.("focus", true)}
+      onBlurCapture={(event) => {
+        if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+        onInteractionFenceChange?.("focus", false);
+      }}
+      onPointerEnter={() => onInteractionFenceChange?.("pointer", true)}
+      onPointerLeave={() => onInteractionFenceChange?.("pointer", false)}
       onKeyDown={(event) => {
         if (!confirmRemove || event.key !== "Escape") return;
         event.preventDefault();
         cancelRemove();
       }}
     >
-      <div className="flex min-w-0 flex-col gap-3 xs:flex-row xs:items-start xs:justify-between">
+      <div className="hidden min-w-0 flex-col gap-3 min-[960px]:flex xs:flex-row xs:items-start xs:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div
             aria-hidden="true"
@@ -152,43 +283,15 @@ export function AccountCard({
             <h2 id={headingId} className="truncate text-[11px] font-semibold uppercase tracking-wide text-faint">
               {providerMeta(account.provider).label} {providerOrdinal}
             </h2>
-            {editing ? (
-              <input
-                ref={inputRef}
-                aria-label={`Nickname for ${account.email}`}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onBlur={() => commitRename()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitRename(true);
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setEditing(false);
-                    restoreRenameFocus();
-                  }
-                }}
-                placeholder={account.fullName || account.email}
-                maxLength={40}
-                className="min-h-11 w-full max-w-[12rem] rounded-md border border-border bg-bg px-2 py-1 text-[15px] font-medium text-ivory focus:border-[var(--accent)] focus:outline-none"
-              />
-            ) : (
-              <button
-                ref={renameButtonRef}
-                type="button"
-                onClick={() => {
-                  setDraft(account.label ?? "");
-                  setEditing(true);
-                }}
-                aria-label={`Rename ${displayName}`}
-                title="Rename this account"
-                className="flex min-h-11 min-w-11 max-w-full items-center truncate text-left text-[15px] font-medium text-ivory transition-colors hover:text-[var(--accent-bright)]"
-              >
-                {displayName}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={(event) => beginRename(event.currentTarget)}
+              aria-label={`Rename ${displayName}`}
+              title="Rename this account"
+              className="flex min-h-11 min-w-11 max-w-full items-center truncate text-left text-[15px] font-medium text-ivory transition-colors hover:text-[var(--accent-bright)]"
+            >
+              {displayName}
+            </button>
             <p className="truncate text-xs text-faint">{account.email}</p>
           </div>
         </div>
@@ -231,18 +334,129 @@ export function AccountCard({
             <RefreshIcon className={`h-4 w-4 ${loading ? "animate-spin-slow" : ""}`} />
           </button>
           <button
-            ref={removeButtonRef}
             type="button"
             className={ICON_BTN}
             title="Remove this account from the dashboard"
             aria-label={`Remove ${displayName}`}
-            onClick={() => setConfirmRemove(true)}
+            onClick={(event) => beginRemove(event.currentTarget)}
             disabled={confirmRemove}
           >
             <XIcon className="h-4 w-4" />
           </button>
         </div>
       </div>
+
+      <div
+        data-ledger-account={account.id}
+        data-ledger-state={ledgerState}
+        className="min-w-0 min-[960px]:hidden"
+      >
+        <button
+          type="button"
+          data-ledger-expand={account.id}
+          aria-expanded={mobileExpanded}
+          aria-controls={ledgerPanelId}
+          onClick={() => onMobileExpandedChange?.(!mobileExpanded)}
+          className="block min-h-11 w-full min-w-0 text-left"
+        >
+          <span className="flex min-w-0 items-start justify-between gap-3">
+            <span className="min-w-0">
+              <span className="block text-[11px] font-semibold uppercase tracking-wide text-faint">
+                {providerMeta(account.provider).label} {providerOrdinal}
+              </span>
+              <span className="block truncate text-[15px] font-medium text-ivory">{displayName}</span>
+              <span className="block truncate text-xs text-faint">{account.email}</span>
+            </span>
+            <span className="shrink-0 text-xs text-muted">{account.plan}</span>
+          </span>
+          <span className="mt-3 grid min-w-0 grid-cols-2 gap-x-3 gap-y-2 text-xs">
+            <span data-ledger-metric="five-hour" className="min-w-0">
+              <span className="block text-faint">Beş saatlik tepe</span>
+              <span data-ledger-value={resolvedFiveHourPeak ?? "missing"} className="block tabular-nums text-ivory">{resolvedFiveHourPeak === null ? "—" : `%${resolvedFiveHourPeak}`}</span>
+            </span>
+            <span data-ledger-metric="weekly" className="min-w-0">
+              <span className="block text-faint">Haftalık tepe</span>
+              <span data-ledger-value={weeklyPeak ?? "missing"} className="block tabular-nums text-ivory">{weeklyPeak === null ? "—" : `%${weeklyPeak}`}</span>
+              {metric?.highestWeeklyLimitLabel && <span className="block break-words text-faint">{metric.highestWeeklyLimitLabel}</span>}
+            </span>
+            <span data-ledger-metric="nearest-reset" className="min-w-0">
+              <span className="block text-faint">En yakın yenilenme</span>
+              <span className="block tabular-nums text-ivory">{nearestReset?.countdown ?? nearestReset?.exact ?? "—"}</span>
+              {metric?.nearestWeeklyResetLabel && <span className="block break-words text-faint">{metric.nearestWeeklyResetLabel}</span>}
+            </span>
+            <span data-ledger-metric="state" className="min-w-0">
+              <span className="block text-faint">Durum</span>
+              <span data-ledger-status-label className="block break-words text-ivory">{ledgerStateLabel}</span>
+            </span>
+          </span>
+        </button>
+
+        <section
+          id={ledgerPanelId}
+          data-ledger-panel={account.id}
+          hidden={!mobileExpanded}
+          className="mt-4 min-w-0 space-y-4"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <button
+              type="button"
+              className={ICON_BTN}
+              title="Refresh this account"
+              aria-label={`Refresh ${displayName}`}
+              onClick={onRefresh}
+              disabled={refreshDisabled}
+            >
+              <RefreshIcon className={`h-4 w-4 ${loading ? "animate-spin-slow" : ""}`} />
+            </button>
+            <button
+              type="button"
+              className={ICON_BTN}
+              title="Rename this account"
+              aria-label={`Rename ${displayName}`}
+              onClick={(event) => beginRename(event.currentTarget)}
+            >
+              <span aria-hidden="true" className="text-base">Aa</span>
+            </button>
+            <button
+              type="button"
+              className={ICON_BTN}
+              title="Remove this account from the dashboard"
+              aria-label={`Remove ${displayName}`}
+              onClick={(event) => beginRemove(event.currentTarget)}
+              disabled={confirmRemove}
+            >
+              <XIcon className="h-4 w-4" />
+            </button>
+          </div>
+          <div className={`min-w-0 space-y-4 transition-opacity duration-300 ${loading && hasBars ? "opacity-60" : ""}`}>
+            {renderUsageDetails()}
+          </div>
+        </section>
+      </div>
+
+      {editing && (
+        <input
+          ref={inputRef}
+          aria-label={`Nickname for ${account.email}`}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => commitRename()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitRename(true);
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setEditing(false);
+              restoreRenameFocus();
+            }
+          }}
+          placeholder={account.fullName || account.email}
+          maxLength={40}
+          className="mt-3 min-h-11 w-full min-w-0 rounded-md border border-border bg-bg px-2 py-1 text-[15px] font-medium text-ivory focus:border-[var(--accent)] focus:outline-none"
+        />
+      )}
 
       {confirmRemove && (
         <div
@@ -324,77 +538,19 @@ export function AccountCard({
         </div>
       )}
 
-      <div className={`mt-5 flex-1 space-y-4 transition-opacity duration-300 ${loading && hasBars ? "opacity-60" : ""}`}>
-        {status === "reauth" ? (
-          <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
-            <p className="text-sm leading-relaxed text-muted">
-              {managedLogin
-                ? `This private app login expired or was revoked. Sign in with ${providerName} again to restore automatic renewal.`
-                : setupToken
-                  ? "This legacy inference-only setup token expired or was revoked. Replace it to restore checks."
-                  : `This shared ${cliName} session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard.`}
-            </p>
-            {onReconnect ? (
-              <button
-                type="button"
-                onClick={onReconnect}
-                className="accent-btn min-h-11 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
-              >
-                {managedLogin ? "Reconnect private login" : setupToken ? "Replace with private login" : "Reconnect reliably"}
-              </button>
-            ) : (
-              <p className="text-xs font-medium text-ivory">
-                {account.provider === "openai"
-                  ? "Reconnect this ChatGPT account to replace it."
-                  : "Use the secure launcher's Claude connector to replace it."}
-              </p>
-            )}
-          </div>
-        ) : hasBars ? (
-          <>
-            {freshnessText && (
-              <div id={freshnessId} role="status" aria-live="polite" className="rounded-lg border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-[11px] leading-relaxed text-[#e3b56e]">
-                {freshnessText}
-              </div>
-            )}
-            {bars.map((bar) => (
-              <UsageBar
-                key={bar.key}
-                bar={bar}
-                now={now}
-                stale={oldData}
-                freshnessDescriptionId={freshnessText ? freshnessId : undefined}
-              />
-            ))}
-          </>
-        ) : status === "error" ? (
-          <div role="status" className="flex flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
-            <p className="text-sm text-muted">{snapshot?.error ?? "Couldn't load usage."}</p>
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={cooldownRemaining > 0}
-              className="min-h-11 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-ivory transition-colors enabled:hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {cooldownRemaining > 0 ? `Retry in ${cooldownMinutes} min` : "Retry"}
-            </button>
-          </div>
-        ) : status === "ready" ? (
-          // Loaded successfully, but Anthropic reported no active limit buckets for this
-          // account (e.g. a brand-new account, or an unrecognized response shape).
-          <div className="rounded-xl border border-border bg-bg-raised p-4">
-            <p className="text-sm text-muted">No usage limits reported yet for this account.</p>
-          </div>
-        ) : (
-          <div className="space-y-4" aria-hidden>
-            {[0, 1, 2].map((i) => (
-              <div key={i}>
-                <div className="skeleton h-3 w-2/5 rounded" />
-                <div className="skeleton mt-2 h-2 w-full rounded-full" />
-              </div>
-            ))}
-          </div>
-        )}
+      {freshnessText && (
+        <div
+          id={freshnessId}
+          role="status"
+          aria-live="polite"
+          className="mt-4 min-w-0 break-words rounded-lg border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-[11px] leading-relaxed text-[#e3b56e]"
+        >
+          {freshnessText}
+        </div>
+      )}
+
+      <div className={`mt-5 hidden min-w-0 flex-1 space-y-4 transition-opacity duration-300 min-[960px]:block ${loading && hasBars ? "opacity-60" : ""}`}>
+        {renderUsageDetails()}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-[11px] text-faint">

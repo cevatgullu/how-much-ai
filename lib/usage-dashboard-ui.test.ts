@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { transformSync } from "next/dist/build/swc/index.js";
 import type { AccountSnapshot, BrowserAccount } from "./types.ts";
 import type { NormalizedUsageBar } from "./format.ts";
+import type { WeeklyAccountMetric } from "./quota-metrics.ts";
 
 process.env.TZ = "UTC";
 
@@ -63,7 +64,7 @@ const moduleHooks = registerHooks({
 });
 
 const { UsageBar } = await import("../components/UsageBar.tsx");
-const { AccountCard } = await import("../components/AccountCard.tsx");
+const { AccountCard, deriveFiveHourPeak } = await import("../components/AccountCard.tsx");
 const { accountProviderOrdinals } = await import("../components/Dashboard.tsx");
 
 after(() => moduleHooks.deregister());
@@ -102,22 +103,172 @@ const accountCardHandlers = {
   onRefresh() {},
   onRemove() {},
   onRename() {},
+  onMobileExpandedChange() {},
+  onInteractionFenceChange() {},
 };
+
+function metric(
+  accountId: string,
+  overrides: Partial<WeeklyAccountMetric> = {},
+): WeeklyAccountMetric {
+  return {
+    accountId,
+    sourceIndex: 0,
+    highestWeeklyUsedPercent: 73,
+    highestWeeklyLimitKey: "weekly_all",
+    highestWeeklyLimitLabel: "Haftalık limit",
+    nearestWeeklyResetAt: RESET_AT,
+    nearestWeeklyResetKey: "weekly_all",
+    nearestWeeklyResetLabel: "Haftalık limit",
+    hasFreshReading: true,
+    ...overrides,
+  };
+}
 
 function renderAccountCard(
   accountValue: BrowserAccount,
-  snapshot: AccountSnapshot,
+  snapshot: AccountSnapshot | undefined,
   providerOrdinal = 1,
+  overrides: Record<string, unknown> = {},
 ): string {
   return renderToStaticMarkup(createElement(AccountCard, {
     account: accountValue,
     snapshot,
+    metric: metric(accountValue.id),
+    fiveHourPeak: 84,
     now: NOW,
-    index: 0,
     providerOrdinal,
+    mobileExpanded: false,
     ...accountCardHandlers,
+    ...overrides,
   }));
 }
+
+test("five-hour peak uses only the highest real session row without mutating bars", () => {
+  const bars = [
+    usageBar(71, { key: "weekly_all", kind: "weekly_all" }),
+    usageBar(58, { key: "session-a" }),
+    usageBar(24, { key: "session-b" }),
+  ];
+  const before = structuredClone(bars);
+
+  assert.equal(typeof deriveFiveHourPeak, "function");
+  if (typeof deriveFiveHourPeak !== "function") return;
+  assert.equal(deriveFiveHourPeak(bars), 76);
+  assert.equal(deriveFiveHourPeak([usageBar(0, { kind: "weekly_all" })]), null);
+  assert.equal(deriveFiveHourPeak([]), null);
+  assert.deepEqual(bars, before);
+});
+
+test("controlled mobile ledgers expose summaries, stable panels, and actions outside expand buttons", () => {
+  const claude = { ...account("claude-ledger"), label: "Araştırma" };
+  const chatgpt = account("chatgpt-ledger", "openai");
+  const snapshots: Record<string, AccountSnapshot> = {
+    [claude.id]: {
+      status: "ready",
+      usage: {
+        five_hour: { utilization: 42, resets_at: RESET_AT },
+        seven_day: { utilization: 73, resets_at: RESET_AT },
+        seven_day_opus: { utilization: 91, resets_at: "2026-08-02T09:00:00.000Z" },
+      },
+    },
+    [chatgpt.id]: { status: "idle" },
+  };
+  const props = new Map([
+    [claude.id, {
+      metric: metric(claude.id, { highestWeeklyUsedPercent: 91, highestWeeklyLimitKey: "weekly_scoped:opus", highestWeeklyLimitLabel: "Opus haftalık limiti" }),
+      fiveHourPeak: 42,
+      providerOrdinal: 2,
+    }],
+    [chatgpt.id, {
+      metric: metric(chatgpt.id, {
+        highestWeeklyUsedPercent: null,
+        highestWeeklyLimitKey: null,
+        highestWeeklyLimitLabel: null,
+        nearestWeeklyResetAt: null,
+        nearestWeeklyResetKey: null,
+        nearestWeeklyResetLabel: null,
+        hasFreshReading: false,
+      }),
+      fiveHourPeak: null,
+      providerOrdinal: 1,
+    }],
+  ]);
+  const renderRows = (rows: BrowserAccount[]) => renderToStaticMarkup(createElement(
+    "ol",
+    null,
+    rows.map((accountValue) => createElement("li", { key: accountValue.id }, createElement(AccountCard, {
+      account: accountValue,
+      snapshot: snapshots[accountValue.id],
+      now: NOW,
+      mobileExpanded: true,
+      ...props.get(accountValue.id),
+      ...accountCardHandlers,
+    }))),
+  ));
+
+  for (const markup of [renderRows([claude, chatgpt]), renderRows([chatgpt, claude])]) {
+    assert.match(markup, />Claude 2</);
+    assert.match(markup, />ChatGPT 1</);
+    assert.ok(markup.indexOf(claude.label!) < markup.indexOf(claude.email), "nickname must precede the secondary email");
+    assert.match(markup, />claude-ledger@private\.invalid</);
+    assert.match(markup, /data-ledger-account="claude-ledger"[^>]*data-ledger-state="ready"/);
+    assert.match(markup, /data-ledger-metric="five-hour"[^>]*>[^]*?data-ledger-value="42"[^>]*>%42</);
+    assert.match(markup, /data-ledger-metric="weekly"[^>]*>[^]*?data-ledger-value="91"[^>]*>%91</);
+    assert.match(markup, /data-ledger-metric="nearest-reset"[^>]*>[^]*?2 sa 30 dk sonra/);
+    assert.match(markup, /data-ledger-account="chatgpt-ledger"[^>]*data-ledger-state="idle"/);
+    assert.match(markup, /data-ledger-account="chatgpt-ledger"[^]*?data-ledger-metric="five-hour"[^>]*>[^]*?data-ledger-value="missing"/);
+    assert.doesNotMatch(markup, /data-ledger-account="chatgpt-ledger"[^]*?data-ledger-metric="five-hour"[^>]*>[^]*?data-ledger-value="0"/);
+
+    const expandButtons = [...markup.matchAll(/<button[^>]*data-ledger-expand="([^"]+)"[^>]*aria-expanded="true"[^>]*aria-controls="([^"]+)"[^>]*>[\s\S]*?<\/button>/g)];
+    assert.equal(expandButtons.length, 2);
+    for (const match of expandButtons) {
+      assert.match(markup, new RegExp(`<section id="${match[2]}"[^>]*data-ledger-panel="${match[1]}"`));
+      assert.doesNotMatch(match[0], /Refresh |Rename |Remove |Reconnect /);
+    }
+    assert.equal((markup.match(/data-ledger-panel=/g) ?? []).length, 2);
+    assert.doesNotMatch(markup, /data-ledger-panel="[^"]+"[^>]*hidden/);
+    assert.match(markup, /aria-label="Refresh Araştırma"/);
+    assert.match(markup, /aria-label="Rename Araştırma"/);
+    assert.match(markup, /aria-label="Remove Araştırma"/);
+  }
+
+  const closed = renderAccountCard(claude, snapshots[claude.id], 2, { mobileExpanded: false });
+  assert.match(closed, /data-ledger-expand="claude-ledger"[^>]*aria-expanded="false"/);
+  assert.match(closed, /data-ledger-panel="claude-ledger"[^>]*hidden/);
+});
+
+test("mobile ledger names every local snapshot state while desktop and expanded views retain all rows", () => {
+  const usage = {
+    five_hour: { utilization: 35, resets_at: RESET_AT },
+    seven_day: { utilization: 64, resets_at: RESET_AT },
+    seven_day_opus: { utilization: 88, resets_at: "2026-08-02T09:00:00.000Z" },
+  };
+  const cases: Array<[string, AccountSnapshot | undefined, string]> = [
+    ["idle", undefined, "İlk veri bekleniyor"],
+    ["loading", { status: "loading", usage }, "Yenileniyor"],
+    ["ready", { status: "ready", usage }, "Güncel"],
+    ["stale", { status: "ready", usage, stale: true, fetchedAt: NOW - 180_000 }, "Güncel değil"],
+    ["error", { status: "error", usage, error: "private detail", fetchedAt: NOW - 180_000 }, "Yenileme başarısız"],
+    ["reauth", { status: "reauth", usage }, "Yeniden bağlanma gerekli"],
+  ];
+
+  for (const [expectedState, snapshot, expectedLabel] of cases) {
+    const accountValue = account(`state-${expectedState}`);
+    const markup = renderAccountCard(accountValue, snapshot, 1, { mobileExpanded: true });
+    assert.match(markup, new RegExp(`data-ledger-state="${expectedState}"`));
+    assert.match(markup, new RegExp(`>${expectedLabel}<`));
+    if (snapshot?.usage && snapshot.status !== "reauth") {
+      assert.equal((markup.match(/role="progressbar"/g) ?? []).length, 6, `${expectedState} must retain all three real rows in both presentations`);
+      for (const used of [35, 64, 88]) {
+        assert.equal((markup.match(new RegExp(`aria-valuenow="${used}"`, "g")) ?? []).length, 2);
+      }
+    }
+    if (["loading", "stale", "error"].includes(expectedState)) {
+      assert.equal((markup.match(/aria-live="polite"/g) ?? []).length, 1);
+    }
+  }
+});
 
 test("used allowance is the visible and accessible progress value without a false-zero first frame", () => {
   const markup = renderToStaticMarkup(createElement(UsageBar, {

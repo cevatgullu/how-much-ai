@@ -85,6 +85,28 @@ test("defers an accepted candidate until both focus and pointer fences leave", (
   assert.equal(state.pendingAccountIds, null);
 });
 
+test("ignores a candidate order from an older accepted epoch", () => {
+  let state = initialDashboardOrderState(["a", "b", "c"], "weekly-usage");
+  state = dashboardOrderReducer(state, { type: "candidate_order", accountIds: ["c", "b", "a"], acceptedEpoch: 102 });
+  state = dashboardOrderReducer(state, { type: "candidate_order", accountIds: ["b", "a", "c"], acceptedEpoch: 101 });
+
+  assert.deepEqual(state.visibleAccountIds, ["c", "b", "a"]);
+  assert.equal(state.acceptedEpoch, 102);
+});
+
+test("keeps a newer fenced candidate when an older candidate arrives", () => {
+  let state = initialDashboardOrderState(["a", "b", "c"], "weekly-usage");
+  state = dashboardOrderReducer(state, { type: "interaction_enter", accountId: "a", channel: "focus" });
+  state = dashboardOrderReducer(state, { type: "candidate_order", accountIds: ["c", "b", "a"], acceptedEpoch: 102 });
+  state = dashboardOrderReducer(state, { type: "candidate_order", accountIds: ["b", "a", "c"], acceptedEpoch: 101 });
+
+  assert.deepEqual(state.pendingAccountIds, ["c", "b", "a"]);
+  assert.equal(state.acceptedEpoch, 102);
+
+  state = dashboardOrderReducer(state, { type: "interaction_leave", accountId: "a", channel: "focus" });
+  assert.deepEqual(state.visibleAccountIds, ["c", "b", "a"]);
+});
+
 test("changes sort mode through the same interaction fence", () => {
   let state = initialDashboardOrderState(["a", "b"], "source");
   state = dashboardOrderReducer(state, { type: "interaction_enter", accountId: "a", channel: "focus" });

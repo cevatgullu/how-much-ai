@@ -45,6 +45,7 @@ function acceptCandidate(
   accountIds: readonly string[],
   acceptedEpoch: number | null,
 ): DashboardOrderState {
+  if (acceptedEpoch !== null && acceptedEpoch <= state.acceptedEpoch) return state;
   if (state.unsettledAccountIds.length > 0) return state;
 
   const candidateAccountIds = reconcileAccountIds(accountIds, state.visibleAccountIds);

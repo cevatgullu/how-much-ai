@@ -88,7 +88,9 @@ const {
   AddAccountSuccessCard,
   ClaudeLocalMachinePanel,
   ClaudePairingPanel,
+  OpenAILocalMachinePanel,
   strictLocalClaudeConnectionErrorText,
+  strictLocalOpenAILocalConnectionErrorText,
 } = addAccountModalModule;
 const openAIDeviceLoginModule = await import("../components/OpenAIDeviceLogin.tsx") as unknown as Record<string, unknown>;
 const { PROVIDER_META } = await import("../components/providers-ui.tsx");
@@ -335,6 +337,80 @@ test("strict-local Claude failures discard server detail and retain only a valid
     assert.equal(message, "Claude bağlantısı tamamlanamadı. Yeniden deneyin.");
     assert.doesNotMatch(message, /AnthropicError|private upstream detail|secret/);
   }
+});
+
+test("strict-local OpenAI same-machine details, actions, and failures stay Turkish and generic", () => {
+  assert.equal(typeof OpenAILocalMachinePanel, "function");
+  assert.equal(typeof strictLocalOpenAILocalConnectionErrorText, "function");
+  if (
+    typeof OpenAILocalMachinePanel !== "function"
+    || typeof strictLocalOpenAILocalConnectionErrorText !== "function"
+  ) return;
+
+  const ready = renderToStaticMarkup(createElement(OpenAILocalMachinePanel, {
+    strictLocal: true,
+    busy: false,
+    working: false,
+    error: null,
+    onConnect() {},
+  }));
+  assert.match(ready, /bu bilgisayardaki codex oturumunu oku/i);
+  assert.match(ready, /codex cli(?:&#x27;|')ın bu makinedeki/i);
+  assert.match(ready, />ChatGPT oturumunu bu makineden oku</);
+  assert.doesNotMatch(ready, /read the codex login|connection timed out|network error/i);
+
+  const working = renderToStaticMarkup(createElement(OpenAILocalMachinePanel, {
+    strictLocal: true,
+    busy: true,
+    working: true,
+    error: null,
+    onConnect() {},
+  }));
+  assert.match(working, />Okunuyor…</);
+
+  const cases = [
+    ["provider", "Bu makinedeki Codex oturumu okunamadı. Referans: err_abcdef012345."],
+    ["timeout", "Codex oturumunu okuma işlemi zaman aşımına uğradı. Yeniden deneyin."],
+    ["network", "Codex oturumu okunamadı. Uygulamanın çalıştığını denetleyip yeniden deneyin."],
+  ] as const;
+  for (const [kind, expected] of cases) {
+    const message = strictLocalOpenAILocalConnectionErrorText(
+      kind,
+      "OpenAIError: private upstream detail",
+      kind === "provider" ? "err_abcdef012345" : null,
+    );
+    assert.equal(message, expected);
+    const failed = renderToStaticMarkup(createElement(OpenAILocalMachinePanel, {
+      strictLocal: true,
+      busy: false,
+      working: false,
+      error: { message },
+      onConnect() {},
+    }));
+    assert.match(failed, /role="alert"/);
+    assert.match(failed, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+    assert.doesNotMatch(failed, /OpenAIError|private upstream detail|connection timed out|network error/i);
+  }
+
+  for (const malformed of ["err_abcdef012345\nsecret", "ERR_ABCDEF012345", "err_abcdef0123456", null]) {
+    const message = strictLocalOpenAILocalConnectionErrorText(
+      "provider",
+      "OpenAIError: private upstream detail",
+      malformed,
+    );
+    assert.equal(message, "Bu makinedeki Codex oturumu okunamadı.");
+    assert.doesNotMatch(message, /OpenAIError|private upstream detail|secret|Referans/);
+  }
+
+  const hosted = renderToStaticMarkup(createElement(OpenAILocalMachinePanel, {
+    strictLocal: false,
+    busy: false,
+    working: false,
+    error: { message: "Hosted upstream detail" },
+    onConnect() {},
+  }));
+  assert.match(hosted, /Hosted upstream detail/);
+  assert.match(hosted, />ChatGPT oturumunu bu makineden oku</);
 });
 
 test("strict OpenAI selection keeps the same-machine action and never renders credential paste", () => {

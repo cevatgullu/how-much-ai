@@ -237,6 +237,74 @@ export function ClaudeLocalMachinePanel({
   );
 }
 
+type OpenAILocalFailureKind = "provider" | "timeout" | "network";
+
+export function strictLocalOpenAILocalConnectionErrorText(
+  kind: OpenAILocalFailureKind,
+  _serverError: unknown,
+  errorId: unknown,
+): string {
+  const message = kind === "provider"
+    ? "Bu makinedeki Codex oturumu okunamadı."
+    : kind === "timeout"
+      ? "Codex oturumunu okuma işlemi zaman aşımına uğradı. Yeniden deneyin."
+      : "Codex oturumu okunamadı. Uygulamanın çalıştığını denetleyip yeniden deneyin.";
+  const reference = safeServerErrorId(errorId);
+  return reference ? `${message} Referans: ${reference}.` : message;
+}
+
+interface OpenAILocalMachinePanelProps {
+  strictLocal: boolean;
+  busy: boolean;
+  working: boolean;
+  error: LocalMachineError | null;
+  onConnect: () => void;
+  actionRef?: RefObject<HTMLButtonElement | null>;
+}
+
+export function OpenAILocalMachinePanel({
+  busy,
+  working,
+  error,
+  onConnect,
+  actionRef,
+}: OpenAILocalMachinePanelProps) {
+  return (
+    <div className="rounded-xl border border-border bg-surface p-4">
+      <div className="flex items-start gap-3">
+        <span
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+          style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
+        >
+          <DesktopIcon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-ivory">Bu bilgisayardaki Codex oturumunu oku</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            Codex CLI&apos;ın bu makinedeki <code>~/.codex/auth.json</code> dosyasına kaydettiği ChatGPT oturumunu kullanır.
+          </p>
+          <button
+            ref={actionRef}
+            type="button"
+            onClick={onConnect}
+            disabled={busy}
+            className={`mt-3 ${PRIMARY_BUTTON}`}
+          >
+            {working ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
+            {working ? "Okunuyor…" : "ChatGPT oturumunu bu makineden oku"}
+          </button>
+          {error ? (
+            <div role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
+              <p>{error.message}</p>
+              {error.recommendation ? <p className="mt-1 text-faint">{error.recommendation}</p> : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type PairingPanelState = "starting" | "waiting" | "processing" | "expired" | "error";
 
 interface ClaudePairingPanelProps {
@@ -928,11 +996,14 @@ export function AddAccountModal({
         plan?: string;
         label?: string;
         error?: string;
+        errorId?: unknown;
         recommendation?: string;
       };
       if (!res.ok) {
         setLocalError({
-          message: errText(data.error, "Couldn't read the Codex login on this machine."),
+          message: strictLocal
+            ? strictLocalOpenAILocalConnectionErrorText("provider", data.error, data.errorId)
+            : errText(data.error, "Couldn't read the Codex login on this machine."),
           recommendation: undefined,
         });
         return;
@@ -943,8 +1014,12 @@ export function AddAccountModal({
         setLocalError({
           message:
             connectError instanceof Error && connectError.name === "AbortError"
-              ? "Connection timed out after 30 seconds. Check that the app is running and try again."
-              : "Network error — is the app still running?",
+              ? strictLocal
+                ? strictLocalOpenAILocalConnectionErrorText("timeout", undefined, undefined)
+                : "Connection timed out after 30 seconds. Check that the app is running and try again."
+              : strictLocal
+                ? strictLocalOpenAILocalConnectionErrorText("network", undefined, undefined)
+                : "Network error — is the app still running?",
         });
       }
     } finally {
@@ -953,7 +1028,7 @@ export function AddAccountModal({
       if (operationRef.current === "local") operationRef.current = null;
       if (!closedRef.current) setLocalWorking(false);
     }
-  }, [localWorking, finishServerConnect, reconnectAccount?.id]);
+  }, [localWorking, finishServerConnect, reconnectAccount?.id, strictLocal]);
 
   // OpenAI: paste ~/.codex/auth.json → parse client-side → verify + save server-side.
   const connectOpenAIPaste = useCallback(async () => {
@@ -1346,38 +1421,14 @@ export function AddAccountModal({
               </p>
 
               {mode === "local" ? (
-                <div className="rounded-xl border border-border bg-surface p-4">
-                  <div className="flex items-start gap-3">
-                    <span
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
-                      style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
-                    >
-                      <DesktopIcon className="h-5 w-5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm text-ivory">Bu bilgisayardaki Codex oturumunu oku</p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted">
-                        Codex CLI&apos;ın bu makinedeki <code>~/.codex/auth.json</code> dosyasına kaydettiği ChatGPT oturumunu kullanır.
-                      </p>
-                      <button
-                        ref={localActionRef}
-                        type="button"
-                        onClick={connectOpenAILocal}
-                        disabled={requestBusy}
-                        className={`mt-3 ${PRIMARY_BUTTON}`}
-                      >
-                        {localWorking ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
-                        {localWorking ? "Okunuyor…" : "ChatGPT oturumunu bu makineden oku"}
-                      </button>
-                      {localError ? (
-                        <div role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
-                          <p>{localError.message}</p>
-                          {localError.recommendation ? <p className="mt-1 text-faint">{localError.recommendation}</p> : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
+                <OpenAILocalMachinePanel
+                  strictLocal={strictLocal}
+                  busy={requestBusy}
+                  working={localWorking}
+                  error={localError}
+                  onConnect={connectOpenAILocal}
+                  actionRef={localActionRef}
+                />
               ) : null}
 
               {!strictLocal ? (

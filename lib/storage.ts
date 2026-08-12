@@ -1,6 +1,8 @@
 // Device-local settings only. Accounts now live in the server-side vault (see lib/vault-client),
 // so they sync across devices; UI preferences like auto-refresh stay per-device here.
 
+import type { QuotaSortMode } from "./quota-metrics.ts";
+
 const SETTINGS_KEY = "usage.settings.v1";
 const MAX_SETTINGS_BYTES = 4 * 1024;
 
@@ -11,17 +13,24 @@ export interface LocalNotificationSettings {
 
 export interface Settings {
   autoRefresh: boolean;
+  sortMode: QuotaSortMode;
   localNotifications: LocalNotificationSettings;
 }
 
 const DEFAULT_SETTINGS: Settings = {
   autoRefresh: true,
+  sortMode: "source",
   localNotifications: { remainingWarnings: true, resetNotifications: true },
 };
+
+function isQuotaSortMode(value: unknown): value is QuotaSortMode {
+  return value === "source" || value === "weekly-usage" || value === "weekly-reset";
+}
 
 function defaultSettings(): Settings {
   return {
     autoRefresh: DEFAULT_SETTINGS.autoRefresh,
+    sortMode: DEFAULT_SETTINGS.sortMode,
     localNotifications: { ...DEFAULT_SETTINGS.localNotifications },
   };
 }
@@ -37,6 +46,7 @@ export function loadSettings(): Settings {
 
     const candidate = parsed as {
       autoRefresh?: unknown;
+      sortMode?: unknown;
       localNotifications?: unknown;
     };
     const localCandidate =
@@ -50,6 +60,9 @@ export function loadSettings(): Settings {
         typeof candidate.autoRefresh === "boolean"
           ? candidate.autoRefresh
           : DEFAULT_SETTINGS.autoRefresh,
+      sortMode: isQuotaSortMode(candidate.sortMode)
+        ? candidate.sortMode
+        : DEFAULT_SETTINGS.sortMode,
       localNotifications: {
         remainingWarnings:
           typeof localCandidate.remainingWarnings === "boolean"
@@ -71,11 +84,12 @@ export function saveSettings(settings: Settings): boolean {
   try {
     if (
       typeof settings.autoRefresh !== "boolean" ||
+      !isQuotaSortMode(settings.sortMode) ||
       typeof settings.localNotifications?.remainingWarnings !== "boolean" ||
       typeof settings.localNotifications?.resetNotifications !== "boolean"
     ) return false;
     const canonical =
-      `{"autoRefresh":${settings.autoRefresh},"localNotifications":` +
+      `{"autoRefresh":${settings.autoRefresh},"sortMode":"${settings.sortMode}","localNotifications":` +
       `{"remainingWarnings":${settings.localNotifications.remainingWarnings},` +
       `"resetNotifications":${settings.localNotifications.resetNotifications}}}`;
     window.localStorage.setItem(SETTINGS_KEY, canonical);

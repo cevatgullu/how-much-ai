@@ -74,10 +74,13 @@ const {
   DashboardAccountList,
   accountProviderOrdinals,
   commitDashboardSnapshot,
+  dashboardOrderViewReducer,
   dashboardAccountRows,
   dashboardMetricForNow,
+  initialDashboardOrderViewState,
   saveDashboardSortMode,
   scheduleDashboardAccountScroll,
+  scheduleDashboardOrderScroll,
 } = await import("../components/Dashboard.tsx");
 
 after(() => moduleHooks.deregister());
@@ -623,6 +626,90 @@ test("deferred reorder scrolls the released account into the nearest view after 
   scheduled[0]?.();
   assert.deepEqual(calls, [{ block: "nearest" }]);
   assert.equal(scheduleDashboardAccountScroll(null, (callback) => scheduled.push(callback)), false);
+});
+
+test("candidate and final focus leave without a render still publish and run the reorder scroll", () => {
+  let state = initialDashboardOrderViewState(["focus-account", "other-account"], "source");
+  state = dashboardOrderViewReducer(state, {
+    type: "interaction_enter",
+    accountId: "focus-account",
+    channel: "focus",
+  });
+  state = dashboardOrderViewReducer(state, {
+    type: "candidate_order",
+    accountIds: ["other-account", "focus-account"],
+    acceptedEpoch: 8,
+  });
+  state = dashboardOrderViewReducer(state, {
+    type: "interaction_leave",
+    accountId: "focus-account",
+    channel: "focus",
+  });
+
+  assert.deepEqual(state.visibleAccountIds, ["other-account", "focus-account"]);
+  assert.deepEqual(state.scrollRequest, { accountId: "focus-account", sequence: 1 });
+
+  const calls: ScrollIntoViewOptions[] = [];
+  const scheduled: Array<() => void> = [];
+  const elements = new Map([["focus-account", {
+    scrollIntoView(options?: ScrollIntoViewOptions) { calls.push(options ?? {}); },
+  }]]);
+  assert.equal(scheduleDashboardOrderScroll(
+    state.scrollRequest,
+    elements,
+    (callback) => scheduled.push(callback),
+  ), true);
+  assert.deepEqual(calls, []);
+  scheduled[0]?.();
+  assert.deepEqual(calls, [{ block: "nearest" }]);
+});
+
+test("back-to-back focus and pointer exits scroll only when the final fence releases", () => {
+  let state = initialDashboardOrderViewState(["focus-account", "pointer-account", "other-account"], "source");
+  state = dashboardOrderViewReducer(state, {
+    type: "interaction_enter",
+    accountId: "focus-account",
+    channel: "focus",
+  });
+  state = dashboardOrderViewReducer(state, {
+    type: "interaction_enter",
+    accountId: "pointer-account",
+    channel: "pointer",
+  });
+  state = dashboardOrderViewReducer(state, {
+    type: "candidate_order",
+    accountIds: ["other-account", "pointer-account", "focus-account"],
+    acceptedEpoch: 9,
+  });
+  state = dashboardOrderViewReducer(state, {
+    type: "interaction_leave",
+    accountId: "focus-account",
+    channel: "focus",
+  });
+  assert.deepEqual(state.visibleAccountIds, ["focus-account", "pointer-account", "other-account"]);
+  assert.equal(state.scrollRequest, null);
+
+  state = dashboardOrderViewReducer(state, {
+    type: "interaction_leave",
+    accountId: "pointer-account",
+    channel: "pointer",
+  });
+  assert.deepEqual(state.visibleAccountIds, ["other-account", "pointer-account", "focus-account"]);
+  assert.deepEqual(state.scrollRequest, { accountId: "pointer-account", sequence: 1 });
+
+  const calls: ScrollIntoViewOptions[] = [];
+  const scheduled: Array<() => void> = [];
+  const elements = new Map([["pointer-account", {
+    scrollIntoView(options?: ScrollIntoViewOptions) { calls.push(options ?? {}); },
+  }]]);
+  assert.equal(scheduleDashboardOrderScroll(
+    state.scrollRequest,
+    elements,
+    (callback) => scheduled.push(callback),
+  ), true);
+  assert.equal(scheduled.length, 1);
+  scheduled[0]?.();
+  assert.deepEqual(calls, [{ block: "nearest" }]);
 });
 
 test("forced-colors mode preserves canvas, text, and progress distinction", () => {

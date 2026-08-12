@@ -37,6 +37,8 @@ import {
   dashboardOrderReducer,
   initialDashboardOrderState,
   resolvedDashboardOrder,
+  type DashboardOrderEvent,
+  type DashboardOrderState,
   type InteractionChannel,
 } from "@/lib/dashboard-order-state";
 import {
@@ -113,6 +115,61 @@ export function scheduleDashboardAccountScroll(
   if (!element) return false;
   schedule(() => element.scrollIntoView({ block: "nearest" }));
   return true;
+}
+
+export interface DashboardOrderScrollRequest {
+  accountId: string;
+  sequence: number;
+}
+
+export interface DashboardOrderViewState extends DashboardOrderState {
+  scrollRequest: DashboardOrderScrollRequest | null;
+}
+
+export function initialDashboardOrderViewState(
+  accountIds: readonly string[],
+  mode: QuotaSortMode,
+): DashboardOrderViewState {
+  return {
+    ...initialDashboardOrderState(accountIds, mode),
+    scrollRequest: null,
+  };
+}
+
+function sameDashboardOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((accountId, index) => accountId === b[index]);
+}
+
+export function dashboardOrderViewReducer(
+  state: DashboardOrderViewState,
+  event: DashboardOrderEvent,
+): DashboardOrderViewState {
+  const nextOrder = dashboardOrderReducer(state, event);
+  const releasedReorder = event.type === "interaction_leave"
+    && state.pendingAccountIds !== null
+    && nextOrder.pendingAccountIds === null
+    && !sameDashboardOrder(state.visibleAccountIds, nextOrder.visibleAccountIds);
+  return {
+    ...nextOrder,
+    scrollRequest: releasedReorder
+      ? {
+          accountId: event.accountId,
+          sequence: (state.scrollRequest?.sequence ?? 0) + 1,
+        }
+      : state.scrollRequest,
+  };
+}
+
+export function scheduleDashboardOrderScroll(
+  request: DashboardOrderScrollRequest | null,
+  accountElements: ReadonlyMap<string, ScrollableAccountElement>,
+  schedule?: (callback: () => void) => unknown,
+): boolean {
+  if (request === null) return false;
+  return scheduleDashboardAccountScroll(
+    accountElements.get(request.accountId) ?? null,
+    schedule,
+  );
 }
 
 export interface DashboardAccountRow {
@@ -385,9 +442,9 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const [localNotifyStatus, setLocalNotifyStatus] = useState<LocalNotifyRuntimeStatus>("idle");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [orderState, dispatchOrder] = useReducer(
-    dashboardOrderReducer,
+    dashboardOrderViewReducer,
     undefined,
-    () => initialDashboardOrderState([], "source"),
+    () => initialDashboardOrderViewState([], "source"),
   );
   const [settledMetrics, setSettledMetrics] = useState<WeeklyAccountMetric[]>([]);
   const [expandedAccountIds, setExpandedAccountIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -954,6 +1011,10 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     else accountElementsRef.current.delete(accountId);
   }, []);
 
+  useEffect(() => {
+    scheduleDashboardOrderScroll(orderState.scrollRequest, accountElementsRef.current);
+  }, [orderState.scrollRequest]);
+
   const changeExpandedAccount = useCallback((accountId: string, expanded: boolean) => {
     setExpandedAccountIds((current) => {
       const next = new Set(current);
@@ -972,14 +1033,8 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       dispatchOrder({ type: "interaction_enter", accountId, channel });
       return;
     }
-    const remainingFocus = orderState.focusAccountIds.filter((id) => channel !== "focus" || id !== accountId);
-    const remainingPointer = orderState.pointerAccountIds.filter((id) => channel !== "pointer" || id !== accountId);
-    const releasePending = orderState.pendingAccountIds !== null
-      && remainingFocus.length === 0
-      && remainingPointer.length === 0;
     dispatchOrder({ type: "interaction_leave", accountId, channel });
-    if (releasePending) scheduleDashboardAccountScroll(accountElementsRef.current.get(accountId) ?? null);
-  }, [orderState.focusAccountIds, orderState.pendingAccountIds, orderState.pointerAccountIds]);
+  }, []);
 
   return (
     <div className="flex min-h-screen flex-col">

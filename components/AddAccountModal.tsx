@@ -21,8 +21,8 @@ interface AddAccountModalProps {
   onServerConnected: () => void | Promise<void>;
 }
 
-function errText(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value : fallback;
+function errText(_value: unknown, fallback: string): string {
+  return fallback;
 }
 
 type OS = "macOS" | "linux" | "windows";
@@ -152,12 +152,10 @@ export function AddAccountModal({
     try {
       await withDeadline(Promise.resolve(onServerConnected()), "Dashboard sync");
       if (!closedRef.current) onClose();
-    } catch (error) {
+    } catch {
       if (!closedRef.current) {
         setCompletionError(
-          error instanceof Error
-            ? error.message
-            : "The account connected, but the dashboard couldn't reload it. Try syncing again.",
+          "Hesap bağlandı, ancak pano yeniden yüklenemedi. Eşitlemeyi yeniden deneyin.",
         );
       }
     }
@@ -468,7 +466,7 @@ export function AddAccountModal({
       if (!res.ok) {
         setLocalError({
           message: errText(data.error, "Couldn't connect from this machine."),
-          recommendation: typeof data.recommendation === "string" ? data.recommendation : undefined,
+          recommendation: undefined,
         });
         return;
       }
@@ -616,7 +614,7 @@ export function AddAccountModal({
       if (!res.ok) {
         setLocalError({
           message: errText(data.error, "Couldn't read the Codex login on this machine."),
-          recommendation: typeof data.recommendation === "string" ? data.recommendation : undefined,
+          recommendation: undefined,
         });
         return;
       }
@@ -763,12 +761,12 @@ export function AddAccountModal({
         </span>
         <div className="min-w-0 flex-1">
           <p ref={pasteHeadingRef} tabIndex={-1} className="text-sm text-ivory outline-none">
-            {credentialMethod === "private-login" ? "Authorize a private login for this dashboard" : "Copy your current Claude Code session"}
+            {credentialMethod === "private-login" ? "Bu pano için özel oturumu yetkilendir" : "Geçerli Claude Code oturumunu kopyala"}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-muted">
             {credentialMethod === "private-login"
-              ? "Sign in once with Claude. This app receives its own renewable session, stores it encrypted, and refreshes it without touching the login used by Claude Code."
-              : "This quick method copies Claude Code's rotating login. The CLI and dashboard can invalidate one another when either renews it, so the private app login is more reliable."}
+              ? "Claude ile bir kez oturum açın. Uygulama kendi yenilenebilir oturumunu şifreli saklar ve Claude Code oturumuna dokunmadan yeniler."
+              : "Bu hızlı yöntem Claude Code'un yenilenen oturumunu kopyalar. CLI ve pano birbirinin oturumunu geçersiz kılabileceği için özel uygulama oturumu daha güvenilirdir."}
           </p>
           {credentialMethod === "private-login" && (
             <>
@@ -791,11 +789,11 @@ export function AddAccountModal({
                 }}
                 className={`mt-3 ${PRIMARY_LINK} ${!oauthUrl || requestBusy ? "pointer-events-none opacity-50" : ""}`}
               >
-                Open secure Claude sign-in
+                Güvenli Claude oturum açma sayfasını aç
               </a>
               <p className="mt-2 text-[11px] leading-relaxed text-faint">
-                Claude opens in a new tab and gives you a one-time authorization code. A <code>claude setup-token</code>{" "}
-                token cannot be used here because Anthropic limits it to inference and blocks usage checks.
+                Claude yeni sekmede açılır ve tek kullanımlık yetkilendirme kodu verir. <code>claude setup-token</code>{" "}
+                belirteci kullanım kontrollerini desteklemediği için burada kullanılamaz.
               </p>
               {oauthOpened && (
                 <p role="status" className="mt-2 text-[11px] leading-relaxed text-muted">
@@ -870,11 +868,11 @@ export function AddAccountModal({
         </span>
         <div className="min-w-0 flex-1">
           <label htmlFor="claude-credentials" className="text-sm text-ivory">
-            {credentialMethod === "private-login" ? "Paste the authorization code" : "Paste the credential JSON"}
+            {credentialMethod === "private-login" ? "Yetkilendirme kodunu yapıştır" : "Kimlik bilgisi JSON'unu yapıştır"}
           </label>
           <textarea
             id="claude-credentials"
-            aria-label={credentialMethod === "private-login" ? "Claude authorization code" : "Claude Code credentials"}
+            aria-label={credentialMethod === "private-login" ? "Claude yetkilendirme kodu" : "Claude Code kimlik bilgileri"}
             value={pasted}
             disabled={requestBusy}
             onChange={(e) => setPasted(e.target.value)}
@@ -897,7 +895,7 @@ export function AddAccountModal({
             disabled={!pasted.trim() || requestBusy}
             className={`mt-2 ${PRIMARY_BUTTON}`}
           >
-            {working ? "Connecting…" : credentialMethod === "private-login" ? "Finish secure connection" : "Connect shared session"}
+            {working ? "Bağlanıyor…" : credentialMethod === "private-login" ? "Güvenli bağlantıyı tamamla" : "Paylaşılan oturumu bağla"}
           </button>
           {!strictLocal && (
             <button
@@ -966,7 +964,7 @@ export function AddAccountModal({
 
   const quickAlternative = mode !== "paste" && showPaste && !connected && (
     <div className="mt-5 rounded-xl border border-border/70 bg-surface/55 p-4">
-      <p className="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Quick legacy alternative</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Eski hızlı alternatif</p>
       <p className="mt-1.5 text-xs leading-relaxed text-muted">
         {mode === "local"
           ? "Use the Claude Code login on this machine without copying it. This shares the CLI's rotating session and can disconnect when either process renews it."
@@ -1044,11 +1042,11 @@ export function AddAccountModal({
 
           <details className="rounded-xl border border-border/70 bg-surface/55">
             <summary className="min-h-11 cursor-pointer px-4 py-3 text-xs font-medium text-muted transition-colors hover:text-ivory focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]">
-              Legacy shared CLI login
+              Eski paylaşılan CLI oturumu
             </summary>
             <div className="space-y-4 border-t border-border/60 px-4 pb-4 pt-3">
               <p className="text-xs leading-relaxed text-[#e3b56e]">
-                Codex CLI rotation can disconnect the dashboard. Use this fallback only when private login is unavailable.
+                Codex CLI yenilemesi panonun bağlantısını kesebilir. Bu seçeneği yalnızca özel oturum kullanılamıyorsa kullanın.
               </p>
 
               {mode === "local" ? (
@@ -1061,9 +1059,9 @@ export function AddAccountModal({
                       <DesktopIcon className="h-5 w-5" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-ivory">Read the Codex login on this computer</p>
+                      <p className="text-sm text-ivory">Bu bilgisayardaki Codex oturumunu oku</p>
                       <p className="mt-1 text-xs leading-relaxed text-muted">
-                        Uses the ChatGPT login the Codex CLI stored in <code>~/.codex/auth.json</code> on this machine.
+                        Codex CLI&apos;ın bu makinedeki <code>~/.codex/auth.json</code> dosyasına kaydettiği ChatGPT oturumunu kullanır.
                       </p>
                       <button
                         ref={localActionRef}
@@ -1073,7 +1071,7 @@ export function AddAccountModal({
                         className={`mt-3 ${PRIMARY_BUTTON}`}
                       >
                         {localWorking ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
-                        {localWorking ? "Reading…" : "Read ChatGPT login from this machine"}
+                        {localWorking ? "Okunuyor…" : "ChatGPT oturumunu bu makineden oku"}
                       </button>
                       {localError ? (
                         <div role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
@@ -1135,7 +1133,7 @@ export function AddAccountModal({
   return (
     <ModalShell
       open={open}
-      title={reconnectAccount ? `Reconnect ${reconnectAccount.label || reconnectAccount.email}` : "Connect an account"}
+      title={reconnectAccount ? `${reconnectAccount.label || reconnectAccount.email} hesabını yeniden bağla` : "Hesap bağla"}
       description={
         reconnectAccount ? "Authorize this same account so its expired session can be replaced without changing its dashboard identity." : undefined
       }
@@ -1163,7 +1161,7 @@ export function AddAccountModal({
                         <DesktopIcon className="h-5 w-5" />
                       </span>
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-ivory">Connect from this machine</p>
+                        <p className="text-sm font-medium text-ivory">Bu makineden bağlan</p>
                         <p className="mt-1 text-xs leading-relaxed text-muted">
                           We&apos;ll read the Claude Code login already on this computer. This is quick, but it shares a
                           rotating session with the CLI and is less reliable than the private app login.
@@ -1269,7 +1267,7 @@ export function AddAccountModal({
                       )}
                       {pairState === "expired" && (
                         <div className="mt-3 flex items-center gap-3">
-                          <span className="text-xs text-[#e3b56e]">That code expired.</span>
+                          <span className="text-xs text-[#e3b56e]">Kodun süresi doldu.</span>
                           <button
                             type="button"
                             onClick={() => void startPairing()}
@@ -1301,11 +1299,11 @@ export function AddAccountModal({
                   </div>
 
                   <div className="mt-4 rounded-xl border border-border/70 bg-surface/60 p-3.5 text-[11px] leading-relaxed text-faint">
-                    <p className="mb-1.5 font-medium text-muted">What happens &amp; why it&apos;s safe</p>
+                    <p className="mb-1.5 font-medium text-muted">Ne olur ve neden güvenlidir</p>
                     <ul className="space-y-1">
-                      <li>It sends the same login token Claude Code already uses on that machine.</li>
-                      <li>Sent over HTTPS and stored encrypted — only your dashboard can read it.</li>
-                      <li>The helper is open source, so you can read exactly what it does before running it.</li>
+                      <li>Claude Code&apos;un o makinede kullandığı oturum belirtecini gönderir.</li>
+                      <li>HTTPS ile iletilir ve şifreli saklanır; yalnızca panonuz okuyabilir.</li>
+                      <li>Yardımcı açık kaynaklıdır; çalıştırmadan önce ne yaptığını inceleyebilirsiniz.</li>
                     </ul>
                   </div>
                   {pasteFallback}

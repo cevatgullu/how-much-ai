@@ -266,7 +266,7 @@ function LocalNotificationsPanel({
 
         {!autoRefresh && (
           <p className="rounded-xl border border-[#e3b56e]/35 bg-[#e3b56e]/10 px-4 py-3 text-xs leading-relaxed text-[#f0c47d]" role="status">
-            Otomatik yenileme kapalı; canlı bildirimler duraklatıldı.
+          Otomatik okumalar durdu; Yenile komutu kuralları çalıştırmaya devam eder.
           </p>
         )}
 
@@ -308,7 +308,7 @@ function LocalNotificationsPanel({
         </fieldset>
 
         <p className="border-t border-border/60 pt-4 text-[11px] leading-relaxed text-faint">
-          Yerel bildirimler yalnızca bu pencere açık veya simge durumuna küçültülmüşken çalışır; hesap bilgileri bir bildirim servisine gönderilmez.
+          Bu cihazdaki yerel bildirimler yalnızca ayrılmış pencere açık veya simge durumuna küçültülmüşken çalışır; otomatik ve elle yenilenen okumaları kullanır. Hesap verileri bir bildirim servisine gönderilmez.
         </p>
       </div>
     </ModalShell>

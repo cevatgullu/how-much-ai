@@ -44,8 +44,8 @@ export function DashboardHeader({
   onMenu,
 }: DashboardHeaderProps) {
   return (
-    <header className="dashboard-header sticky top-0 z-40 border-b border-border bg-bg">
-      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+    <header className="dashboard-header instrument-header sticky top-0 z-40 border-b border-border bg-bg">
+      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <StarburstIcon className="h-6 w-6 shrink-0 text-coral" />
           <div className="min-w-0">

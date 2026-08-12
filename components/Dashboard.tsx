@@ -252,7 +252,7 @@ export function DashboardAccountList({
 }: DashboardAccountListProps) {
   const rows = dashboardAccountRows(accounts, visibleAccountIds, metrics, providerOrdinals, expandedAccountIds);
   return (
-    <ol role="list" className="dashboard-account-list grid list-none grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
+    <ol role="list" className="dashboard-account-list account-grid list-none">
       {rows.map((row) => {
         const usageBars = row.account.id in snapshots && snapshots[row.account.id]?.usage
           ? extractBars(snapshots[row.account.id]!.usage!)
@@ -566,7 +566,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       (error) => {
         if (revision !== saveRevision.current) return;
         setSaveState("error");
-        setSaveError(error instanceof Error ? error.message : "Couldn't save your account changes.");
+        setSaveError("Hesap değişiklikleri kaydedilemedi.");
       },
     );
   }, []);
@@ -587,7 +587,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       if (readGeneration !== vaultReadGeneration.current) return false;
       dispatchVaultUi({
         type: "load_failed",
-        error: error instanceof Error ? error.message : "Couldn't load your saved accounts.",
+        error: "Kayıtlı hesaplara erişilemedi.",
         errorCode: error instanceof VaultRequestError ? error.errorCode ?? null : null,
       });
       return false;
@@ -613,7 +613,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     } catch (error) {
       dispatchVaultUi({
         type: "recovery_failed",
-        error: error instanceof Error ? error.message : "Couldn't start a fresh vault safely.",
+        error: "Yeni kasa güvenli biçimde başlatılamadı.",
       });
     } finally {
       setVaultRecoveryBusy(false);
@@ -780,7 +780,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           commitSnapshot(id, (previous) => ({
             ...previous,
             status: "error",
-            error: "Network error — is the connection up?",
+            error: "Ağ bağlantısı kurulamadı.",
           }));
         }
         return false;
@@ -829,8 +829,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       void refreshAll();
     } catch (error) {
       if (readGeneration !== null && readGeneration !== vaultReadGeneration.current) return;
-      const message = error instanceof Error ? error.message : "Couldn't reload saved accounts.";
-      setSyncError(message);
+      setSyncError("Kayıtlı hesaplar yeniden yüklenemedi.");
       throw error;
     } finally {
       if (explicitReadStarted) explicitVaultReads.current = Math.max(0, explicitVaultReads.current - 1);
@@ -872,7 +871,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         })
         .catch((error) => {
           if (readGeneration !== vaultReadGeneration.current) return;
-          setSyncError(error instanceof Error ? error.message : "Couldn't sync saved accounts.");
+          setSyncError("Kayıtlı hesaplar eşitlenemedi.");
         });
     };
     window.addEventListener("focus", onFocus);
@@ -887,8 +886,8 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         vaultState === "error"
           ? vaultUnreadable
             ? "Reloading cannot unlock the saved vault. Use the recovery options below, or restore its previous encryption secret."
-            : `Saved accounts are unavailable: ${vaultError ?? "retry loading below."}`
-          : "Checking saved accounts…",
+            : "Kayıtlı hesaplar kullanılamıyor. Aşağıdan yeniden yüklemeyi deneyin."
+          : "Kayıtlı hesaplar denetleniyor…",
       );
       return;
     }
@@ -904,7 +903,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const reconnect = useCallback((account: BrowserAccount) => {
     if (strictLocal) {
       setActionError(
-        "Use the secure launcher's Claude connector to replace this account.",
+        "Bu hesabı değiştirmek için güvenli başlatıcıdaki Claude bağlayıcısını kullanın.",
       );
       return;
     }
@@ -1037,9 +1036,9 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="instrument-app flex min-h-screen flex-col">
       <a href="#dashboard-main" className="skip-link">
-        Skip to dashboard content
+        Pano içeriğine geç
       </a>
       <DashboardHeader
         healthLabel={healthLabel}
@@ -1059,7 +1058,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       <main
         id="dashboard-main"
         tabIndex={-1}
-        className="mx-auto w-full max-w-6xl flex-1 px-4 pt-6 pb-16 sm:px-6 sm:pt-8"
+        className="instrument-shell w-full flex-1 pt-6 sm:pt-8"
       >
         {actionError && (
           <div role="alert" className="animate-fade-in mb-4 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-[#ff9c95]">
@@ -1074,7 +1073,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
               onClick={() => setVaultRecoveryNotice(null)}
               className="min-h-11 rounded-lg border border-current/30 px-3 text-xs font-medium hover:bg-white/5"
             >
-              Dismiss
+              Kapat
             </button>
           </div>
         )}
@@ -1085,10 +1084,10 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
               saveState === "error" ? "border-danger/30 bg-danger/10 text-[#ff9c95]" : "border-border bg-surface text-muted"
             }`}
           >
-            <span>{saveState === "saving" ? "Saving account changes…" : saveError}</span>
+            <span>{saveState === "saving" ? "Hesap değişiklikleri kaydediliyor…" : "Hesap değişiklikleri kaydedilemedi."}</span>
             {saveState === "error" && (
               <button type="button" onClick={retrySave} className="min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-medium hover:bg-white/5">
-                Retry save
+                Kaydetmeyi yeniden dene
               </button>
             )}
           </div>
@@ -1097,20 +1096,20 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           <div role="alert" className="animate-fade-in mb-4 flex items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-[#ff9c95]">
             <span>{preferenceError}</span>
             <button type="button" onClick={retryPreference} className="min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-medium hover:bg-white/5">
-              Retry preference
+              Tercihi yeniden dene
             </button>
           </div>
         )}
         {syncError && vaultState === "ready" && (
           <div role="alert" className="animate-fade-in mb-4 flex items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-[#ff9c95]">
-            <span>Saved-account sync failed: {syncError}</span>
+            <span>Kayıtlı hesaplar eşitlenemedi.</span>
             <button type="button" onClick={() => void reloadVault().catch(() => {})} className="min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-medium hover:bg-white/5">
-              Retry sync
+              Eşitlemeyi yeniden dene
             </button>
           </div>
         )}
         {vaultState === "loading" ? (
-          <div className="mx-auto mt-14 max-w-md space-y-4" aria-label="Loading saved accounts" role="status">
+          <div className="mx-auto mt-14 max-w-md space-y-4" aria-label="Kayıtlı hesaplar yükleniyor" role="status">
             <div className="skeleton mx-auto h-12 w-12 rounded-full" />
             <div className="skeleton mx-auto h-8 w-3/4 rounded-lg" />
             <div className="skeleton mx-auto h-4 w-full rounded" />
@@ -1118,13 +1117,13 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         ) : vaultState === "error" ? (
           <div className="animate-rise mx-auto mt-14 max-w-md rounded-2xl border border-danger/30 bg-danger/10 p-6 text-center">
             <StarburstIcon className="mx-auto h-10 w-10 text-[#ff9c95]" />
-            <h2 className="font-display mt-5 text-2xl text-ivory">Saved accounts couldn't be loaded</h2>
+            <h2 className="font-display mt-5 text-2xl text-ivory">Kayıtlı hesaplar yüklenemedi</h2>
             <p role="alert" className="mt-3 text-sm leading-relaxed text-muted">
-              {vaultError ?? "Your saved data was left untouched. Check storage and try again."}
+              Kayıtlı verilerinize dokunulmadı. Depolamayı denetleyip yeniden deneyin.
             </p>
             {vaultUnreadable && (
               <p className="mt-3 text-xs leading-relaxed text-[#f0c47d]">
-                Reloading cannot fix a missing encryption key. Restore the previous secret, or preserve this unreadable file as a backup and start with an empty vault.
+                Yeniden yüklemek eksik şifreleme anahtarını düzeltemez. Önceki anahtarı geri yükleyin veya okunamayan dosyayı yedekleyip boş bir kasayla başlayın.
               </p>
             )}
             <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
@@ -1134,7 +1133,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                 disabled={vaultRecoveryBusy}
                 className="min-h-11 rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white enabled:hover:bg-coral-pressed disabled:opacity-50"
               >
-                Retry after restoring key
+                Anahtarı geri yükledikten sonra dene
               </button>
               {vaultUnreadable && (
                 <button
@@ -1145,15 +1144,15 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                   disabled={vaultRecoveryBusy}
                   className="min-h-11 rounded-xl border border-border px-5 py-2.5 text-sm font-medium text-ivory enabled:hover:bg-surface-hover disabled:opacity-50"
                 >
-                  Start fresh safely
+                  Güvenle yeniden başla
                 </button>
               )}
             </div>
             {vaultRecoveryConfirm && (
               <div role="alert" className="mt-4 rounded-xl border border-[#e3b56e]/35 bg-bg/60 p-4 text-left">
-                <p className="text-sm font-medium text-ivory">Archive the unreadable vault and start fresh?</p>
+                <p className="text-sm font-medium text-ivory">Okunamayan kasa arşivlenip yeniden başlansın mı?</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted">
-                  The encrypted file will be renamed and kept as a backup. No credential can be recovered without its old key, and you will need to reconnect each account once.
+                  Şifreli dosya yeniden adlandırılıp yedek olarak tutulur. Eski anahtar olmadan kimlik bilgileri kurtarılamaz; her hesabı bir kez yeniden bağlamanız gerekir.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
@@ -1162,7 +1161,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                     disabled={vaultRecoveryBusy}
                     className="min-h-11 rounded-lg border border-border px-3 text-xs font-medium text-ivory enabled:hover:bg-surface-hover disabled:opacity-50"
                   >
-                    Keep current vault
+                    Geçerli kasayı tut
                   </button>
                   <button
                     type="button"
@@ -1171,7 +1170,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                     aria-busy={vaultRecoveryBusy}
                     className="min-h-11 rounded-lg bg-danger/20 px-3 text-xs font-semibold text-[#ff9c95] enabled:hover:bg-danger/30 disabled:opacity-50"
                   >
-                    {vaultRecoveryBusy ? "Archiving…" : "Archive and start fresh"}
+                    {vaultRecoveryBusy ? "Arşivleniyor…" : "Arşivle ve yeniden başla"}
                   </button>
                 </div>
               </div>
@@ -1185,10 +1184,9 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         ) : accounts.length === 0 ? (
           <div className="animate-rise mx-auto mt-12 max-w-md text-center sm:mt-16">
             <StarburstIcon className="mx-auto h-12 w-12 text-coral" />
-            <h2 className="font-display mt-6 text-3xl text-ivory">Every account. One dashboard.</h2>
+            <h2 className="font-display mt-6 text-3xl text-ivory">Tüm hesaplar. Tek kota cetveli.</h2>
             <p className="mt-3 text-sm leading-relaxed text-muted">
-              Connect your Claude and ChatGPT/Codex accounts to check usage limits automatically — no more logging in
-              and out to see where you stand.
+              Claude ve ChatGPT/Codex hesaplarınızı bağlayın; kullanım limitlerini tek yerde, otomatik olarak izleyin.
             </p>
             <button
               type="button"
@@ -1196,12 +1194,12 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
               className="mt-7 inline-flex min-h-11 items-center gap-2 rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white transition-colors enabled:hover:bg-coral-pressed"
             >
               <PlusIcon className="h-4 w-4" />
-              Connect your first account
+              İlk hesabı bağla
             </button>
           </div>
         ) : (
           <>
-            <section className="quota-instrument-overview mb-6 grid min-w-0 gap-4" aria-label="Kota görünümü">
+            <section className="quota-instrument-overview instrument-overview mb-6 grid min-w-0 gap-4" aria-label="Kota görünümü">
               <QuotaRuler
                 metrics={presentedMetrics}
                 accountsById={accountsById}
@@ -1235,14 +1233,14 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
 
       <footer className="border-t border-border/60">
         <div className="mx-auto flex w-full max-w-6xl flex-col items-center gap-1 px-6 py-6 text-center text-[11px] leading-relaxed text-faint">
-          <p>Unofficial tool — not affiliated with Anthropic or OpenAI. Account tokens are stored encrypted.</p>
+          <p>Resmî olmayan araç — Anthropic veya OpenAI ile bağlantılı değildir. Hesap belirteçleri şifreli saklanır.</p>
           {lastRefreshAll && (
             <p>
               {lastRefreshAll.updated === lastRefreshAll.total
-                ? `Last refreshed ${formatClock(lastRefreshAll.at)}`
+                ? `Son yenileme ${formatClock(lastRefreshAll.at)}`
                 : lastRefreshAll.updated > 0
-                  ? `Last refresh ${formatClock(lastRefreshAll.at)} · ${lastRefreshAll.updated}/${lastRefreshAll.total} accounts updated`
-                  : `Last refresh attempted ${formatClock(lastRefreshAll.at)} · no accounts updated`}
+                  ? `Son yenileme ${formatClock(lastRefreshAll.at)} · ${lastRefreshAll.updated}/${lastRefreshAll.total} hesap güncellendi`
+                  : `Son yenileme denemesi ${formatClock(lastRefreshAll.at)} · hiçbir hesap güncellenmedi`}
             </p>
           )}
         </div>

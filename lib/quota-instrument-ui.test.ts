@@ -68,6 +68,18 @@ const {
 
 after(() => moduleHooks.deregister());
 
+test("modal controls and semantic hooks use the Turkish instrument vocabulary", () => {
+  const markup = renderToStaticMarkup(createElement(ModalShell, {
+    open: true,
+    title: "Menü",
+    onClose() {},
+    children: createElement("p", null, "Yerel ayarlar"),
+  }));
+  assert.match(markup, /class="[^"]*modal-root/);
+  assert.match(markup, /class="[^"]*modal-panel/);
+  assert.match(markup, /aria-label="Kapat"/);
+});
+
 function account(
   id: string,
   provider: BrowserAccount["provider"] = "anthropic",
@@ -308,7 +320,7 @@ test("local dashboard controls expose exact Turkish sorting and compact actions 
   assert.match(menuSheet, />Otomatik yenileme</);
   assert.match(menuSheet, /role="switch"[^>]*aria-checked="true"/);
   assert.match(menuSheet, /şifrelenmiş yerel kasada/);
-  assert.match(menuSheet, /aria-label="Sign out"/);
+  assert.match(menuSheet, /aria-label="Oturumu kapat"/);
 
   const commands = renderToStaticMarkup(createElement(MobileCommandBar, {
     refreshing: false,

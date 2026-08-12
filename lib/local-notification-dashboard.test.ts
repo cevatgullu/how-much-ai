@@ -132,7 +132,10 @@ test("strict-local panel renders the fixed rail and explicit device-only control
   assert.match(markup, /Limit sıfırlanınca bildir/);
   assert.match(markup, /50 · 40 · 30 · 20 · 15 · 10 · 5 · bitti/);
   assert.match(markup, /Bildirim izni ver/);
-  assert.match(markup, /Otomatik yenileme kapalı; canlı bildirimler duraklatıldı\./);
+  assert.match(markup, /Otomatik okumalar durdu; Yenile komutu kuralları çalıştırmaya devam eder\./);
+  assert.match(markup, /açık veya simge durumuna küçültülmüş/);
+  assert.match(markup, /otomatik ve elle yenilenen okumaları kullanır/i);
+  assert.match(markup, /hesap verileri bir bildirim servisine gönderilmez/i);
   assert.equal(hostedClientResolutions, 0);
 });
 

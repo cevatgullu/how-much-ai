@@ -183,9 +183,9 @@ test("the existing Dashboard prop shape keeps one reachable card presentation be
   assert.doesNotMatch(markup, /class="hidden min-w-0 flex-col gap-3 min-\[960px\]:flex/);
   assert.doesNotMatch(markup, /class="mt-5 hidden min-w-0 flex-1/);
   assert.match(markup, />ChatGPT 1</);
-  assert.match(markup, /aria-label="Rename Private legacy-dashboard"/);
-  assert.match(markup, /aria-label="Refresh Private legacy-dashboard"/);
-  assert.match(markup, /aria-label="Remove Private legacy-dashboard"/);
+  assert.match(markup, /aria-label="Private legacy-dashboard hesabını adlandır"/);
+  assert.match(markup, /aria-label="Private legacy-dashboard hesabını yenile"/);
+  assert.match(markup, /aria-label="Private legacy-dashboard hesabını kaldır"/);
   assert.equal((markup.match(/role="progressbar"/g) ?? []).length, 2);
   assert.match(markup, /aria-valuenow="37"/);
   assert.match(markup, /aria-valuenow="68"/);
@@ -271,13 +271,13 @@ test("controlled mobile ledgers expose summaries, stable panels, and actions out
     assert.equal(expandButtons.length, 2);
     for (const match of expandButtons) {
       assert.match(markup, new RegExp(`<section id="${match[2]}"[^>]*data-ledger-panel="${match[1]}"`));
-      assert.doesNotMatch(match[0], /Refresh |Rename |Remove |Reconnect /);
+      assert.doesNotMatch(match[0], /aria-label="[^"]*(?:yenile|adlandır|kaldır|yeniden bağla)/i);
     }
     assert.equal((markup.match(/data-ledger-panel=/g) ?? []).length, 2);
     assert.doesNotMatch(markup, /data-ledger-panel="[^"]+"[^>]*hidden/);
-    assert.match(markup, /aria-label="Refresh Araştırma"/);
-    assert.match(markup, /aria-label="Rename Araştırma"/);
-    assert.match(markup, /aria-label="Remove Araştırma"/);
+    assert.match(markup, /aria-label="Araştırma hesabını yenile"/);
+    assert.match(markup, /aria-label="Araştırma hesabını adlandır"/);
+    assert.match(markup, /aria-label="Araştırma hesabını kaldır"/);
   }
 
   const closed = renderAccountCard(claude, snapshots[claude.id], 2, { mobileExpanded: false });
@@ -487,17 +487,17 @@ test("OpenAI account guidance names ChatGPT while preserving login-kind badges",
   const managedMarkup = renderAccountCard(account("managed-openai", "openai"), {
     status: "reauth",
   });
-  assert.match(managedMarkup, /sign in with chatgpt again/i);
+  assert.match(managedMarkup, /chatgpt ile yeniden oturum açın/i);
   assert.doesNotMatch(managedMarkup, /claude/i);
-  assert.match(managedMarkup, /private app login · auto-renews/i);
+  assert.match(managedMarkup, /özel uygulama oturumu · otomatik yenilenir/i);
 
   const sharedMarkup = renderAccountCard(
     { ...account("shared-openai", "openai"), credentialKind: "rotating" },
     { status: "ready" },
   );
-  assert.match(sharedMarkup, /shared cli login/i);
+  assert.match(sharedMarkup, /paylaşılan cli oturumu/i);
   assert.match(sharedMarkup, /codex cli/i);
-  assert.doesNotMatch(sharedMarkup, /shares claude code/i);
+  assert.doesNotMatch(sharedMarkup, /claude code oturumunu paylaşır/i);
 });
 
 test("settled dashboard rows reorder presentation only while preserving source ordinals, keys, and expanded ids", () => {

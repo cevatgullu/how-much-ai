@@ -195,7 +195,7 @@ export function ModalShell({
   return (
     <div
       ref={rootRef}
-      className={`fixed inset-0 z-50 overflow-y-auto overscroll-contain ${placement === "sheet" ? "px-3 pt-3" : "p-3 sm:p-6"}`}
+      className={`modal-root fixed inset-0 z-50 overflow-y-auto overscroll-contain ${placement === "sheet" ? "px-3 pt-3" : "p-3 sm:p-6"}`}
     >
       <div
         aria-hidden="true"
@@ -211,7 +211,7 @@ export function ModalShell({
           aria-describedby={description ? descriptionId : undefined}
           data-placement={placement}
           tabIndex={-1}
-          className={`animate-modal-in modal-scroll relative w-full overflow-y-auto border border-border bg-bg-raised p-5 outline-none sm:p-6 ${
+          className={`animate-modal-in modal-panel modal-scroll relative w-full overflow-y-auto border border-border bg-bg-raised p-5 outline-none sm:p-6 ${
             placement === "sheet"
               ? "max-h-[calc(100dvh-0.75rem)] rounded-t-2xl border-b-0"
               : "max-h-[calc(100dvh-1.5rem)] rounded-2xl sm:max-h-[calc(100dvh-3rem)]"
@@ -233,8 +233,8 @@ export function ModalShell({
               onClick={onClose}
               disabled={!dismissible}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-faint transition-colors enabled:hover:bg-surface-hover enabled:hover:text-ivory disabled:cursor-not-allowed disabled:opacity-40"
-              aria-label={dismissible ? "Close" : "Please wait for the current operation to finish"}
-              title={dismissible ? "Close" : "Please wait for the current operation to finish"}
+              aria-label={dismissible ? "Kapat" : "Geçerli işlemin bitmesini bekleyin"}
+              title={dismissible ? "Kapat" : "Geçerli işlemin bitmesini bekleyin"}
             >
               <XIcon className="h-4 w-4" />
             </button>

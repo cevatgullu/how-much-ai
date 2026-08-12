@@ -36,8 +36,8 @@ export function BootstrapSession() {
         <h1 className="font-display mt-5 text-2xl text-ivory">How Much AI</h1>
         <p className="mt-2 text-sm text-muted" role={failed ? "alert" : undefined}>
           {failed
-            ? "The secure launch link is unavailable. Close this window and open the launcher again."
-            : "Opening your secure local dashboard\u2026"}
+            ? "Güvenli başlatma bağlantısı kullanılamıyor. Bu pencereyi kapatıp başlatıcıyı yeniden açın."
+            : "Güvenli yerel panonuz açılıyor\u2026"}
         </p>
       </div>
     </div>

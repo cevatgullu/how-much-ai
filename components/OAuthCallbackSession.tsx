@@ -47,10 +47,10 @@ export function OAuthCallbackSession() {
           role={status === "failed" ? "alert" : "status"}
         >
           {status === "working"
-            ? "Completing your secure Claude connection\u2026"
+            ? "Güvenli Claude bağlantınız tamamlanıyor\u2026"
             : status === "done"
-              ? "Claude connection complete. You can close this window."
-              : "The secure Claude connection could not be completed. Close this window and start again."}
+              ? "Claude bağlantısı tamamlandı. Bu pencereyi kapatabilirsiniz."
+              : "Güvenli Claude bağlantısı tamamlanamadı. Bu pencereyi kapatıp yeniden başlatın."}
         </p>
       </div>
     </div>

@@ -2,325 +2,224 @@
 
 @theme {
   --breakpoint-xs: 26rem;
-
-  /* Official claude.ai dark-mode tokens (bg-100 canvas, bg-000 raised, ivory borders at low alpha) */
-  --color-bg: #262624;
-  --color-bg-deep: #1f1e1d;
-  --color-bg-raised: #30302e;
-  --color-surface: #30302e;
-  --color-surface-hover: #3d3d3a;
-  --color-border: #3a3a37;
-  --color-border-light: #4b4a47;
-  --color-ivory: #faf9f5;
-  --color-secondary: #c2c0b6;
-  --color-muted: #aaa89f;
-  --color-faint: #99978f;
+  --color-bg: #111614;
+  --color-bg-deep: #0d110f;
+  --color-bg-raised: #19201d;
+  --color-surface: #19201d;
+  --color-surface-hover: #222b27;
+  --color-border: #697770;
+  --color-border-light: #7e8c85;
+  --color-ivory: #f1f4ef;
+  --color-secondary: #a5b1aa;
+  --color-muted: #a5b1aa;
+  --color-faint: #89968f;
   --color-coral: #d97757;
-  --color-coral-bright: #e08b6d;
-  /* Separate action shades keep white button labels at WCAG AA contrast without dulling coral accents. */
+  --color-coral-bright: #e28a6d;
   --color-coral-action: #b65435;
   --color-coral-action-hover: #a84a2d;
   --color-coral-pressed: #963d23;
   --color-amber: #d9a557;
-  --color-danger: #dd5353;
-  --color-track: #3d3d3a;
+  --color-danger: #e05b5b;
+  --color-track: #303b36;
 }
 
-/* Font tokens reference next/font variables, so they must be inlined into utilities. */
 @theme inline {
-  --font-sans: "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  --font-display: Georgia, "Times New Roman", ui-serif, serif;
+  --font-sans: var(--font-body), "Segoe UI", sans-serif;
+  --font-display: var(--font-heading), "Arial Narrow", sans-serif;
+  --font-mono: var(--font-data), "Cascadia Mono", monospace;
 }
 
-/* Per-provider accent tokens. Default is Claude's coral; a [data-provider] scope (each account card,
-   and the Connect dialog's chosen provider) overrides them so provider-specific surfaces re-skin
-   without per-element conditionals. Functional severity colors (amber/danger) stay provider-neutral. */
 :root {
-  --accent: var(--color-coral);
-  --accent-bright: var(--color-coral-bright);
-  --accent-strong: var(--color-coral-action);
-  --accent-strong-hover: var(--color-coral-action-hover);
-  --accent-contrast: #ffffff;
-  --accent-soft: rgba(217, 119, 87, 0.16);
-  --avatar-bg: rgba(217, 119, 87, 0.16);
-  --avatar-fg: var(--color-coral-bright);
+  --canvas: #111614;
+  --panel: #19201d;
+  --rule-strong: #697770;
+  --rule-soft: color-mix(in srgb, #697770 42%, transparent);
+  --text-primary: #f1f4ef;
+  --text-secondary: #a5b1aa;
+  --calibration-blue: #78a7bf;
+  --claude-coral: #d97757;
+  --warning-amber: #d9a557;
+  --danger-red: #e05b5b;
+  --accent: var(--claude-coral);
+  --accent-bright: #e28a6d;
+  --accent-strong: #b65435;
+  --accent-strong-hover: #a84a2d;
+  --accent-contrast: #fff;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --avatar-bg: var(--accent-soft);
+  --avatar-fg: var(--accent-bright);
   --avatar-border: transparent;
 }
 
-/* Explicit Claude scope. Needed so a Claude surface nested inside another provider's scope (e.g. the
-   Connect dialog's Claude tab on an all-ChatGPT page, or a Claude card in a mixed dashboard) resets to
-   coral instead of inheriting the ancestor's tokens. Mirrors the :root defaults. */
 [data-provider="anthropic"] {
-  --accent: var(--color-coral);
-  --accent-bright: var(--color-coral-bright);
-  --accent-strong: var(--color-coral-action);
-  --accent-strong-hover: var(--color-coral-action-hover);
-  --accent-contrast: #ffffff;
-  --accent-soft: rgba(217, 119, 87, 0.16);
-  --avatar-bg: rgba(217, 119, 87, 0.16);
-  --avatar-fg: var(--color-coral-bright);
+  --accent: var(--claude-coral);
+  --accent-bright: #e28a6d;
+  --accent-strong: #b65435;
+  --accent-strong-hover: #a84a2d;
+  --accent-contrast: #fff;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --avatar-bg: var(--accent-soft);
+  --avatar-fg: var(--accent-bright);
   --avatar-border: transparent;
 }
 
-/* ChatGPT / OpenAI — a monochrome, near-black identity on the dark canvas. */
 [data-provider="openai"] {
-  --accent: #ececec;
-  --accent-bright: #ffffff;
-  --accent-strong: #ffffff;
-  --accent-strong-hover: #e4e4e4;
-  --accent-contrast: #0d0d0d;
-  --accent-soft: rgba(255, 255, 255, 0.1);
-  --avatar-bg: #0d0d0d;
-  --avatar-fg: #ffffff;
-  --avatar-border: rgba(255, 255, 255, 0.16);
+  --accent: var(--calibration-blue);
+  --accent-bright: #9bc0d2;
+  --accent-strong: #78a7bf;
+  --accent-strong-hover: #8db7cb;
+  --accent-contrast: #111614;
+  --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);
+  --avatar-bg: var(--accent-soft);
+  --avatar-fg: var(--accent-bright);
+  --avatar-border: var(--rule-soft);
 }
 
-/* A brand-accent primary button that follows the nearest [data-provider] scope. */
-.accent-btn {
-  background-color: var(--accent-strong);
-  color: var(--accent-contrast);
-}
-
-.accent-btn:hover:not(:disabled) {
-  background-color: var(--accent-strong-hover);
-}
-
-html {
-  color-scheme: dark;
-  scroll-behavior: smooth;
-  scroll-padding-top: 6rem;
-}
-
+* { box-sizing: border-box; }
+html { color-scheme: dark; scroll-padding-top: 6rem; }
 body {
-  background: var(--color-bg);
-  color: var(--color-ivory);
-  background-image: radial-gradient(
-    ellipse 90% 60% at 50% -10%,
-    color-mix(in srgb, var(--accent) 7%, transparent),
-    transparent
-  );
-  background-repeat: no-repeat;
   min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--canvas);
+  color: var(--text-primary);
 }
 
-::selection {
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-}
+::selection { background: color-mix(in srgb, var(--calibration-blue) 38%, transparent); }
+.font-display, h1, h2 { font-family: var(--font-heading), "Arial Narrow", sans-serif; letter-spacing: .02em; }
+.font-mono, .tabular-nums { font-family: var(--font-data), "Cascadia Mono", monospace; font-variant-numeric: tabular-nums; }
 
-/* Route the coral brand utilities through the per-provider accent tokens. Outside any [data-provider]
-   scope the tokens equal coral, so every existing surface is byte-identical; only a scope that flips
-   to another provider (a ChatGPT card, or an all-ChatGPT page) re-skins. This is what lets buttons,
-   toggles, and accents across the app follow the provider without per-element edits. */
-.text-coral {
-  color: var(--accent);
-}
-.text-coral-bright {
-  color: var(--accent-bright);
-}
-.bg-coral {
-  background-color: var(--accent);
-}
-.border-coral {
-  border-color: var(--accent);
-}
-
-/* Interactive white-on-accent surfaces use the stronger AA shade + a matching readable text color. */
-.bg-coral.text-white {
-  background-color: var(--accent-strong);
-  color: var(--accent-contrast);
-}
-
-button.bg-coral.text-white:hover:not(:disabled),
-a.bg-coral.text-white:hover {
-  background-color: var(--accent-strong-hover);
-}
-
-button.bg-coral.text-white:active:not(:disabled),
-a.bg-coral.text-white:active {
-  background-color: var(--accent-strong-hover);
-}
+.text-coral { color: var(--accent); }
+.text-coral-bright { color: var(--accent-bright); }
+.bg-coral { background-color: var(--accent); }
+.border-coral { border-color: var(--accent); }
+.accent-btn, .bg-coral.text-white { background-color: var(--accent-strong); color: var(--accent-contrast); }
+.accent-btn:hover:not(:disabled), button.bg-coral.text-white:hover:not(:disabled), a.bg-coral.text-white:hover { background-color: var(--accent-strong-hover); }
 
 :where(button, a[href]) {
+  min-inline-size: 44px;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
-  transition-duration: 160ms;
-  transition-timing-function: cubic-bezier(0.165, 0.84, 0.44, 1);
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
 }
-
-:where(button:not(:disabled), a[href]):active {
-  filter: brightness(0.92);
-}
-
-button:disabled {
-  cursor: not-allowed;
-}
-
-/* Some component inputs deliberately remove the browser outline; restore a consistent keyboard ring globally. */
+button:disabled { cursor: not-allowed; }
 html :where(a[href], button, input, textarea, select, [role="button"], [role="switch"]):focus-visible {
-  outline: 2px solid var(--accent-bright) !important;
+  outline: 2px solid var(--calibration-blue) !important;
   outline-offset: 3px !important;
 }
 
 .skip-link {
   position: fixed;
-  top: 0.75rem;
-  left: 1rem;
-  z-index: 70;
-  transform: translateY(-150%);
-  border-radius: 0.625rem;
-  background: var(--color-ivory);
-  color: var(--color-bg-deep);
-  padding: 0.625rem 0.875rem;
-  font-size: 0.875rem;
+  z-index: 80;
+  top: calc(8px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
+  transform: translateY(-160%);
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--canvas);
+  padding: 10px 14px;
   font-weight: 700;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  transition: transform 160ms cubic-bezier(0.165, 0.84, 0.44, 1);
+}
+.skip-link:focus-visible { transform: translateY(0); }
+
+@keyframes interface-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.animate-rise, .animate-fade-in, .animate-modal-in { animation: interface-fade 160ms ease-out both; }
+.animate-spin-slow { animation: spin .9s linear infinite; }
+.skeleton { background: var(--color-track); }
+.bar-fill { transition: width 240ms ease, background-color 160ms ease; }
+
+.instrument-app { min-height: 100vh; min-height: 100dvh; }
+.instrument-header { padding-top: env(safe-area-inset-top); background: var(--canvas); }
+.instrument-header > div,
+.instrument-shell {
+  width: auto;
+  margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right));
+}
+.instrument-shell { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+.instrument-overview { border-bottom: 1px solid var(--rule-soft); padding-bottom: 20px; }
+.account-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.account-card { border-radius: 8px; border-color: var(--rule-soft); background: var(--panel); }
+.account-card-desktop { display: none !important; }
+.account-ledger { display: block; }
+.account-ledger-panel[hidden] { display: none !important; }
+.mobile-command-bar {
+  min-height: calc(64px + env(safe-area-inset-bottom));
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  border-top: 1px solid var(--rule-strong);
+  background: var(--panel);
+}
+.mobile-command-bar > button { min-height: 48px; }
+.dashboard-sheet { padding-bottom: env(safe-area-inset-bottom); }
+.modal-root { padding-right: calc(12px + env(safe-area-inset-right)); padding-left: calc(12px + env(safe-area-inset-left)); }
+.modal-panel { background: var(--panel); border-color: var(--rule-strong); }
+.modal-panel[data-placement="sheet"] { max-height: calc(100vh - env(safe-area-inset-top)); max-height: calc(100dvh - env(safe-area-inset-top)); }
+
+@media (max-width: 959px) {
+  .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); }
+  .quota-ruler > div:nth-of-type(2) { height: 104px; }
 }
 
-.skip-link:focus-visible {
-  transform: translateY(0);
+@media (min-width: 960px) and (max-width: 1919px) {
+  .instrument-header > div,
+  .instrument-shell { width: calc(100% - 2 * clamp(24px, 4vw, 64px)); margin-inline: auto; }
+  .instrument-shell { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
+  .account-grid { grid-template-columns: repeat(2, minmax(420px, 1fr)); gap: 20px; }
+  .account-card-desktop { display: flex !important; }
+  .account-ledger { display: none !important; }
+  .quota-ruler > div:nth-of-type(1) { min-height: 176px; }
 }
 
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+@media (min-width: 1920px) and (max-width: 2879px) {
+  .instrument-header > div,
+  .instrument-shell { width: min(3264px, 90vw); margin-inline: auto; }
+  .instrument-shell { padding-bottom: calc(36px + env(safe-area-inset-bottom)); }
+  .account-grid { grid-template-columns: repeat(3, minmax(560px, 1fr)); gap: 24px; }
+  .account-card-desktop { display: flex !important; }
+  .account-ledger { display: none !important; }
+  .quota-ruler > div:nth-of-type(1) { min-height: 176px; }
 }
 
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+@media (min-width: 2880px) {
+  .instrument-header > div,
+  .instrument-shell { width: min(3264px, 90vw); margin-inline: auto; }
+  .instrument-shell { padding-bottom: calc(40px + env(safe-area-inset-bottom)); }
+  .account-grid { grid-template-columns: repeat(4, minmax(600px, 1fr)); gap: 24px; }
+  .account-card-desktop { display: flex !important; }
+  .account-ledger { display: none !important; }
+  .quota-ruler > div:nth-of-type(1) { min-height: 196px; }
+  .quota-ruler > div:nth-of-type(1) > div[aria-hidden="true"] { height: 196px; }
 }
 
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+@media (orientation: landscape) and (min-width: 900px) and (max-height: 500px) {
+  .instrument-header { position: relative; }
+  .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); padding-top: 12px; padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .account-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .account-card-desktop { display: none !important; }
+  .account-ledger { display: block !important; }
+  .mobile-command-bar { display: flex !important; }
+  .instrument-overview { margin-bottom: 12px; }
 }
 
-@keyframes shimmer {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.animate-rise {
-  animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.animate-fade-in {
-  animation: fade-in 0.25s ease both;
-}
-
-.animate-modal-in {
-  animation: modal-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.animate-spin-slow {
-  animation: spin 0.9s linear infinite;
-}
-
-.skeleton {
-  background: linear-gradient(
-    100deg,
-    var(--color-track) 40%,
-    var(--color-surface-hover) 50%,
-    var(--color-track) 60%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.6s linear infinite;
-}
-
-/* claude.ai's official ease-out curve */
-.bar-fill {
-  transition: width 0.9s cubic-bezier(0.165, 0.84, 0.44, 1), background-color 0.45s ease;
-}
-
-.card-lift {
-  transition:
-    transform 0.2s cubic-bezier(0.165, 0.84, 0.44, 1),
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-@media (hover: hover) {
-  .card-lift:hover {
-    transform: translateY(-3px);
-    border-color: var(--color-border-light);
-    box-shadow: 0 16px 38px -18px rgba(0, 0, 0, 0.62);
-  }
+@media (min-width: 3200px) {
+  body { font-size: 18px; }
+  .text-xs, .text-\[11px\] { font-size: 14px; }
+  .account-card h2, .account-card .text-\[15px\] { font-size: 20px; }
+  .account-card .tabular-nums { font-size: 24px; }
 }
 
 @media (forced-colors: active) {
-  body,
-  .card-lift {
-    background: Canvas;
-    color: CanvasText;
-  }
-
-  [role="progressbar"] {
-    border: 1px solid CanvasText;
-    background: Canvas;
-  }
-
-  .bar-fill {
-    background-color: Highlight !important;
-  }
+  body, .account-card, .modal-panel, .mobile-command-bar { background: Canvas; color: CanvasText; }
+  [role="progressbar"] { border: 1px solid CanvasText; background: Canvas; }
+  .bar-fill { background-color: Highlight !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
-
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    scroll-behavior: auto !important;
-    transition-delay: 0ms !important;
-    transition-duration: 0.01ms !important;
-  }
-
-  .animate-rise,
-  .animate-fade-in,
-  .animate-modal-in,
-  .animate-spin-slow,
-  .skeleton {
-    animation: none;
-  }
-  .bar-fill,
-  .card-lift {
-    transition: none;
-  }
-
-  .card-lift:hover,
-  :where(button:not(:disabled), a[href]):active {
-    filter: none;
-    transform: none;
-  }
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0ms !important; }
+  .animate-rise, .animate-fade-in, .animate-modal-in, .animate-spin-slow { animation: none; }
+  .bar-fill { transition: none; }
 }

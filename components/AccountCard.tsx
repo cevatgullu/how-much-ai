@@ -190,25 +190,25 @@ export function AccountCard({
     <div role="alert" className="flex min-w-0 flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
       <p className="min-w-0 break-words text-sm leading-relaxed text-muted">
         {managedLogin
-          ? `This private app login expired or was revoked. Sign in with ${providerName} again to restore automatic renewal.`
+          ? `Bu özel uygulama oturumunun süresi doldu veya oturum iptal edildi. Otomatik yenilemeyi geri getirmek için ${providerName} ile yeniden oturum açın.`
           : setupToken
-            ? "This legacy inference-only setup token expired or was revoked. Replace it to restore checks."
-            : `This shared ${cliName} session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard.`}
+            ? "Eski kurulum belirtecinin süresi doldu veya belirteç iptal edildi. Kontrolleri geri getirmek için yenileyin."
+            : `Paylaşılan ${cliName} oturumu başka bir yerde yenilendi. CLI yenilemelerinin panonun bağlantısını kesmemesi için özel uygulama oturumuyla değiştirin.`}
       </p>
       {onReconnect ? (
         <button
           type="button"
           onClick={onReconnect}
-          aria-label={`Reconnect ${displayName}`}
+          aria-label={`${displayName} hesabını yeniden bağla`}
           className="accent-btn min-h-11 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
         >
-          {managedLogin ? "Reconnect private login" : setupToken ? "Replace with private login" : "Reconnect reliably"}
+          {managedLogin ? "Özel oturumu yeniden bağla" : setupToken ? "Özel oturumla değiştir" : "Güvenli yeniden bağla"}
         </button>
       ) : (
         <p className="text-xs font-medium text-ivory">
           {account.provider === "openai"
-            ? "Reconnect this ChatGPT account to replace it."
-            : "Use the secure launcher's Claude connector to replace it."}
+            ? "Değiştirmek için bu ChatGPT hesabını yeniden bağlayın."
+            : "Değiştirmek için güvenli başlatıcıdaki Claude bağlayıcısını kullanın."}
         </p>
       )}
     </div>
@@ -226,19 +226,19 @@ export function AccountCard({
     </>
   ) : status === "error" ? (
     <div role="status" className="flex min-w-0 flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
-      <p className="min-w-0 break-words text-sm text-muted">{snapshot?.error ?? "Couldn't load usage."}</p>
+      <p className="min-w-0 break-words text-sm text-muted">Kullanım verileri yüklenemedi.</p>
       <button
         type="button"
         onClick={onRefresh}
         disabled={cooldownRemaining > 0}
         className="min-h-11 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-ivory transition-colors enabled:hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {cooldownRemaining > 0 ? `Retry in ${cooldownMinutes} min` : "Retry"}
+        {cooldownRemaining > 0 ? `${cooldownMinutes} dk sonra yeniden dene` : "Yeniden dene"}
       </button>
     </div>
   ) : status === "ready" ? (
     <div className="rounded-xl border border-border bg-bg-raised p-4">
-      <p className="text-sm text-muted">No usage limits reported yet for this account.</p>
+      <p className="text-sm text-muted">Bu hesap için henüz kullanım limiti bildirilmedi.</p>
     </div>
   ) : (
     <div className="space-y-4" aria-hidden>
@@ -256,7 +256,7 @@ export function AccountCard({
       aria-labelledby={headingId}
       data-provider={account.provider ?? "anthropic"}
       data-stale={oldData || undefined}
-      className="flex h-full min-w-0 flex-col rounded-2xl border border-border bg-surface p-5"
+      className="account-card flex h-full min-w-0 flex-col rounded-2xl border border-border bg-surface p-5"
       aria-busy={loading}
       onFocusCapture={() => onInteractionFenceChange?.("focus", true)}
       onBlurCapture={(event) => {
@@ -271,7 +271,7 @@ export function AccountCard({
         cancelRemove();
       }}
     >
-      <div className={`${controlledMobileLedger ? "hidden min-[960px]:flex" : "flex"} min-w-0 flex-col gap-3 xs:flex-row xs:items-start xs:justify-between`}>
+      <div className={`${controlledMobileLedger ? "account-card-desktop hidden min-[960px]:flex" : "flex"} min-w-0 flex-col gap-3 xs:flex-row xs:items-start xs:justify-between`}>
         <div className="flex min-w-0 items-center gap-3">
           <div
             aria-hidden="true"
@@ -291,8 +291,8 @@ export function AccountCard({
             <button
               type="button"
               onClick={(event) => beginRename(event.currentTarget)}
-              aria-label={`Rename ${displayName}`}
-              title="Rename this account"
+              aria-label={`${displayName} hesabını adlandır`}
+              title="Bu hesabı adlandır"
               className="flex min-h-11 min-w-11 max-w-full items-center truncate text-left text-[15px] font-medium text-ivory transition-colors hover:text-[var(--accent-bright)]"
             >
               {displayName}
@@ -321,17 +321,17 @@ export function AccountCard({
             className={ICON_BTN}
             title={
               status === "reauth"
-                ? "Replace this account's token before refreshing"
+                ? "Yenilemeden önce bu hesabı yeniden bağlayın"
                 : cooldownRemaining > 0
-                  ? `Retry available in ${cooldownMinutes} minute${cooldownMinutes === 1 ? "" : "s"}`
-                  : "Refresh this account"
+                  ? `${cooldownMinutes} dk sonra yeniden denenebilir`
+                  : "Bu hesabı yenile"
             }
             aria-label={
               status === "reauth"
-                ? `Reconnect ${displayName} before refreshing`
+                ? `Yenilemeden önce ${displayName} hesabını yeniden bağla`
                 : cooldownRemaining > 0
-                  ? `Refresh ${displayName} available in ${cooldownMinutes} minutes`
-                  : `Refresh ${displayName}`
+                  ? `${displayName} ${cooldownMinutes} dk sonra yenilenebilir`
+                  : `${displayName} hesabını yenile`
             }
             onClick={onRefresh}
             disabled={refreshDisabled}
@@ -341,8 +341,8 @@ export function AccountCard({
           <button
             type="button"
             className={ICON_BTN}
-            title="Remove this account from the dashboard"
-            aria-label={`Remove ${displayName}`}
+            title="Bu hesabı panodan kaldır"
+            aria-label={`${displayName} hesabını kaldır`}
             onClick={(event) => beginRemove(event.currentTarget)}
             disabled={confirmRemove}
           >
@@ -355,7 +355,7 @@ export function AccountCard({
         <div
           data-ledger-account={account.id}
           data-ledger-state={ledgerState}
-          className="min-w-0 min-[960px]:hidden"
+          className="account-ledger min-w-0 min-[960px]:hidden"
         >
         <button
           type="button"
@@ -401,14 +401,14 @@ export function AccountCard({
           id={ledgerPanelId}
           data-ledger-panel={account.id}
           hidden={!expanded}
-          className="mt-4 min-w-0 space-y-4"
+          className="account-ledger-panel mt-4 min-w-0 space-y-4"
         >
           <div className="flex min-w-0 flex-wrap items-center gap-1">
             <button
               type="button"
               className={ICON_BTN}
-              title="Refresh this account"
-              aria-label={`Refresh ${displayName}`}
+              title="Bu hesabı yenile"
+              aria-label={`${displayName} hesabını yenile`}
               onClick={onRefresh}
               disabled={refreshDisabled}
             >
@@ -417,8 +417,8 @@ export function AccountCard({
             <button
               type="button"
               className={ICON_BTN}
-              title="Rename this account"
-              aria-label={`Rename ${displayName}`}
+              title="Bu hesabı adlandır"
+              aria-label={`${displayName} hesabını adlandır`}
               onClick={(event) => beginRename(event.currentTarget)}
             >
               <span aria-hidden="true" className="text-base">Aa</span>
@@ -426,8 +426,8 @@ export function AccountCard({
             <button
               type="button"
               className={ICON_BTN}
-              title="Remove this account from the dashboard"
-              aria-label={`Remove ${displayName}`}
+              title="Bu hesabı panodan kaldır"
+              aria-label={`${displayName} hesabını kaldır`}
               onClick={(event) => beginRemove(event.currentTarget)}
               disabled={confirmRemove}
             >
@@ -444,7 +444,7 @@ export function AccountCard({
       {editing && (
         <input
           ref={inputRef}
-          aria-label={`Nickname for ${account.email}`}
+          aria-label={`${account.email} için hesap adı`}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={() => commitRename()}
@@ -472,9 +472,9 @@ export function AccountCard({
           aria-describedby={removeDescriptionId}
           className="mt-4 rounded-xl border border-danger/30 bg-danger/10 p-3"
         >
-          <p id={removeTitleId} className="text-sm font-medium text-ivory">Remove {displayName}?</p>
+          <p id={removeTitleId} className="text-sm font-medium text-ivory">{displayName} kaldırılsın mı?</p>
           <p id={removeDescriptionId} className="mt-1 text-xs leading-relaxed text-muted">
-            Its saved monitor credential will be deleted. You&apos;ll need to connect it again to restore monitoring.
+            Kayıtlı izleme kimlik bilgisi silinir. İzlemeyi geri getirmek için hesabı yeniden bağlamanız gerekir.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
@@ -483,14 +483,14 @@ export function AccountCard({
               onClick={cancelRemove}
               className="min-h-11 rounded-lg border border-border px-3 text-xs font-medium text-ivory transition-colors hover:bg-surface-hover"
             >
-              Keep account
+              Hesabı tut
             </button>
             <button
               type="button"
               onClick={onRemove}
               className="min-h-11 rounded-lg bg-danger/20 px-3 text-xs font-semibold text-[#ff9c95] transition-colors hover:bg-danger/30"
             >
-              Remove account
+              Hesabı kaldır
             </button>
           </div>
         </div>
@@ -499,7 +499,7 @@ export function AccountCard({
       {sharedCliLogin && status !== "reauth" && (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-xs leading-relaxed text-[#f0c47d]">
           <span className="max-w-sm">
-            This account shares {cliName}&apos;s rotating login. A private app login renews independently.
+            Bu hesap {cliName} yenilenen oturumunu paylaşır. Özel uygulama oturumu bağımsız yenilenir.
           </span>
           {onReconnect ? (
             <button
@@ -507,11 +507,11 @@ export function AccountCard({
               onClick={onReconnect}
               className="min-h-11 rounded-lg border border-current/30 px-3 font-semibold text-ivory transition-colors hover:bg-white/5"
             >
-              Replace with private login
+              Özel oturumla değiştir
             </button>
           ) : (
             <span className="font-medium text-ivory">
-              Use the secure launcher to replace it.
+              Değiştirmek için güvenli başlatıcıyı kullanın.
             </span>
           )}
         </div>
@@ -524,10 +524,10 @@ export function AccountCard({
         >
           <span>
             {tokenDaysRemaining < 0
-              ? "Estimated monitor-token renewal date has passed."
+              ? "Tahmini izleme belirteci yenileme tarihi geçti."
               : tokenDaysRemaining === 0
-                ? "Estimated monitor-token renewal is due today."
-                : `Estimated monitor-token renewal in ${tokenDaysRemaining} day${tokenDaysRemaining === 1 ? "" : "s"}.`}
+                ? "Tahmini izleme belirteci bugün yenilenmeli."
+                : `Tahmini izleme belirteci ${tokenDaysRemaining} gün sonra yenilenmeli.`}
           </span>
           {onReconnect ? (
             <button
@@ -535,11 +535,11 @@ export function AccountCard({
               onClick={onReconnect}
               className="min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-semibold text-ivory transition-colors hover:bg-white/5"
             >
-              Replace with private login
+              Özel oturumla değiştir
             </button>
           ) : (
             <span className="font-medium text-ivory">
-              Use the secure launcher to replace it.
+              Değiştirmek için güvenli başlatıcıyı kullanın.
             </span>
           )}
         </div>
@@ -563,17 +563,17 @@ export function AccountCard({
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-[11px] text-faint">
         <span>
           {status === "reauth" ? (
-            <span className="text-[#e3b56e]">reconnect required</span>
+            <span className="text-[#e3b56e]">yeniden bağlanma gerekli</span>
           ) : status === "error" ? (
             <span className="text-[#e3b56e]">
-              {hasBars ? "refresh failed — showing last data" : "refresh failed"}
+              {hasBars ? "yenileme başarısız — son veriler gösteriliyor" : "yenileme başarısız"}
             </span>
           ) : stale && hasBars ? (
-            <span className="text-[#e3b56e]">rate-limited — showing last update</span>
+            <span className="text-[#e3b56e]">hız sınırı — son güncelleme gösteriliyor</span>
           ) : snapshot?.fetchedAt ? (
-            `updated ${formatClock(snapshot.fetchedAt)}`
+            `${formatClock(snapshot.fetchedAt)} tarihinde güncellendi`
           ) : (
-            "waiting for first refresh"
+            "ilk yenileme bekleniyor"
           )}
         </span>
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -587,9 +587,9 @@ export function AccountCard({
             }
             className={sharedCliLogin ? "text-[#e3b56e]" : "text-muted"}
           >
-            {managedLogin ? "private app login · auto-renews" : setupToken ? "setup token · legacy" : "shared CLI login"}
+            {managedLogin ? "özel uygulama oturumu · otomatik yenilenir" : setupToken ? "kurulum belirteci · eski" : "paylaşılan CLI oturumu"}
           </span>
-          {snapshot?.usage?.extra_usage?.is_enabled && <span>extra usage on</span>}
+          {snapshot?.usage?.extra_usage?.is_enabled && <span>ek kullanım açık</span>}
         </div>
       </div>
     </article>

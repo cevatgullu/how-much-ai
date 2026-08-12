@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import "./providers/_resolve-ts.mjs";
 
-const { extractBars, formatResetSchedule } = await import("./format.ts");
+const { extractBars, formatClock, formatResetSchedule, timeAgo, timeUntil } = await import("./format.ts");
 
 test("extractBars maps Claude flat buckets to stable Turkish remaining bars", () => {
   const bars = extractBars({
@@ -198,4 +198,13 @@ test("formatResetSchedule rejects invalid calendar and timezone-less timestamps"
     countdown: "1 gün sonra",
     state: "future",
   });
+});
+
+test("local time helpers use Turkish copy and keep the device time zone", () => {
+  const now = Date.parse("2026-08-12T09:00:00.000Z");
+  assert.equal(timeUntil("2026-08-12T11:30:00.000Z", now), "2 sa 30 dk sonra");
+  assert.equal(timeUntil("2026-08-12T08:59:30.000Z", now), "Sıfırlanıyor…");
+  assert.equal(timeAgo(now - 30_000, now), "az önce");
+  assert.equal(timeAgo(now - 3_600_000, now), "1 sa önce");
+  assert.match(formatClock(now), /^\d{2}:\d{2}:\d{2}$/);
 });

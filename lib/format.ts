@@ -183,14 +183,14 @@ export function timeUntil(iso: string | null, now: number = Date.now()): string 
   // A slightly-past stamp is just clock skew or a bucket Anthropic hasn't rolled yet.
   // Showing "resetting…" next to a still-full bar reads as a contradiction, so once
   // it's meaningfully past we simply drop the countdown until the next poll corrects it.
-  if (diff <= 0) return diff > -120_000 ? "resetting…" : null;
+  if (diff <= 0) return diff > -120_000 ? "Sıfırlanıyor…" : null;
   const minutes = Math.floor(diff / 60_000);
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const mins = minutes % 60;
-  if (days > 0) return `resets in ${days}d ${hours}h`;
-  if (hours > 0) return `resets in ${hours}h ${mins}m`;
-  return `resets in ${Math.max(1, mins)}m`;
+  if (days > 0) return `${days} gün ${hours} sa sonra`;
+  if (hours > 0) return `${hours} sa ${mins} dk sonra`;
+  return `${Math.max(1, mins)} dk sonra`;
 }
 
 export function severityColor(percent: number, severity: string): string {
@@ -201,16 +201,16 @@ export function severityColor(percent: number, severity: string): string {
 }
 
 export function formatClock(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(ts).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 // Compact "how long ago" for the stale banner (e.g. "just now", "3m ago", "2h ago").
 export function timeAgo(ts: number, now: number = Date.now()): string {
   const diff = Math.max(0, now - ts);
   const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return "az önce";
+  if (mins < 60) return `${mins} dk önce`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return `${hours} sa önce`;
+  return `${Math.floor(hours / 24)} gün önce`;
 }

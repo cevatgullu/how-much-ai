@@ -7,9 +7,11 @@ import { SignOutButton } from "./SignOutButton";
 export type DashboardSheet = "sort" | "menu" | null;
 
 const SORT_OPTIONS: readonly { value: QuotaSortMode; label: string }[] = [
+  { value: "weekly-usage", label: "En çok kullanılan üstte" },
+  { value: "weekly-usage-asc", label: "En az kullanılan üstte" },
+  { value: "weekly-reset", label: "En yakın yenilenme" },
+  { value: "weekly-reset-far", label: "En uzak yenilenme" },
   { value: "source", label: "Kayıt sırası" },
-  { value: "weekly-usage", label: "En çok haftalık kullanım" },
-  { value: "weekly-reset", label: "En yakın haftalık yenilenme" },
 ];
 
 interface DashboardSheetsProps {

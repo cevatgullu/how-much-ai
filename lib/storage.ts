@@ -24,7 +24,11 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 function isQuotaSortMode(value: unknown): value is QuotaSortMode {
-  return value === "source" || value === "weekly-usage" || value === "weekly-reset";
+  return value === "source"
+    || value === "weekly-usage"
+    || value === "weekly-usage-asc"
+    || value === "weekly-reset"
+    || value === "weekly-reset-far";
 }
 
 function defaultSettings(): Settings {

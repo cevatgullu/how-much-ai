@@ -151,6 +151,36 @@ test("sorts source, usage, and reset modes with missing values last and determin
   assert.deepEqual(metrics, before);
 });
 
+test("reversed weekly modes invert the ranking while keeping missing values last", () => {
+  const metrics = [
+    { accountId: "b", sourceIndex: 1, highestWeeklyUsedPercent: 70, nearestWeeklyResetAt: "2026-08-12T12:00:00.000Z" },
+    { accountId: "a", sourceIndex: 1, highestWeeklyUsedPercent: 70, nearestWeeklyResetAt: "2026-08-12T12:00:00.000Z" },
+    { accountId: "early", sourceIndex: 5, highestWeeklyUsedPercent: 10, nearestWeeklyResetAt: "2026-08-12T10:00:00.000Z" },
+    { accountId: "missing", sourceIndex: 0, highestWeeklyUsedPercent: null, nearestWeeklyResetAt: null },
+  ].map((partial) => ({
+    ...partial,
+    highestWeeklyLimitKey: null,
+    highestWeeklyLimitLabel: null,
+    nearestWeeklyResetKey: null,
+    nearestWeeklyResetLabel: null,
+    hasFreshReading: false,
+  }));
+  const before = structuredClone(metrics);
+
+  // Least-used first: the lowest percentage leads, ties stay deterministic, and an
+  // account without a weekly reading never wins the top slot by being empty.
+  assert.deepEqual(
+    sortWeeklyAccountMetrics(metrics, "weekly-usage-asc").map((metric) => metric.accountId),
+    ["early", "a", "b", "missing"],
+  );
+  // Farthest reset first: the latest timestamp leads and missing stays last.
+  assert.deepEqual(
+    sortWeeklyAccountMetrics(metrics, "weekly-reset-far").map((metric) => metric.accountId),
+    ["a", "b", "early", "missing"],
+  );
+  assert.deepEqual(metrics, before);
+});
+
 test("summarizes account count with deterministic usage and reset winners", () => {
   const metrics = deriveWeeklyAccountMetrics(
     [account("later"), account("first"), account("none")],

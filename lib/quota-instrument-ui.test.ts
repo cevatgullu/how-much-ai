@@ -289,7 +289,7 @@ test("local dashboard controls expose exact Turkish sorting and compact actions 
     onMenu: noop,
   }));
   assert.match(header, />How Much AI</);
-  assert.match(header, />En çok haftalık kullanım</);
+  assert.match(header, />En çok kullanılan üstte</);
   assert.match(header, /aria-label="Hesap ekle"/);
   assert.doesNotMatch(header, /role="switch"/);
 
@@ -303,10 +303,12 @@ test("local dashboard controls expose exact Turkish sorting and compact actions 
     onAutoRefreshChange: noop,
     onSignOutError: noop,
   }));
-  assert.equal((sortSheet.match(/type="radio"/g) ?? []).length, 3);
+  assert.equal((sortSheet.match(/type="radio"/g) ?? []).length, 5);
   assert.match(sortSheet, />Kayıt sırası</);
-  assert.match(sortSheet, />En çok haftalık kullanım</);
-  assert.match(sortSheet, />En yakın haftalık yenilenme</);
+  assert.match(sortSheet, />En çok kullanılan üstte</);
+  assert.match(sortSheet, />En az kullanılan üstte</);
+  assert.match(sortSheet, />En yakın yenilenme</);
+  assert.match(sortSheet, />En uzak yenilenme</);
   assert.match(sortSheet, /<input(?=[^>]*value="weekly-usage")(?=[^>]*checked="")[^>]*>/);
   assert.doesNotMatch(sortSheet, /role="switch"/);
 
@@ -355,7 +357,7 @@ test("compact controls explain unavailable weekly sorting without changing the s
     onSort() {},
     onMenu() {},
   }));
-  assert.match(markup, />En yakın haftalık yenilenme</);
+  assert.match(markup, />En yakın yenilenme</);
   assert.match(markup, />Sıralamak için kullanılabilir haftalık veri yok</);
 });
 

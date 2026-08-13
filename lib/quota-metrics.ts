@@ -1,7 +1,14 @@
 import { extractBars, parseResetTimestamp } from "./format";
 import type { AccountSnapshot, BrowserAccount } from "./types";
 
-export type QuotaSortMode = "source" | "weekly-usage" | "weekly-reset";
+// Weekly modes come in ascending/descending pairs. Accounts without a weekly reading always sort
+// last regardless of direction: reversing the ranking must not promote an empty card to the top.
+export type QuotaSortMode =
+  | "source"
+  | "weekly-usage"
+  | "weekly-usage-asc"
+  | "weekly-reset"
+  | "weekly-reset-far";
 
 export interface WeeklyAccountMetric {
   accountId: string;
@@ -88,17 +95,21 @@ export function sortWeeklyAccountMetrics(
 ): WeeklyAccountMetric[] {
   return [...metrics].sort((a, b) => {
     if (mode === "source") return sourceTieBreak(a, b);
-    if (mode === "weekly-usage") {
+    if (mode === "weekly-usage" || mode === "weekly-usage-asc") {
       if (a.highestWeeklyUsedPercent === null) return b.highestWeeklyUsedPercent === null ? sourceTieBreak(a, b) : 1;
       if (b.highestWeeklyUsedPercent === null) return -1;
-      return b.highestWeeklyUsedPercent - a.highestWeeklyUsedPercent || sourceTieBreak(a, b);
+      const ranked = mode === "weekly-usage"
+        ? b.highestWeeklyUsedPercent - a.highestWeeklyUsedPercent
+        : a.highestWeeklyUsedPercent - b.highestWeeklyUsedPercent;
+      return ranked || sourceTieBreak(a, b);
     }
 
     const aTimestamp = a.nearestWeeklyResetAt === null ? null : parseResetTimestamp(a.nearestWeeklyResetAt);
     const bTimestamp = b.nearestWeeklyResetAt === null ? null : parseResetTimestamp(b.nearestWeeklyResetAt);
     if (aTimestamp === null) return bTimestamp === null ? sourceTieBreak(a, b) : 1;
     if (bTimestamp === null) return -1;
-    return aTimestamp - bTimestamp || sourceTieBreak(a, b);
+    const ranked = mode === "weekly-reset-far" ? bTimestamp - aTimestamp : aTimestamp - bTimestamp;
+    return ranked || sourceTieBreak(a, b);
   });
 }
 

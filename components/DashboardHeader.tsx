@@ -6,8 +6,10 @@ import { BellIcon, PlusIcon, RefreshIcon, StarburstIcon } from "./Icons";
 
 const SORT_LABELS: Record<QuotaSortMode, string> = {
   source: "Kayıt sırası",
-  "weekly-usage": "En çok haftalık kullanım",
-  "weekly-reset": "En yakın haftalık yenilenme",
+  "weekly-usage": "En çok kullanılan üstte",
+  "weekly-usage-asc": "En az kullanılan üstte",
+  "weekly-reset": "En yakın yenilenme",
+  "weekly-reset-far": "En uzak yenilenme",
 };
 
 interface DashboardHeaderProps {

@@ -86,14 +86,31 @@ Ayrıca kurulum `--ignore-scripts` ile yapılıyor, yani script hiç çalışmı
 Diskteki `@esbuild/win32-x64/esbuild.exe` normal optional bağımlılık olarak,
 hash doğrulanarak gelmiş.
 
-### ⚠️ Semgrep — ÇALIŞTIRILAMADI
+### ✅ Semgrep — ÇALIŞTIRILDI
 
-`semgrep` bu makinede kurulu değil (`~/.semgrep/` var ama boş log). Kurulumu
-ayrı bir indirme gerektirir; kendi başıma yapmadım.
+Semgrep 1.159.0 kuruldu ve tarandı: **214 kural, 237 dosya, 7 bulgu.**
 
-**Karar Cevat'ın:** ya Semgrep kurulup taranır, ya da bu tur için bilinçli
-olarak atlandığı kayda geçer. Sessizce "geçti" sayılmaz — Codex'in doğru
-davrandığı nokta tam buydu.
+Windows notu: Türkçe kod sayfasında (cp1254) semgrep kural setini sistem
+kodlamasıyla yazmaya çalışıp `UnicodeEncodeError` veriyor. `PYTHONUTF8=1` ile
+çözülüyor — tekrar çalıştıracak olan için.
+
+```
+semgrep scan --config=p/default --config=p/typescript --config=p/nodejs   --exclude=node_modules --exclude=.next --exclude=public   app lib components convex scripts
+```
+
+| Bulgu | Adet | Değerlendirme |
+|---|---|---|
+| `detect-child-process` (ERROR) | 4 | **Yanlış pozitif.** Üç çağrı yerinin hepsi `shell: false` + dizi argüman kullanıyor; kabuk devrede değil, enjeksiyon yüzeyi yok. Çalıştırılabilirler hash-doğrulanmış çıpalardan (`trusted.nodePath`, `assertExpectedNpmTree`'den geçmiş `npmPath`) geliyor. Ayrıca `scripts/audit/` altındalar — denetim aracı, üretim kodu değil. |
+| `detect-non-literal-regexp` (WARNING) | 1 | `groupCode`'un `group` parametresi sabit varsayılanla geliyor; tek çağrı yeri (`pairing-core.ts:47`) argüman geçmiyor. `.{1,N}` geri izleme patlaması üretmez. |
+| `hardcoded-hmac-key` (WARNING) | 2 | `lib/vault.test.ts` içinde test sabitleri. |
+
+**Production high/critical: 0.** Kapının durdurma ölçütü karşılanmıyor.
+
+### ✅ Güvensiz varsayılanlar
+
+Fail-open desen taraması temiz. `NODE_TLS_REJECT_UNAUTHORIZED` yalnız
+`strict-local-mode.ts` içindeki **yasak listesinde** geçiyor — tersi değil.
+`assertProductionSecretEnvironment` hata varsa istisna atıyor (fail-closed).
 
 ---
 
@@ -104,7 +121,7 @@ davrandığı nokta tam buydu.
 - [ ] `npm ci` + test + typecheck + build yeşil
 - [ ] Node 22.18.0+ (bu makinede 24.14.0)
 - [ ] Kabuk **yükseltilmemiş** (script bunu kendi kontrol ediyor)
-- [ ] Semgrep kararı verildi (yukarı bak)
+- [x] Semgrep tarandı — 0 production high/critical
 
 ## Eski kurulumun çıpası
 

@@ -61,8 +61,8 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
             className="ml-auto shrink-0 text-right text-[15px] font-semibold leading-none tabular-nums"
             style={{ color: fillColor }}
           >
-            %{remaining}
-            <span className="ml-1 text-[10px] font-normal text-faint">kaldı</span>
+            %{used}
+            <span className="ml-1 text-[10px] font-normal text-faint">kullanıldı</span>
           </span>
         </span>
       </div>
@@ -85,20 +85,20 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
         <span className="usage-ruler-major" style={{ left: "25%" }} aria-hidden="true" />
         <span className="usage-ruler-major" style={{ left: "50%" }} aria-hidden="true" />
         <span className="usage-ruler-major" style={{ left: "75%" }} aria-hidden="true" />
-        {/* Dolgu kalanı gösterir: çubuk bir yakıt göstergesi gibi okunur. */}
+        {/* Dolgu tüketimi gösterir: çubuk doldukça kota biter. */}
         <span
           className="usage-ruler-fill bar-fill"
-          style={{ width: `${remaining}%`, backgroundColor: fillColor }}
+          style={{ width: `${used}%`, backgroundColor: fillColor }}
         />
-        {remaining > 2 && remaining < 100 && (
+        {used > 2 && used < 100 && (
           <span
             className="usage-ruler-edge"
-            style={{ left: `calc(${remaining}% - 1px)`, backgroundColor: fillColor, color: fillColor }}
+            style={{ left: `calc(${used}% - 1px)`, backgroundColor: fillColor, color: fillColor }}
             aria-hidden="true"
           />
         )}
       </div>
-      <div className="mt-1 text-[10px] tabular-nums text-faint">kullanılan %{used}</div>
+      <div className="mt-1 text-[10px] tabular-nums text-faint">%{remaining} kaldı</div>
     </div>
   );
 }

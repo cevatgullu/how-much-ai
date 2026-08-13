@@ -72,7 +72,11 @@ export function diffLocalLimit(
   const isReset = !Number.isNaN(previousMs) && !Number.isNaN(currentMs) && currentMs > previousMs;
   if (isReset) {
     const nextState = stateFor(reading, reading.resetsAt, seededCursor);
-    return rules.resetNotifications
+    // Only announce a rollover for a window that was actually consumed. An untouched limit rolls
+    // over on schedule forever; reporting that as "limit sıfırlandı" is noise, not information.
+    // The rollover is still recorded so the stamp does not keep reading as new.
+    const consumedPriorWindow = previous.lastObservedUtilization > 0;
+    return rules.resetNotifications && consumedPriorWindow
       ? { kind: "event", nextState, event: { type: "reset" } }
       : { kind: "advance", nextState, event: null };
   }

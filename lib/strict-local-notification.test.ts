@@ -214,6 +214,26 @@ test("the strict-local contract is exact, runs only in the active local browser,
   assert.equal(firstAtFive.kind, "seed");
   assert.equal(firstAtFive.event, null);
 
+  // A window that was never touched has nothing to announce when it rolls over. Without this
+  // gate an idle account emits "limit sıfırlandı" on every single rollover, forever.
+  const idleSeed = diffLocalLimit(undefined, {
+    limitKey: "weekly_all",
+    usedPercent: 0,
+    remainingPercent: 100,
+    resetsAt: "2026-08-01T00:00:00.000Z",
+  }, { remainingWarnings: true, resetNotifications: true });
+  assert.equal(idleSeed.kind, "seed");
+  const idleRollover = diffLocalLimit(idleSeed.nextState!, {
+    limitKey: "weekly_all",
+    usedPercent: 0,
+    remainingPercent: 100,
+    resetsAt: "2026-08-08T00:00:00.000Z",
+  }, { remainingWarnings: true, resetNotifications: true });
+  assert.equal(idleRollover.kind, "advance");
+  assert.equal(idleRollover.event, null);
+  // The rollover must still be recorded, otherwise the same stamp keeps looking new.
+  assert.equal(idleRollover.nextState!.lastResetAt, "2026-08-08T00:00:00.000Z");
+
   const reset = diffLocalLimit(state, {
     limitKey: "session",
     usedPercent: 0,

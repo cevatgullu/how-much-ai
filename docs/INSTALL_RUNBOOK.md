@@ -1,4 +1,32 @@
-# Yerel kalıcı kurulum — hazırlık durumu ve çalıştırma
+# Yerel kalıcı kurulum — TAMAMLANDI (2026-08-13 10:28)
+
+> **Sonuç: başarılı.** Kurulu commit `678461d` → `b455df8`. Kasa, `secrets.dpapi`
+> ve Edge profili korundu; kasa ACL'leri temiz; tek loopback dinleyici, `/login` 200.
+> Aşağısı nasıl yapıldığının kaydıdır — tekrar gerekirse aynı yol izlenir.
+
+## Yolda çıkan dört engel (hepsi çözüldü)
+
+1. **nanoid high advisory** → `3.3.18` sabitlendi.
+2. **postcss moderate advisory** → `8.5.26`. İş akışının `npm audit`'i
+   `--audit-level` **kullanmıyor**, yani *herhangi* bir şiddette bulguda düşüyor;
+   düzyazıdaki "high/critical" ölçütünden daha katı. Audit artık `0 vulnerabilities`.
+3. **CRLF satır sonları** → asıl tıkayıcı buydu. `core.autocrlf=true` sistem
+   ayarı klonlamada 83 dosyayı CRLF yapmış; manifest üreteci diskteki baytları
+   commit'li blob'la karşılaştırdığı için `reviewed-input-byte-mismatch` veriyordu.
+   Depoda `core.autocrlf=false` + `core.eol=lf`, sonra çalışma ağacı yeniden çıkarıldı.
+   **Yeni klon açan herkes bunu tekrar yaşar** — klondan hemen sonra ayarla.
+4. **Compare-and-swap çıpası eksikti** → Dokümandaki *Installation* bloğu taze
+   kurulum içindir. Mevcut kurulumun üzerine farklı bir commit koymak
+   **güncelleme**dir ve kurucu `-ExpectedInstalledManifestSha256 <eski>` ister
+   (plan Task 8 Step 3). Bayrak olmadan "taze kurulum varsayılanı" reddeder.
+   Script'e eski çıpayı `install.json`'dan okuyup geçiren blok eklendi.
+
+Geçilen kapılar: `commandsPassed:3` (test/typecheck/build), Defender
+`filesScanned:13815, findingCount:0`, değişmezlik `cycles:2, files:13804`.
+
+---
+
+# Hazırlık belgesi (çalıştırmadan önceki hâli)
 
 Bu, `docs/WINDOWS_SECURE_LOCAL.md` **Installation** iş akışının çalıştırılmaya
 hazır hâli. Cevat "birlikte yapalım" dediğinde bu belgeden gidilir.

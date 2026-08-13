@@ -27,7 +27,7 @@ export function parseNotifyConfig(body: unknown): NotifyConfigParseResult {
   };
 
   if (config.recoveryThreshold >= config.warnThreshold) {
-    return { ok: false, error: "Recovery threshold must be lower than warning threshold." };
+    return { ok: false, error: "Toparlanma eşiği, uyarı eşiğinden düşük olmalı." };
   }
   return { ok: true, config };
 }

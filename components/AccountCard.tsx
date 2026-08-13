@@ -31,10 +31,12 @@ export function deriveFiveHourPeak(bars: readonly NormalizedUsageBar[]): number 
   return peak;
 }
 
+// Hesabı e-posta adresi temsil eder. Sağlayıcıdan gelen ad (fullName) bütün hesaplarda
+// aynı kişiyi yazdığı için ayırt edici değil; yalnızca kullanıcının verdiği takma ad öne geçer.
 export function accountDisplayName(
   account: Pick<BrowserAccount, "label" | "fullName" | "email">,
 ): string {
-  return account.label || account.fullName || account.email;
+  return account.label || account.email;
 }
 
 interface AccountCardProps {
@@ -129,8 +131,12 @@ export function AccountCard({
   const managedLogin = credentialKind === "managed";
   const setupToken = credentialKind === "long_lived";
   const sharedCliLogin = credentialKind === "rotating";
-  const providerName = account.provider === "openai" ? "ChatGPT" : "Claude";
-  const cliName = account.provider === "openai" ? "Codex CLI" : "Claude Code";
+  const providerName = providerMeta(account.provider).label;
+  const cliName = account.provider === "openai"
+    ? "Codex CLI"
+    : account.provider === "grok"
+      ? "Grok"
+      : "Claude Code";
   const tokenDaysRemaining = Math.ceil((account.credentialExpiresAt - now) / 86_400_000);
   const tokenExpiryWarning = setupToken && tokenDaysRemaining <= 30;
   const cooldownRemaining = Math.max(0, (snapshot?.cooldownUntil ?? 0) - now);
@@ -303,7 +309,9 @@ export function AccountCard({
             >
               {displayName}
             </button>
-            <p className="truncate text-xs text-faint">{account.email}</p>
+            {displayName !== account.email && (
+              <p className="truncate text-xs text-faint">{account.email}</p>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1 self-end xs:self-auto">
@@ -377,7 +385,9 @@ export function AccountCard({
                 {providerMeta(account.provider).label} {providerOrdinal}
               </span>
               <span className="block truncate text-[15px] font-medium text-ivory">{displayName}</span>
-              <span className="block truncate text-xs text-faint">{account.email}</span>
+              {displayName !== account.email && (
+                <span className="block truncate text-xs text-faint">{account.email}</span>
+              )}
             </span>
             <span className="shrink-0 text-xs text-muted">{account.plan}</span>
           </span>

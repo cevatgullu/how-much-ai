@@ -70,7 +70,7 @@ export async function resolveLocalPermissionRequest(
   try {
     result = await requestPermission();
   } catch {
-    result = { ok: false, reason: "worker", message: "Local notification delivery failed." };
+    result = { ok: false, reason: "worker", message: "Yerel bildirim gönderimi başarısız oldu." };
   }
 
   let actual: NotificationPermission | "unsupported";
@@ -109,11 +109,11 @@ function parseThreshold(label: string, value: string): { value: number | null; e
 }
 
 function validateThresholds(warnDraft: string, recoveryDraft: string): ThresholdValidation {
-  const warn = parseThreshold("Warning threshold", warnDraft);
-  const recovery = parseThreshold("Recovery threshold", recoveryDraft);
+  const warn = parseThreshold("Uyarı eşiği", warnDraft);
+  const recovery = parseThreshold("Toparlanma eşiği", recoveryDraft);
   const relationError =
     warn.value !== null && recovery.value !== null && recovery.value >= warn.value
-      ? "Recovery threshold must be lower than warning threshold."
+      ? "Toparlanma eşiği, uyarı eşiğinden düşük olmalı."
       : null;
   return {
     warnThreshold: warn.value,
@@ -415,7 +415,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
       .catch((error) => {
         if (controller.signal.aborted || generationRef.current !== generation) return;
         setLoadFailed(true);
-        setLoadError(messageFrom(error, "Couldn't load notification settings."));
+        setLoadError(messageFrom(error, "Bildirim ayarları yüklenemedi."));
       })
       .finally(() => {
         if (generationRef.current === generation) setLoading(false);
@@ -464,14 +464,14 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
         } else {
           await refreshPushState(generation);
           if (generationRef.current === generation) {
-            setPushError(result.message ?? "Couldn't enable notifications.");
+            setPushError(result.message ?? "Bildirimler açılamadı.");
           }
         }
       }
     } catch {
       if (generationRef.current === generation) {
         setPushState("error");
-        setPushError("Couldn't update push notifications.");
+        setPushError("Anlık bildirimler güncellenemedi.");
       }
     } finally {
       if (generationRef.current === generation) setBusy(false);
@@ -551,7 +551,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
       : pushState === "denied"
         ? "Bu tarayıcının site ayarlarında engellenmiş."
         : pushState === "unsupported"
-          ? "This browser doesn't support web push."
+          ? "Bu tarayıcı anlık bildirimi desteklemiyor."
           : pushState === "loading"
             ? "Bu tarayıcı denetleniyor…"
             : pushState === "error"
@@ -561,14 +561,14 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
   return (
     <ModalShell
       open={open}
-      title="Notifications"
-      description="Get pinged when a limit resets or runs hot."
+      title="Bildirimler"
+      description="Bir limit yenilendiğinde ya da dolmaya yaklaştığında haber alın."
       onClose={requestClose}
       dismissible={!busy && !saving}
     >
       {loading ? (
-        <div className="mt-6" role="status" aria-label="Loading notification settings">
-          <span className="sr-only">Loading notification settings…</span>
+        <div className="mt-6" role="status" aria-label="Bildirim ayarları yükleniyor">
+          <span className="sr-only">Bildirim ayarları yükleniyor…</span>
           <div className="space-y-3" aria-hidden="true">
             {[0, 1, 2].map((index) => (
               <div key={index} className="skeleton h-14 w-full rounded-xl" />
@@ -580,7 +580,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
           className="mt-6 rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm leading-relaxed text-[#ea7b74]"
           role="alert"
         >
-          {loadError ?? "Couldn't load notification settings."}
+          {loadError ?? "Bildirim ayarları yüklenemedi."}
           <button
             type="button"
             onClick={loadPanel}
@@ -601,7 +601,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
         <div className="mt-5 space-y-5">
           <section aria-labelledby={`${pushStatusId}-heading`}>
             <h3 id={`${pushStatusId}-heading`} className="text-[11px] font-medium uppercase tracking-wide text-faint">
-              This device
+              Bu cihaz
             </h3>
             {!settings?.pushConfigured ? (
               <p className="mt-2 rounded-xl border border-border bg-bg p-3 text-xs leading-relaxed text-muted">
@@ -612,7 +612,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
               <div className="mt-2 rounded-xl border border-border bg-bg px-4 py-3">
                 <div className="flex items-center justify-between gap-4">
                   <span className="min-w-0 text-sm text-ivory">
-                    Push notifications
+                    Anlık bildirimler
                     <span id={pushStatusId} className="mt-0.5 block text-xs text-muted" aria-live="polite">
                       {pushDescription}
                     </span>
@@ -634,12 +634,12 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
                     }`}
                   >
                     {busy
-                      ? "Working…"
+                      ? "İşleniyor…"
                       : pushState === "on"
-                        ? "Disable"
+                        ? "Kapat"
                         : pushState === "error"
-                          ? "Check status"
-                          : "Enable"}
+                          ? "Durumu denetle"
+                          : "Aç"}
                   </button>
                 </div>
                 {pushError && (
@@ -660,7 +660,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
             noValidate
           >
             <fieldset className="space-y-2" disabled={saving}>
-              <legend className="text-[11px] font-medium uppercase tracking-wide text-faint">Alert me when</legend>
+              <legend className="text-[11px] font-medium uppercase tracking-wide text-faint">Şu durumlarda uyar</legend>
               <Toggle
                 checked={config.recovery}
                 onChange={() => {
@@ -668,8 +668,8 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
                   setConfig((current) => ({ ...current, recovery: !current.recovery }));
                   setSaved(false);
                 }}
-                label="A maxed-out limit resets"
-                description={`A window you'd pushed past ${recoveryDraft || "…"}% has rolled over — you're clear to keep going.`}
+                label="Dolmuş bir limit yenilendiğinde"
+                description={`%${recoveryDraft || "…"} sınırını aştığınız pencere yenilendi — devam edebilirsiniz.`}
                 disabled={saving}
               />
               <Toggle
@@ -679,8 +679,8 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
                   setConfig((current) => ({ ...current, warning: !current.warning }));
                   setSaved(false);
                 }}
-                label="I'm approaching a limit"
-                description={`Usage crosses ${warnDraft || "…"}% (once per window).`}
+                label="Bir limite yaklaştığımda"
+                description={`Kullanım %${warnDraft || "…"} sınırını geçtiğinde (pencere başına bir kez).`}
                 disabled={saving}
               />
               <Toggle
@@ -690,18 +690,18 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
                   setConfig((current) => ({ ...current, everyReset: !current.everyReset }));
                   setSaved(false);
                 }}
-                label="Any limit resets"
+                label="Herhangi bir limit yenilendiğinde"
                 description="Her pencere yenilenmesinde, neredeyse hiç kullanmadıklarınızda bile. Konuşkan — varsayılan olarak kapalı."
                 disabled={saving}
               />
             </fieldset>
 
             <fieldset disabled={saving}>
-              <legend className="sr-only">Alert thresholds</legend>
+              <legend className="sr-only">Uyarı eşikleri</legend>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-xl border border-border bg-bg px-4 py-3">
                   <label htmlFor={warnInputId} className="block text-xs text-muted">
-                    Warn at
+                    Uyarı eşiği
                   </label>
                   <span className="mt-1 flex items-baseline gap-1">
                     <input
@@ -735,7 +735,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
                 </div>
                 <div className="rounded-xl border border-border bg-bg px-4 py-3">
                   <label htmlFor={recoveryInputId} className="block text-xs text-muted">
-                    Recovered when peak ≥
+                    Toparlandı sayılır: tepe ≥
                   </label>
                   <span className="mt-1 flex items-baseline gap-1">
                     <input
@@ -792,7 +792,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
 
             {confirmDiscard && (
               <div className="rounded-xl border border-coral/40 bg-coral/10 p-4" role="alert">
-                <p className="text-sm font-medium text-ivory">Discard unsaved changes?</p>
+                <p className="text-sm font-medium text-ivory">Kaydedilmemiş değişiklikler atılsın mı?</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted">
                   Your alert rules have changed but haven&apos;t been saved.
                 </p>
@@ -818,7 +818,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
 
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="min-h-5 text-xs text-muted" aria-live="polite">
-                {saving ? "Saving settings…" : saved ? "Ayarlar kaydedildi." : dirty ? "Unsaved changes" : ""}
+                {saving ? "Ayarlar kaydediliyor…" : saved ? "Ayarlar kaydedildi." : dirty ? "Kaydedilmemiş değişiklikler" : ""}
               </p>
               <div className="flex gap-2">
                 <button
@@ -834,14 +834,14 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
                   disabled={saving || !dirty || !validation.valid}
                   className="min-h-11 flex-1 rounded-lg bg-coral px-4 py-2 text-sm font-medium text-white transition-colors enabled:hover:bg-coral-pressed disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
                 >
-                  {saving ? "Saving…" : "Save settings"}
+                  {saving ? "Kaydediliyor…" : "Ayarları kaydet"}
                 </button>
               </div>
             </div>
 
             <p className="border-t border-border/60 pt-4 text-[11px] leading-relaxed text-faint">
-              A background check runs every ~5 minutes and sends alerts through whichever channels you&apos;ve
-              configured (web push, Telegram, webhook). Triggers and thresholds apply to all channels.
+              Arka planda yaklaşık 5 dakikada bir denetim çalışır ve uyarıları yapılandırdığınız
+              kanallardan gönderir (anlık bildirim, Telegram, webhook). Tetikleyiciler ve eşikler tüm kanallar için geçerlidir.
             </p>
           </form>
         </div>

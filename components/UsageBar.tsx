@@ -22,11 +22,17 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
   const stateClass = atLimit || critical
     ? "bg-danger/15 text-[#ea7b74]"
     : "bg-amber/15 text-[#e3b56e]";
+  // Severity reads low -> high as amber -> coral -> red. The two lighter bands used to be the
+  // other way round, so a barely-touched limit looked hotter than a half-spent one.
+  //
+  // These are fixed severity colours, not the provider accent. The accent is per provider
+  // (coral for Claude, blue for ChatGPT, neutral for Grok), so using it here made the same
+  // fill level a different hue on each card and the scale stopped meaning anything.
   const fillColor = atLimit || critical
     ? "var(--color-danger)"
     : low
-      ? "var(--color-amber)"
-      : "var(--accent, var(--color-coral))";
+      ? "var(--color-coral)"
+      : "var(--color-amber)";
   const scheduleText = reset
     ? [reset.countdown, `Sıfırlanma zamanı ${reset.exact}`].filter(Boolean).join(", ")
     : null;

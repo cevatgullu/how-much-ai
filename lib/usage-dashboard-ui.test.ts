@@ -373,9 +373,14 @@ test("used allowance is the visible and accessible progress value without a fals
 });
 
 test("remaining boundaries drive state colors while used allowance drives fill width", () => {
+  // Severity runs low -> high as amber -> coral -> red. The 80 and 60 rows cover the
+  // barely-used band, which had no case before and was the one rendering hotter than
+  // the band above it.
   for (const [remaining, expectedText, expectedColor] of [
-    [50, "Az kaldı", "var(--color-amber)"],
-    [30, "Az kaldı", "var(--color-amber)"],
+    [80, null, "var(--color-amber)"],
+    [60, null, "var(--color-amber)"],
+    [50, "Az kaldı", "var(--color-coral)"],
+    [30, "Az kaldı", "var(--color-coral)"],
     [15, "Kritik", "var(--color-danger)"],
     [0, "Limit bitti", "var(--color-danger)"],
   ] as const) {
@@ -384,7 +389,11 @@ test("remaining boundaries drive state colors while used allowance drives fill w
       now: NOW,
       stale: false,
     }));
-    assert.match(markup, new RegExp(`>${expectedText}<`), `${remaining}% remaining must say ${expectedText}`);
+    if (expectedText === null) {
+      assert.doesNotMatch(markup, />Az kaldı<|>Kritik<|>Limit bitti</u, `${remaining}% remaining must carry no state badge`);
+    } else {
+      assert.match(markup, new RegExp(`>${expectedText}<`), `${remaining}% remaining must say ${expectedText}`);
+    }
     assert.match(
       markup,
       new RegExp(`style="width:${100 - remaining}%;background-color:${expectedColor.replace(/[()]/g, "\\$&")}"`),
@@ -400,7 +409,10 @@ test("provider severity cannot override the remaining-allowance visual state", (
     stale: false,
   }));
   assert.doesNotMatch(markup, />Az kaldı<|>Kritik<|>Limit bitti</);
-  assert.match(markup, /style="width:20%;background-color:var\(--accent, var\(--color-coral\)\)"/);
+  // The fill is a fixed severity colour, never the per-provider accent: tinting it by provider
+  // made the same fill level a different hue on each card.
+  assert.match(markup, /style="width:20%;background-color:var\(--color-amber\)"/);
+  assert.doesNotMatch(markup, /background-color:var\(--accent/u);
 });
 
 test("OpenAI session rows identify Codex without synthesizing an absent five-hour window", () => {

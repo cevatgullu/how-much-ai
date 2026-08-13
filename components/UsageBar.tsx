@@ -81,7 +81,6 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
         aria-valuetext={valueText}
         className="usage-ruler mt-1.5"
       >
-        <span className="usage-ruler-mm" aria-hidden="true" />
         <span className="usage-ruler-major" style={{ left: "25%" }} aria-hidden="true" />
         <span className="usage-ruler-major" style={{ left: "50%" }} aria-hidden="true" />
         <span className="usage-ruler-major" style={{ left: "75%" }} aria-hidden="true" />

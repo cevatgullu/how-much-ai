@@ -116,7 +116,8 @@ function metric(
 test("renders compact readings with account and winning limit identities", () => {
   const accounts = [
     account("highest", "anthropic", { label: "Yoğun hesap" }),
-    account("nearest", "openai", { fullName: "Yakın yenileme" }),
+    // Kart adı artık sağlayıcıdan gelen fullName'i değil, takma adı ya da e-postayı kullanır.
+    account("nearest", "openai", { label: "Yakın yenileme" }),
   ];
   const highest = metric("highest", 0, 88, "Opus haftalık limiti");
   const nearest = metric("nearest", 1, 40, "Bağlı uygulamalar haftalık limiti");

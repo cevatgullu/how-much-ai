@@ -218,9 +218,9 @@ test("the existing Dashboard prop shape keeps one reachable card presentation be
   assert.doesNotMatch(markup, /class="hidden min-w-0 flex-col gap-3 min-\[960px\]:flex/);
   assert.doesNotMatch(markup, /class="mt-5 hidden min-w-0 flex-1/);
   assert.match(markup, />ChatGPT 1</);
-  assert.match(markup, /aria-label="Private legacy-dashboard hesabını adlandır"/);
-  assert.match(markup, /aria-label="Private legacy-dashboard hesabını yenile"/);
-  assert.match(markup, /aria-label="Private legacy-dashboard hesabını kaldır"/);
+  assert.match(markup, /aria-label="legacy-dashboard@private.invalid hesabını adlandır"/);
+  assert.match(markup, /aria-label="legacy-dashboard@private.invalid hesabını yenile"/);
+  assert.match(markup, /aria-label="legacy-dashboard@private.invalid hesabını kaldır"/);
   assert.equal((markup.match(/role="progressbar"/g) ?? []).length, 2);
   assert.match(markup, /aria-valuenow="37"/);
   assert.match(markup, /aria-valuenow="68"/);
@@ -294,30 +294,22 @@ test("controlled mobile ledgers expose summaries, stable panels, and actions out
     assert.match(markup, />ChatGPT 1</);
     assert.ok(markup.indexOf(claude.label!) < markup.indexOf(claude.email), "nickname must precede the secondary email");
     assert.match(markup, />claude-ledger@private\.invalid</);
-    assert.match(markup, /data-ledger-account="claude-ledger"[^>]*data-ledger-state="ready"/);
-    assert.match(markup, /data-ledger-metric="five-hour"[^>]*>[^]*?data-ledger-value="42"[^>]*>%42</);
-    assert.match(markup, /data-ledger-metric="weekly"[^>]*>[^]*?data-ledger-value="91"[^>]*>%91</);
-    assert.match(markup, /data-ledger-metric="nearest-reset"[^>]*>[^]*?2 sa 30 dk sonra/);
-    assert.match(markup, /data-ledger-account="chatgpt-ledger"[^>]*data-ledger-state="idle"/);
-    assert.match(markup, /data-ledger-account="chatgpt-ledger"[^]*?data-ledger-metric="five-hour"[^>]*>[^]*?data-ledger-value="missing"/);
-    assert.doesNotMatch(markup, /data-ledger-account="chatgpt-ledger"[^]*?data-ledger-metric="five-hour"[^>]*>[^]*?data-ledger-value="0"/);
-
-    const expandButtons = [...markup.matchAll(/<button[^>]*data-ledger-expand="([^"]+)"[^>]*aria-expanded="true"[^>]*aria-controls="([^"]+)"[^>]*>[\s\S]*?<\/button>/g)];
-    assert.equal(expandButtons.length, 2);
-    for (const match of expandButtons) {
-      assert.match(markup, new RegExp(`<section id="${match[2]}"[^>]*data-ledger-panel="${match[1]}"`));
-      assert.doesNotMatch(match[0], /aria-label="[^"]*(?:yenile|adlandır|kaldır|yeniden bağla)/i);
-    }
-    assert.equal((markup.match(/data-ledger-panel=/g) ?? []).length, 2);
-    assert.doesNotMatch(markup, /data-ledger-panel="[^"]+"[^>]*hidden/);
+    // Dar ekran artık masaüstüyle aynı bilgiyi gösterir: özet veren "ledger" görünümü
+    // kaldırıldı, her limit kendi cetvel çubuğuyla listelenir.
+    assert.doesNotMatch(markup, /data-ledger-account=/, "ledger görünümü kaldırıldı");
+    assert.doesNotMatch(markup, /data-ledger-expand=/, "ledger genişletme düğmesi kalmadı");
+    assert.doesNotMatch(markup, /data-ledger-panel=/, "ledger paneli kalmadı");
+    assert.match(markup, /class="[^"]*usage-ruler/, "her limit cetvel çubuğuyla gösterilir");
+    assert.match(markup, /usage-ruler-major/, "cetvel çubuğunda ölçek bölmeleri bulunur");
     assert.match(markup, /aria-label="Araştırma hesabını yenile"/);
     assert.match(markup, /aria-label="Araştırma hesabını adlandır"/);
     assert.match(markup, /aria-label="Araştırma hesabını kaldır"/);
   }
 
   const closed = renderAccountCard(claude, snapshots[claude.id], 2, { mobileExpanded: false });
-  assert.match(closed, /data-ledger-expand="claude-ledger"[^>]*aria-expanded="false"/);
-  assert.match(closed, /data-ledger-panel="claude-ledger"[^>]*hidden/);
+  // Ledger kaldırıldı: dar ekranda da kartın tamamı ve tüm limit satırları görünür.
+  assert.doesNotMatch(closed, /data-ledger-/);
+  assert.match(closed, /usage-ruler/);
 });
 
 test("mobile ledger names every local snapshot state while desktop and expanded views retain all rows", () => {
@@ -338,12 +330,12 @@ test("mobile ledger names every local snapshot state while desktop and expanded 
   for (const [expectedState, snapshot, expectedLabel] of cases) {
     const accountValue = account(`state-${expectedState}`);
     const markup = renderAccountCard(accountValue, snapshot, 1, { mobileExpanded: true });
-    assert.match(markup, new RegExp(`data-ledger-state="${expectedState}"`));
-    assert.match(markup, new RegExp(`>${expectedLabel}<`));
+    assert.doesNotMatch(markup, /data-ledger-state=/);
+    void expectedLabel;
     if (snapshot?.usage && snapshot.status !== "reauth") {
-      assert.equal((markup.match(/role="progressbar"/g) ?? []).length, 6, `${expectedState} must retain all three real rows in both presentations`);
+      assert.equal((markup.match(/role="progressbar"/g) ?? []).length, 3, `${expectedState}: tek görünümde üç limit satırı da bulunmalı`);
       for (const used of [35, 64, 88]) {
-        assert.equal((markup.match(new RegExp(`aria-valuenow="${used}"`, "g")) ?? []).length, 2);
+        assert.equal((markup.match(new RegExp(`aria-valuenow="${used}"`, "g")) ?? []).length, 1);
       }
     }
     if (["loading", "stale", "error"].includes(expectedState)) {
@@ -362,7 +354,7 @@ test("used allowance is the visible and accessible progress value without a fals
 
   assert.match(markup, />5 saatlik limit</);
   assert.match(markup, />%16 kaldı</);
-  assert.match(markup, />Kullanılan: %84</);
+  assert.match(markup, />%84</);
   const progress = markup.match(/<div role="progressbar"[^>]*>/)?.[0] ?? "";
   assert.match(progress, /aria-valuenow="84"/);
   assert.match(progress, /aria-describedby="freshness-1"/);
@@ -504,7 +496,7 @@ test("four Claude cards have ordered provider ordinals and unique semantic headi
   assert.deepEqual(headings.map((match) => match[3]), ["Claude 1", "Claude 2", "Claude 3", "Claude 4"]);
   assert.equal(new Set(headings.map((match) => match[1])).size, 4);
   assert.ok(headings.every((match) => !match[2].split(/\s+/).includes("sr-only")), "provider headings must be visible");
-  assert.match(markup, /<h2[^>]*>Claude 1<\/h2>[\s\S]*>Private claude-1</);
+  assert.match(markup, /<h2[^>]*>Claude 1<\/h2>[\s\S]*>claude-1@private.invalid</);
 });
 
 test("mixed providers compute independent ordinals without changing account order", () => {
@@ -568,7 +560,7 @@ test("credential badges expose Turkish tooltips for every local credential kind"
       1,
       { strictLocal: false },
     ),
-    /Private app-owned ChatGPT login; renews automatically without sharing Codex CLI(?:&#x27;|')s session/i,
+    /Özel uygulama oturumu; Codex CLI oturumunu paylaşmadan otomatik yenilenir/i,
   );
 });
 
@@ -607,7 +599,7 @@ test("settled dashboard rows reorder presentation only while preserving source o
   }));
   const renderedIds = (markup: string) => [...markup.matchAll(/<li[^>]*data-dashboard-account="([^"]+)"/g)].map((match) => match[1]);
 
-  assert.deepEqual(renderedIds(renderList()), ["claude-first", "chatgpt", "claude-second"], "initial render stays in source order");
+  assert.deepEqual(renderedIds(renderList()), ["claude-first", "claude-second", "chatgpt"], "aileler gruplanır, grup içinde kayıt sırası korunur");
   state = dashboardOrderReducer(state, { type: "batch_started", accountIds: accounts.map((value) => value.id) });
   state = dashboardOrderReducer(state, { type: "account_settled", accountId: "chatgpt" });
   state = dashboardOrderReducer(state, {
@@ -615,7 +607,7 @@ test("settled dashboard rows reorder presentation only while preserving source o
     accountIds: resolvedDashboardOrder(metrics, "weekly-usage"),
     acceptedEpoch: 10,
   });
-  assert.deepEqual(renderedIds(renderList()), ["claude-first", "chatgpt", "claude-second"], "partial results never jump");
+  assert.deepEqual(renderedIds(renderList()), ["claude-first", "claude-second", "chatgpt"], "kısmi sonuçlar sırayı bozmaz");
   state = dashboardOrderReducer(state, { type: "account_settled", accountId: "claude-first" });
   state = dashboardOrderReducer(state, { type: "account_settled", accountId: "claude-second" });
   state = dashboardOrderReducer(state, {
@@ -625,12 +617,12 @@ test("settled dashboard rows reorder presentation only while preserving source o
   });
 
   const reordered = renderList();
-  assert.deepEqual(renderedIds(reordered), ["chatgpt", "claude-second", "claude-first"]);
+  assert.deepEqual(renderedIds(reordered), ["claude-second", "claude-first", "chatgpt"], "aile grubu korunur, sıra grup içinde değişir");
   assert.deepEqual(
     [...reordered.matchAll(/<h2 id="[^"]+" class="[^"]*">((?:Claude|ChatGPT) \d+)<\/h2>/g)].map((match) => match[1]),
-    ["ChatGPT 1", "Claude 2", "Claude 1"],
+    ["Claude 2", "Claude 1", "ChatGPT 1"],
   );
-  assert.match(reordered, /data-ledger-expand="claude-first"[^>]*aria-expanded="true"/);
+  assert.doesNotMatch(reordered, /data-ledger-expand=/);
   assert.deepEqual(dashboardAccountRows(accounts, state.visibleAccountIds, metrics, ordinals, expandedIds).map((row) => row.key), state.visibleAccountIds);
   assert.deepEqual(accounts.map((value) => value.id), ["claude-first", "chatgpt", "claude-second"], "source accounts stay untouched");
 });
@@ -805,7 +797,7 @@ test("strict-local dashboard recovery and preference messages are Turkish while 
   );
   assert.equal(
     strictLocalDashboardMessage(false, "auto_refresh_save_failed"),
-    "Couldn't save the auto-refresh preference on this device.",
+    "Otomatik yenileme tercihi bu cihaza kaydedilemedi.",
   );
   assert.equal(typeof dashboardVaultRecoveryNotice, "function");
   if (typeof dashboardVaultRecoveryNotice !== "function") return;
@@ -815,6 +807,6 @@ test("strict-local dashboard recovery and preference messages are Turkish while 
   );
   assert.equal(
     dashboardVaultRecoveryNotice(false, { archive: "vault.archive" }),
-    "The unreadable vault was preserved as vault.archive. You can now connect your accounts again.",
+    "Okunamayan kasa vault.archive olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.",
   );
 });

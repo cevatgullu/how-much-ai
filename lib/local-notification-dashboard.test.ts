@@ -147,7 +147,7 @@ test("ordinary panel remains on the hosted notification path", () => {
     autoRefresh: true,
     localStatus: "idle",
   }));
-  assert.match(markup, /Loading notification settings/);
+  assert.match(markup, /Bildirim ayarları yükleniyor/);
   assert.doesNotMatch(markup, /Kalan limit uyarıları/);
 });
 
@@ -353,7 +353,7 @@ test("hosted push status contains a rejecting client loader generically", async 
     () => "default",
   ), {
     state: "error",
-    message: "Couldn't check this browser's push subscription.",
+    message: "Bu tarayıcının bildirim aboneliği denetlenemedi.",
   });
 
   let subscriptions = 0;

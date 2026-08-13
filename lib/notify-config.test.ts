@@ -24,7 +24,7 @@ test("notification config rejects equal or reversed recovery/warning thresholds"
   ]) {
     const result = parseNotifyConfig(body);
     assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.error, /lower than warning/i);
+    if (!result.ok) assert.match(result.error, /uyarı eşiğinden düşük/i);
   }
 });
 

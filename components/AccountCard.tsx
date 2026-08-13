@@ -129,7 +129,10 @@ export function AccountCard({
   const displayName = accountDisplayName(account);
   const credentialKind = account.credentialKind;
   const managedLogin = credentialKind === "managed";
-  const setupToken = credentialKind === "long_lived";
+  // Grok bir tarayıcı oturumuyla bağlanır: yenileme jetonu olmadığı için kimlik türü
+  // "long_lived" görünür, ama bu bir kurulum belirteci değildir. Süre uyarısı da geçerli olmaz.
+  const cookieSession = account.provider === "grok";
+  const setupToken = credentialKind === "long_lived" && !cookieSession;
   const sharedCliLogin = credentialKind === "rotating";
   const providerName = providerMeta(account.provider).label;
   const cliName = account.provider === "openai"
@@ -596,20 +599,22 @@ export function AccountCard({
           <span
             title={
               managedLogin
-                ? strictLocal
-                  ? `Özel uygulama oturumu; ${cliName} oturumunu paylaşmadan otomatik yenilenir`
-                  : `Private app-owned ${providerName} login; renews automatically without sharing ${cliName}'s session`
-                : setupToken
-                  ? strictLocal
+                ? `Özel uygulama oturumu; ${cliName} oturumunu paylaşmadan otomatik yenilenir`
+                : cookieSession
+                  ? "grok.com tarayıcı oturumu; oturum kapanırsa yeniden bağlamak gerekir"
+                  : setupToken
                     ? `Eski kurulum belirteci; tahmini yenileme tarihi ${new Date(account.credentialExpiresAt).toLocaleDateString("tr-TR")}`
-                    : `Legacy inference-only setup token; estimated renewal date ${new Date(account.credentialExpiresAt).toLocaleDateString()}`
-                  : strictLocal
-                    ? `${cliName} ile paylaşılır; özel uygulama oturumu daha güvenilirdir`
-                    : `Shared with ${cliName}; a private app login is more reliable`
+                    : `${cliName} ile paylaşılır; özel uygulama oturumu daha güvenilirdir`
             }
             className={sharedCliLogin ? "text-[#e3b56e]" : "text-muted"}
           >
-            {managedLogin ? "özel uygulama oturumu · otomatik yenilenir" : setupToken ? "kurulum belirteci · eski" : "paylaşılan CLI oturumu"}
+            {managedLogin
+              ? "özel uygulama oturumu · otomatik yenilenir"
+              : cookieSession
+                ? "tarayıcı oturumu"
+                : setupToken
+                  ? "kurulum belirteci · eski"
+                  : "paylaşılan CLI oturumu"}
           </span>
           {snapshot?.usage?.extra_usage?.is_enabled && <span>ek kullanım açık</span>}
         </div>

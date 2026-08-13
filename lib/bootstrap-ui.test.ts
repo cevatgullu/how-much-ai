@@ -272,7 +272,7 @@ test("strict-local add-account success, machine, and pairing branches render Tur
     onRetry() {},
   }));
   assert.match(hostedSuccess, /Connected Research/);
-  assert.match(hostedSuccess, /Credential saved securely\. Syncing the dashboard/i);
+  assert.match(hostedSuccess, /Kimlik bilgisi güvenle kaydedildi\. Pano eşitleniyor/i);
 
   const machine = renderToStaticMarkup(createElement(ClaudeLocalMachinePanel, {
     strictLocal: true,
@@ -292,8 +292,8 @@ test("strict-local add-account success, machine, and pairing branches render Tur
     error: null,
     onConnect() {},
   }));
-  assert.match(hostedMachine, /we(?:&#x27;|')ll read the claude code login/i);
-  assert.match(hostedMachine, />Connect from this machine</);
+  assert.match(hostedMachine, /bu bilgisayardaki claude code oturumunu okuyacağız/i);
+  assert.match(hostedMachine, />Bu makineden bağlan</);
 
   const pairingStates = ["starting", "waiting", "processing", "expired", "error"] as const;
   for (const state of pairingStates) {
@@ -321,8 +321,8 @@ test("strict-local add-account success, machine, and pairing branches render Tur
     onCopy() {},
     onRetry() {},
   }));
-  assert.match(hostedPairing, /Run one command where this account is signed in/);
-  assert.match(hostedPairing, /Getting a single-use pairing code/);
+  assert.match(hostedPairing, /Hesabın açık olduğu yerde tek bir komut çalıştır/);
+  assert.match(hostedPairing, /Tek kullanımlık eşleştirme kodu alınıyor/);
 });
 
 test("strict-local Claude failures discard server detail and retain only a validated opaque reference", () => {
@@ -443,7 +443,7 @@ test("strict OpenAI selection keeps the same-machine action and never renders cr
   assert.match(strictOpenAiMarkup, /chatgpt oturumunu bu makineden oku/i);
   assert.doesNotMatch(
     strictOpenAiMarkup,
-    /paste your ~\/\.codex\/auth\.json|<textarea/i,
+    /~\/\.codex\/auth\.json içeriğini yapıştırın|<textarea/i,
   );
 });
 
@@ -468,7 +468,7 @@ test("ordinary OpenAI selection keeps credential import inside the secondary leg
 
   assert.match(markup, /özel chatgpt oturumunu bağla/i);
   assert.match(markup, /eski paylaşılan cli oturumu/i);
-  assert.match(markup, /paste your ~\/\.codex\/auth\.json/i);
+  assert.match(markup, /~\/\.codex\/auth\.json içeriğini yapıştırın/i);
   assert.match(markup, /<textarea/i);
 });
 

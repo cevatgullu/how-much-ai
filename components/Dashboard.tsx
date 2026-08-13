@@ -78,14 +78,10 @@ export function dashboardVaultRecoveryNotice(
   strictLocal: boolean,
   recovery: VaultRecoveryResult,
 ): string {
-  if (strictLocal) {
-    return recovery.backupArchive
-      ? `Okunamayan kasa ${recovery.archive} olarak, okunamayan son iyi yedeği de ${recovery.backupArchive} olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.`
-      : `Okunamayan kasa ${recovery.archive} olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.`;
-  }
+  void strictLocal;
   return recovery.backupArchive
-    ? `The unreadable vault was preserved as ${recovery.archive}, and its unreadable last-known-good backup was preserved as ${recovery.backupArchive}. You can now connect your accounts again.`
-    : `The unreadable vault was preserved as ${recovery.archive}. You can now connect your accounts again.`;
+    ? `Okunamayan kasa ${recovery.archive} olarak, okunamayan son iyi yedeği de ${recovery.backupArchive} olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.`
+    : `Okunamayan kasa ${recovery.archive} olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.`;
 }
 
 const LOCAL_LABEL_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;

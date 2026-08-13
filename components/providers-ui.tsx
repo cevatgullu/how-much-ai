@@ -68,6 +68,34 @@ function jwtExpiryMs(token: string): number {
 
 // Parse a pasted ~/.codex/auth.json (or a bare tokens object) client-side into vault tokens. Mirrors
 // the server-side extractOpenAITokens; kept here so the Connect dialog never imports Node-only code.
+/**
+ * Read a grok.com session out of whatever the user pastes: the bare `sso` value, an `sso=…`
+ * pair, or a whole cookie header copied from devtools. Mirrors the server-side parser in
+ * lib/providers/grok.ts — the two must agree, so both accept the same three shapes.
+ *
+ * There is no expiry to read: a session cookie carries none in its value, so `expiresAt` is 0
+ * ("unknown") and an expired session surfaces as a 401 that routes the card to reconnect.
+ */
+export function parseGrokSession(text: string): ParsedCredentialTokens | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  let value = "";
+  if (trimmed.includes("=")) {
+    for (const part of trimmed.split(";")) {
+      const [name, ...rest] = part.split("=");
+      if (name.trim() === "sso" && rest.length > 0) {
+        value = rest.join("=").trim();
+        break;
+      }
+    }
+    if (!value) return null;
+  } else {
+    value = trimmed;
+  }
+  if (!value || /\s/u.test(value)) return null;
+  return { accessToken: `sso=${value}`, refreshToken: null, expiresAt: 0 };
+}
+
 export function parseCodexCredential(text: string): ParsedCredentialTokens | null {
   let obj: unknown;
   try {

@@ -9,7 +9,7 @@ import type { ProviderId } from "@/lib/providers/types";
 import { CheckIcon, CopyIcon, DesktopIcon, SpinnerIcon, TerminalIcon } from "./Icons";
 import { ModalShell } from "./ModalShell";
 import { OpenAIDeviceLogin } from "./OpenAIDeviceLogin";
-import { PROVIDER_META, PROVIDER_ORDER, parseCodexCredential } from "./providers-ui";
+import { PROVIDER_META, PROVIDER_ORDER, parseCodexCredential, parseGrokSession } from "./providers-ui";
 
 interface AddAccountModalProps {
   open: boolean;
@@ -1030,6 +1030,49 @@ export function AddAccountModal({
     }
   }, [localWorking, finishServerConnect, reconnectAccount?.id, strictLocal]);
 
+  // Grok: paste the grok.com session → parse client-side → verify + save server-side.
+  // xAI refuses quota reads from OAuth tokens (403 oauth2-auth-forbidden), so a browser session
+  // is the only credential that can read remaining queries. See lib/providers/grok.ts.
+  const connectGrokPaste = useCallback(async () => {
+    if (strictLocal || !pasted.trim() || working || operationRef.current) return;
+    const controller = new AbortController();
+    operationController.current = controller;
+    operationRef.current = "manual";
+    setWorking(true);
+    setError(null);
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const tokens = parseGrokSession(pasted);
+      if (!tokens) {
+        throw new Error("Bunu okuyamadım. grok.com çerezlerindeki `sso` değerini yapıştırın.");
+      }
+      const res = await fetch("/api/connect/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "grok", tokens, expectedAccountId: reconnectAccount?.id }),
+        signal: controller.signal,
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        email?: string;
+        plan?: string;
+        label?: string;
+      };
+      if (!res.ok) throw new Error(data.error || "Grok oturumu doğrulanamadı.");
+      setPasted("");
+      finishServerConnect({ email: data.email ?? "", plan: data.plan, label: data.label });
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : "Grok oturumu doğrulanamadı.");
+      }
+    } finally {
+      clearTimeout(timeout);
+      operationController.current = null;
+      if (operationRef.current === "manual") operationRef.current = null;
+      setWorking(false);
+    }
+  }, [pasted, working, strictLocal, reconnectAccount?.id, finishServerConnect]);
+
   // OpenAI: paste ~/.codex/auth.json → parse client-side → verify + save server-side.
   const connectOpenAIPaste = useCallback(async () => {
     if (strictLocal || !pasted.trim() || working || operationRef.current) return;
@@ -1392,6 +1435,57 @@ export function AddAccountModal({
     </div>
   );
 
+  const grokBlock = (
+    <div className="mt-5">
+      {connected ? (
+        successCard
+      ) : strictLocal ? (
+        <p className="text-sm leading-relaxed text-muted">
+          Grok bu yerel kurulumda bağlanamıyor. Kota verisini yalnız bir tarayıcı oturumu okuyabiliyor
+          ve strict-local mod dışarıdan kimlik yapıştırmayı kabul etmiyor. Grok&apos;u barındırılan
+          sürümden bağlayın.
+        </p>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="grok-session" className="text-sm text-ivory">
+              grok.com oturumunu yapıştırın
+            </label>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              grok.com açıkken <span className="font-mono">F12</span> → <span className="font-mono">Application</span>
+              {" → "}<span className="font-mono">Cookies</span> → <span className="font-mono">https://grok.com</span> →
+              {" "}<span className="font-mono">sso</span> satırının değerini kopyalayın. Şifreli saklanır ve bir daha gösterilmez.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-[#e3b56e]">
+              Bu bir oturum çerezi: kapsamı dar bir token değil, Grok hesabınızın tamamına erişim. Ayrıca
+              süresi dolduğunda kart yeniden bağlanma ister — xAI kota okumasını OAuth token&apos;larına kapattığı
+              için başka bir yol yok.
+            </p>
+            <textarea
+              id="grok-session"
+              value={pasted}
+              onChange={(event) => setPasted(event.target.value)}
+              disabled={requestBusy}
+              rows={3}
+              spellCheck={false}
+              autoComplete="off"
+              className="mt-3 w-full rounded-lg border border-border bg-bg p-3 font-mono text-xs text-ivory outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:opacity-50"
+              placeholder="sso=..."
+            />
+          </div>
+          <button
+            type="button"
+            disabled={requestBusy || !pasted.trim()}
+            onClick={connectGrokPaste}
+            className={`${PRIMARY_LINK} disabled:pointer-events-none disabled:opacity-50`}
+          >
+            {working ? "Doğrulanıyor…" : "Grok hesabını bağla"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   const openaiBlock = (
     <div className="mt-5">
       {connected ? (
@@ -1495,6 +1589,8 @@ export function AddAccountModal({
       {providerPicker}
       {provider === "openai" ? (
         openaiBlock
+      ) : provider === "grok" ? (
+        grokBlock
       ) : (
       <div className="mt-5">
           {(mode === "paste" || showPaste) && !connected && pasteBlock}

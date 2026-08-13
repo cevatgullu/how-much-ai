@@ -65,23 +65,30 @@ export async function POST(req: Request) {
   const expectedAccountId =
     typeof body.expectedAccountId === "string" ? body.expectedAccountId.trim() : undefined;
 
-  if (body.provider !== undefined && body.provider !== "anthropic" && body.provider !== "openai") {
+  if (
+    body.provider !== undefined
+    && body.provider !== "anthropic"
+    && body.provider !== "openai"
+    && body.provider !== "grok"
+  ) {
     return NextResponse.json({ error: "Unsupported provider" }, { status: 400 });
   }
-  const provider = body.provider === "openai" ? "openai" : "anthropic";
+  const provider = body.provider === "openai" || body.provider === "grok" ? body.provider : "anthropic";
 
-  // OpenAI (ChatGPT/Codex): verify the pasted credential against /wham/usage, then save.
-  if (provider === "openai") {
+  // OpenAI (ChatGPT/Codex) and Grok both verify the pasted credential by resolving identity
+  // against the provider, then save. Grok's credential is a grok.com session rather than an
+  // OAuth token — xAI refuses quota reads from OAuth tokens — but the save path is identical.
+  if (provider === "openai" || provider === "grok") {
     try {
-      const { identity } = await resolveProviderAccount(tokens, "openai");
+      const { identity } = await resolveProviderAccount(tokens, provider);
       if (expectedAccountId && identity.id !== expectedAccountId) {
         return NextResponse.json(
           { error: `Those credentials belong to ${identity.email}. Reconnect the account named in the dialog instead.` },
           { status: 409 },
         );
       }
-      const info = await saveProviderAccount(userId, identity, tokens, "openai");
-      const usage = await getProvider("openai").fetchUsage(tokens).catch(() => null);
+      const info = await saveProviderAccount(userId, identity, tokens, provider);
+      const usage = await getProvider(provider).fetchUsage(tokens).catch(() => null);
       return NextResponse.json({
         ok: true,
         id: info.id,

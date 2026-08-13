@@ -135,7 +135,7 @@ export function AccountCard({
   const cooldownRemaining = Math.max(0, (snapshot?.cooldownUntil ?? 0) - now);
   const cooldownMinutes = Math.max(1, Math.ceil(cooldownRemaining / 60_000));
   const refreshDisabled = loading || status === "reauth" || cooldownRemaining > 0;
-  const initial = displayName.charAt(0).toUpperCase() || "?";
+  const AvatarIcon = providerMeta(account.provider).Icon;
   const weeklyPeak = metric?.highestWeeklyUsedPercent ?? null;
   const nearestReset = formatResetSchedule(metric?.nearestWeeklyResetAt ?? null, now);
   const ledgerState = status === "reauth"
@@ -277,14 +277,17 @@ export function AccountCard({
         <div className="flex min-w-0 items-center gap-3">
           <div
             aria-hidden="true"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border text-[15px] font-semibold"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border"
             style={{
               background: "var(--avatar-bg)",
               color: "var(--avatar-fg)",
               borderColor: "var(--avatar-border)",
             }}
           >
-            {initial}
+            {/* The provider mark reads faster than an initial: the card is scanned for "which
+                service", and the heading beside it already carries the account name. Every icon
+                paints with currentColor, so the per-provider avatar palette still drives it. */}
+            <AvatarIcon className="h-5 w-5" />
           </div>
           <div className="min-w-0">
             <h2 id={headingId} className="truncate text-[11px] font-semibold uppercase tracking-wide text-faint">

@@ -28,7 +28,6 @@ import { PlusIcon, StarburstIcon } from "@/components/Icons";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSheets, type DashboardSheet } from "@/components/DashboardSheets";
 import { MobileCommandBar } from "@/components/MobileCommandBar";
-import { QuotaRuler } from "@/components/QuotaRuler";
 import { QuotaReadings } from "@/components/QuotaReadings";
 import {
   dashboardVaultReducer,
@@ -1229,12 +1228,10 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           </div>
         ) : (
           <>
+            {/* The 0-100 ruler was removed: with eight accounts its markers stacked into three
+                rows of name+percentage chips and stopped being readable at a glance. The readings
+                below answer the same question in plain text, and the sort modes surface the rest. */}
             <section className="quota-instrument-overview instrument-overview mb-6 grid min-w-0 gap-4" aria-label="Kota görünümü">
-              <QuotaRuler
-                metrics={presentedMetrics}
-                accountsById={accountsById}
-                providerOrdinals={providerOrdinals}
-              />
               <QuotaReadings
                 summary={quotaSummary}
                 accountsById={accountsById}

@@ -4,6 +4,7 @@ import type { WeeklyAccountMetric, WeeklyAccountSummary } from "@/lib/quota-metr
 import type { BrowserAccount } from "@/lib/types";
 import { formatResetSchedule } from "@/lib/format";
 import { accountDisplayName } from "./AccountCard";
+import { providerMeta } from "./providers-ui";
 
 export interface QuotaReadingsProps {
   summary: WeeklyAccountSummary;
@@ -19,7 +20,10 @@ export function quotaRulerAccountName(
   if (!account) return "Hesap";
   const displayName = accountDisplayName(account).trim();
   if (displayName && displayName !== account.email) return displayName;
-  return `${account.provider === "openai" ? "ChatGPT" : "Claude"} ${providerOrdinal ?? 1}`;
+  // Read the label from the provider registry rather than branching on two ids: the old
+  // `openai ? "ChatGPT" : "Claude"` sent every other provider to "Claude", so a Grok account
+  // appeared as a second "Claude 1" on the ruler and in the summary.
+  return `${providerMeta(account.provider).label} ${providerOrdinal ?? 1}`;
 }
 
 function metricAccountName(

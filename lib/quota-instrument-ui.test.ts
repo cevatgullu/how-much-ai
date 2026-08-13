@@ -58,13 +58,6 @@ const { DashboardHeader } = await import("../components/DashboardHeader.tsx");
 const { DashboardSheets } = await import("../components/DashboardSheets.tsx");
 const { MobileCommandBar } = await import("../components/MobileCommandBar.tsx");
 const { ModalShell } = await import("../components/ModalShell.tsx");
-const {
-  QuotaRuler,
-  focusQuotaRulerRef,
-  quotaRulerPopupGeometry,
-  quotaRulerPopupReducer,
-  scheduleQuotaRulerRefFocus,
-} = await import("../components/QuotaRuler.tsx");
 
 after(() => moduleHooks.deregister());
 
@@ -116,108 +109,9 @@ function metric(
   };
 }
 
-test("renders calibrated visual tracks and a complete named semantic account list without email", () => {
-  const accounts = [
-    account("nickname", "anthropic", { label: "Kişisel" }),
-    account("full-name", "openai", { fullName: "İş hesabı" }),
-    account("email-only"),
-  ];
-  const metrics = [
-    metric("nickname", 0, 72, "Opus haftalık limiti"),
-    metric("full-name", 1, 43, "Bağlı uygulamalar haftalık limiti"),
-    metric("email-only", 2, null, null),
-  ];
-  const markup = renderToStaticMarkup(createElement(QuotaRuler, {
-    metrics,
-    accountsById: new Map(accounts.map((value) => [value.id, value])),
-    providerOrdinals: new Map([["nickname", 1], ["full-name", 1], ["email-only", 2]]),
-  }));
 
-  assert.match(markup, />Kota cetveli</);
-  assert.equal((markup.match(/data-ruler-tick="primary"/g) ?? []).length, 8, "desktop and mobile tracks each expose four primary visual ticks");
-  assert.equal((markup.match(/data-ruler-tick="secondary"/g) ?? []).length, 4, "desktop and mobile tracks each expose two secondary visual ticks");
-  for (const tick of ["0", "25", "50", "75", "85", "100"]) {
-    assert.match(markup, new RegExp(`data-ruler-value="${tick}"`));
-  }
-  assert.equal((markup.match(/aria-hidden="true"/g) ?? []).length >= 2, true);
-  assert.match(markup, /<ol[^>]*aria-label="Kota cetveli hesapları"/);
-  assert.equal((markup.match(/<li data-ruler-account=/g) ?? []).length, 3);
-  assert.match(markup, /Kişisel[\s\S]*%72[\s\S]*Opus haftalık limiti[\s\S]*son veri/);
-  assert.match(markup, /İş hesabı[\s\S]*%43[\s\S]*Bağlı uygulamalar haftalık limiti[\s\S]*son veri/);
-  assert.match(markup, /data-state="waiting"[\s\S]*Claude 2[\s\S]*İlk veri bekleniyor/);
-  assert.doesNotMatch(markup.match(/<li data-ruler-account="email-only"[\s\S]*?<\/li>/)?.[0] ?? "", /%0/);
-  assert.doesNotMatch(markup, /@private\.invalid/);
-  assert.match(markup, /En yoğun[\s\S]*Kişisel[\s\S]*%72/);
-});
 
-test("renders dense +N clusters as named buttons with accessible member content", () => {
-  const accounts = Array.from({ length: 7 }, (_, index) => account(`dense-${index}`, "anthropic", { label: `Hesap ${index + 1}` }));
-  const metrics = accounts.map((value, index) => metric(value.id, index, 50, "Uzun haftalık kullanım limiti"));
-  const markup = renderToStaticMarkup(createElement(QuotaRuler, {
-    metrics,
-    accountsById: new Map(accounts.map((value) => [value.id, value])),
-    providerOrdinals: new Map(accounts.map((value, index) => [value.id, index + 1])),
-  }));
 
-  const clusterButton = markup.match(/<button[^>]*data-ruler-cluster[^>]*>[\s\S]*?<\/button>/)?.[0] ?? "";
-  assert.match(clusterButton, /aria-label="4 hesaplık kümeyi aç"/);
-  assert.match(clusterButton, /aria-expanded="false"/);
-  assert.match(clusterButton, />\+4</);
-  assert.match(markup, /role="dialog"[^>]*hidden=""/);
-  assert.match(markup, /Hesap 4[\s\S]*Hesap 7/);
-});
-
-test("clamps edge cluster triggers and dialogs independently within the ruler", () => {
-  assert.deepEqual(quotaRulerPopupGeometry(0, 640), {
-    triggerCenterX: 30,
-    dialogLeft: 8,
-    dialogWidth: 256,
-  });
-  assert.deepEqual(quotaRulerPopupGeometry(640, 640), {
-    triggerCenterX: 610,
-    dialogLeft: 376,
-    dialogWidth: 256,
-  });
-
-  const accounts = Array.from({ length: 14 }, (_, index) => account(
-    `edge-${index}`,
-    "anthropic",
-    { label: `Çok uzun kenar hesabı ${index + 1}` },
-  ));
-  const metrics = accounts.map((value, index) => metric(
-    value.id,
-    index,
-    index < 7 ? 0 : 100,
-    "Çok uzun haftalık kullanım limiti",
-  ));
-  const markup = renderToStaticMarkup(createElement(QuotaRuler, {
-    metrics,
-    accountsById: new Map(accounts.map((value) => [value.id, value])),
-    providerOrdinals: new Map(accounts.map((value, index) => [value.id, index + 1])),
-  }));
-
-  assert.match(markup, /data-ruler-cluster-center="30"[^>]*style="left:30px"/);
-  assert.match(markup, /data-ruler-popup-left="8"[^>]*data-ruler-popup-width="256"[^>]*style="left:-22px;width:256px"/);
-  assert.match(markup, /data-ruler-cluster-center="610"[^>]*style="left:610px"/);
-  assert.match(markup, /data-ruler-popup-left="376"[^>]*data-ruler-popup-width="256"[^>]*style="left:-234px;width:256px"/);
-});
-
-test("keeps long mobile En yoğun labels inside both 0% and 100% ruler edges", () => {
-  for (const [percent, alignment] of [[0, "left"], [100, "right"]] as const) {
-    const edgeAccount = account(`mobile-${percent}`, "anthropic", {
-      label: "Çok uzun ve taşmaması gereken kişisel kota hesabı",
-    });
-    const markup = renderToStaticMarkup(createElement(QuotaRuler, {
-      metrics: [metric(edgeAccount.id, 0, percent, "Çok uzun haftalık kullanım limiti")],
-      accountsById: new Map([[edgeAccount.id, edgeAccount]]),
-      providerOrdinals: new Map([[edgeAccount.id, 1]]),
-    }));
-    const mobileLabel = markup.match(/<span data-ruler-mobile-peak=""[^>]*>[\s\S]*?En yoğun[\s\S]*?<\/span>/)?.[0] ?? "";
-    assert.match(mobileLabel, /style="left:8px;right:8px;text-align:/);
-    assert.match(mobileLabel, new RegExp(`text-align:${alignment}`));
-    assert.doesNotMatch(mobileLabel, /translate-x-1\/2/);
-  }
-});
 
 test("renders compact readings with account and winning limit identities", () => {
   const accounts = [
@@ -243,35 +137,7 @@ test("renders compact readings with account and winning limit identities", () =>
   assert.doesNotMatch(markup, /@private\.invalid/);
 });
 
-test("quota ruler popup reducer opens and closes through pointer and keyboard actions", () => {
-  assert.equal(quotaRulerPopupReducer(null, { type: "open", clusterId: "cluster-a" }), "cluster-a");
-  assert.equal(quotaRulerPopupReducer("cluster-a", { type: "close" }), null);
-  assert.equal(quotaRulerPopupReducer(null, { type: "key", key: "Enter", clusterId: "cluster-b" }), "cluster-b");
-  assert.equal(quotaRulerPopupReducer("cluster-b", { type: "key", key: "Escape" }), null);
-  assert.equal(quotaRulerPopupReducer("cluster-b", { type: "key", key: "ArrowDown", clusterId: "cluster-c" }), "cluster-b");
-});
 
-test("popup focus effect enters the dialog and can restore the originating trigger", () => {
-  const calls: Array<{ target: string; preventScroll: boolean | undefined }> = [];
-  const refs = new Map([
-    ["cluster-a", { focus(options?: FocusOptions) { calls.push({ target: "dialog", preventScroll: options?.preventScroll }); } }],
-  ]);
-
-  assert.equal(focusQuotaRulerRef("cluster-a", refs), true);
-  assert.equal(focusQuotaRulerRef("missing", refs), false);
-  assert.deepEqual(calls, [{ target: "dialog", preventScroll: true }]);
-
-  const triggerRefs = new Map([
-    ["cluster-a", { focus(options?: FocusOptions) { calls.push({ target: "trigger", preventScroll: options?.preventScroll }); } }],
-  ]);
-  const scheduled: Array<() => void> = [];
-  assert.equal(scheduleQuotaRulerRefFocus("cluster-a", triggerRefs, (callback) => scheduled.push(callback)), true);
-  assert.deepEqual(calls, [{ target: "dialog", preventScroll: true }]);
-  scheduled[0]?.();
-  assert.deepEqual(calls.at(-1), { target: "trigger", preventScroll: true });
-  assert.equal(scheduleQuotaRulerRefFocus("missing", triggerRefs, (callback) => scheduled.push(callback)), false);
-  assert.equal(scheduled.length, 1);
-});
 
 test("local dashboard controls expose exact Turkish sorting and compact actions without hosted claims", () => {
   const noop = () => {};

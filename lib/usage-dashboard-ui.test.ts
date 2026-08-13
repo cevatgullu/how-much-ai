@@ -104,7 +104,7 @@ function usageBar(remainingPercent: number, overrides: Partial<NormalizedUsageBa
   };
 }
 
-function account(id: string, provider: "anthropic" | "openai" = "anthropic"): BrowserAccount {
+function account(id: string, provider: BrowserAccount["provider"] = "anthropic"): BrowserAccount {
   return {
     id,
     email: `${id}@private.invalid`,
@@ -162,6 +162,38 @@ function renderAccountCard(
     ...overrides,
   }));
 }
+
+test("the card avatar carries the provider mark, not an initial", () => {
+  // The avatar answers "which service is this account on"; the name sits beside it already.
+  // An initial made every provider look alike, and with three providers that ambiguity grows.
+  for (const provider of ["anthropic", "openai", "grok"] as const) {
+    const markup = renderAccountCard(account(`avatar-${provider}`, provider), undefined);
+    // The palette is scoped by this attribute, so the mark and its colours travel together.
+    assert.match(markup, new RegExp(`data-provider="${provider}"`));
+    const avatar = markup.match(/rounded-full border"[^>]*>([\s\S]*?)<\/div>/u);
+    assert.ok(avatar, `${provider}: avatar bulunamadi`);
+    assert.match(avatar[1], /<svg/u, `${provider}: avatarda logo yok`);
+    // Guard the regression directly: a bare letter must not come back.
+    assert.doesNotMatch(avatar[1], /^\s*[A-Z?]\s*$/u, `${provider}: avatarda hala harf var`);
+  }
+});
+
+test("each provider gets its own accent scope so two cards never read alike", () => {
+  // Grok inherited the Claude coral until it was given a palette, which made a Grok card
+  // indistinguishable from a Claude one at a glance.
+  const css = readFileSync(path.join(projectRoot, "app", "globals.css"), "utf8");
+  const accents = new Map<string, string>();
+  for (const provider of ["anthropic", "openai", "grok"]) {
+    const block = css.match(
+      new RegExp("\\[data-provider=\"" + provider + "\"\\]\\s*\\{([^}]*)\\}", "u"),
+    );
+    assert.ok(block, `${provider}: palet blogu yok`);
+    const accent = block[1].match(/--accent:\s*([^;]+);/u);
+    assert.ok(accent, `${provider}: --accent tanimsiz`);
+    accents.set(provider, accent[1].trim());
+  }
+  assert.equal(new Set(accents.values()).size, accents.size, `paletler cakisiyor: ${[...accents]}`);
+});
 
 test("the existing Dashboard prop shape keeps one reachable card presentation before controlled integration", () => {
   const accountValue = account("legacy-dashboard", "openai");

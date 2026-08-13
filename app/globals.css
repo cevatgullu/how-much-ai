@@ -75,6 +75,23 @@
   --avatar-border: var(--rule-soft);
 }
 
+/* Grok needs its own identity: without this it falls through to :root, which is the Claude
+   coral, and a Grok card becomes indistinguishable from a Claude one at a glance. The tone is
+   a light neutral rather than a new hue — xAI's mark is monochrome, and the remaining warm
+   colours (amber, red) already carry warning and danger meaning on these cards. The accent
+   only drives chrome and buttons; quota bars keep their own severity colours. */
+[data-provider="grok"] {
+  --accent: #b9c6bf;
+  --accent-bright: #d6e0da;
+  --accent-strong: #8d9a93;
+  --accent-strong-hover: #7e8b84;
+  --accent-contrast: #111614;
+  --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);
+  --avatar-bg: var(--accent-soft);
+  --avatar-fg: var(--accent-bright);
+  --avatar-border: var(--rule-soft);
+}
+
 * { box-sizing: border-box; }
 html { color-scheme: dark; scroll-padding-top: 6rem; }
 body {
@@ -167,7 +184,6 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
    and the three-column layout collapsed to a single 1872 px column. */
 @media (max-width: 959.98px) {
   .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); }
-  .quota-ruler > div:nth-of-type(2) { height: 104px; }
 }
 
 @media (min-width: 960px) and (max-width: 1919.98px) {
@@ -179,7 +195,6 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .account-grid { grid-template-columns: repeat(2, minmax(420px, 1fr)); gap: 20px; }
   .account-card-desktop { display: flex !important; }
   .account-ledger { display: none !important; }
-  .quota-ruler > div:nth-of-type(1) { min-height: 176px; }
 }
 
 @media (min-width: 1920px) and (max-width: 2879.98px) {
@@ -191,7 +206,6 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .account-grid { grid-template-columns: repeat(3, minmax(560px, 1fr)); gap: 24px; }
   .account-card-desktop { display: flex !important; }
   .account-ledger { display: none !important; }
-  .quota-ruler > div:nth-of-type(1) { min-height: 176px; }
 }
 
 @media (min-width: 2880px) {
@@ -203,8 +217,6 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .account-grid { grid-template-columns: repeat(4, minmax(600px, 1fr)); gap: 24px; }
   .account-card-desktop { display: flex !important; }
   .account-ledger { display: none !important; }
-  .quota-ruler > div:nth-of-type(1) { min-height: 196px; }
-  .quota-ruler > div:nth-of-type(1) > div[aria-hidden="true"] { height: 196px; }
 }
 
 @media (orientation: landscape) and (min-width: 900px) and (max-height: 500px) {

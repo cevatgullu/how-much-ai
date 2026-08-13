@@ -21,6 +21,7 @@ import { anyApi } from "convex/server";
 import { scopedKey } from "./app-config";
 import { withLocalVaultMutationLock } from "./local-file-lock";
 import { assertProductionSecretEnvironment } from "./strict-local-mode";
+import { enforcePrivateWindowsAcl } from "./windows-private-acl";
 import type { AccountCredentialKind, AccountTokens, StoredAccount } from "./types";
 import type { ProviderId } from "./providers/types";
 
@@ -469,6 +470,10 @@ async function writePrivateFileAtomically(file: string, value: string): Promise<
     await handle.sync();
     await handle.close();
     handle = null;
+    // Windows takes its access control from the parent directory by inheritance, and chmod above
+    // does not touch it. Tighten the temp file before it is published so the rename never exposes
+    // a file the secure-local startup check would reject. See lib/windows-private-acl.ts.
+    await enforcePrivateWindowsAcl(temp);
     await fs.rename(temp, file);
   } catch (err) {
     await handle?.close().catch(() => {});

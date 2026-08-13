@@ -1384,12 +1384,18 @@ export function parseStoredAccounts(value: unknown): StoredAccount[] {
     // Provider discriminator. Absent ≡ "anthropic"; only non-default ids are stored, so Anthropic
     // records round-trip byte-identically (and pre-provider vaults keep validating unchanged).
     const providerValue = candidate.provider;
-    if (providerValue !== undefined && providerValue !== "anthropic" && providerValue !== "openai") {
+    if (
+      providerValue !== undefined &&
+      providerValue !== "anthropic" &&
+      providerValue !== "openai" &&
+      providerValue !== "grok"
+    ) {
       throw new VaultValidationError(
-        `accounts[${index}].provider must be "anthropic" or "openai" when present`,
+        `accounts[${index}].provider must be "anthropic", "openai", or "grok" when present`,
       );
     }
-    const provider: ProviderId | undefined = providerValue === "openai" ? "openai" : undefined;
+    const provider: ProviderId | undefined =
+      providerValue === "openai" ? "openai" : providerValue === "grok" ? "grok" : undefined;
 
     const fullName = optionalBoundedString(candidate.fullName, "fullName", index);
     const label = optionalBoundedString(candidate.label, "label", index);

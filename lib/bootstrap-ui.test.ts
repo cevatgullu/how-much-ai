@@ -497,27 +497,33 @@ test("document and visual system expose the Turkish local instrument contract", 
   assert.match(layout, /Barlow_Condensed/);
   assert.match(layout, /Atkinson_Hyperlegible_Next/);
   assert.match(layout, /Atkinson_Hyperlegible_Mono/);
-  assert.doesNotMatch(layout, /manifest|appleWebApp/i);
+  // The manifest is a route (app/manifest.ts), not layout metadata, so the document itself
+  // stays free of install plumbing while the shell is still installable on a phone.
+  assert.doesNotMatch(layout, /appleWebApp/i);
   for (const token of ["#111614", "#19201D", "#697770", "#F1F4EF", "#A5B1AA", "#78A7BF", "#D97757", "#D9A557", "#E05B5B"]) {
     assert.match(css, new RegExp(token, "i"));
   }
-  assert.match(css, /@media \(max-width: 959px\)/);
-  assert.match(css, /@media \(min-width: 960px\) and \(max-width: 1919px\)/);
-  assert.match(css, /@media \(min-width: 1920px\) and \(max-width: 2879px\)/);
+  assert.match(css, /@media \(max-width: 959\.98px\)/);
+  assert.match(css, /@media \(min-width: 960px\) and \(max-width: 1919\.98px\)/);
+  assert.match(css, /@media \(min-width: 1920px\) and \(max-width: 2879\.98px\)/);
   assert.match(css, /@media \(min-width: 2880px\)/);
   assert.match(css, /orientation:\s*landscape[^\{]*min-width:\s*900px[^\{]*max-height:\s*500px/);
   assert.match(css, /env\(safe-area-inset-(?:top|right|bottom|left)\)/);
   assert.match(
     css,
-    /@media \(min-width: 960px\) and \(max-width: 1919px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*calc\(100% - 2 \* clamp\(24px, 4vw, 64px\)\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+    /@media \(min-width: 960px\) and \(max-width: 1919\.98px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*calc\(100% - 2 \* clamp\(24px, 4vw, 64px\)\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
   );
   assert.match(
     css,
-    /@media \(min-width: 1920px\) and \(max-width: 2879px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+    /@media \(min-width: 1920px\) and \(max-width: 2879\.98px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
   );
   assert.match(
     css,
     /@media \(min-width: 2880px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
   );
+  // Regression guard for the fractional-pixel gap: an integer upper bound adjacent to the next
+  // breakpoint's integer min-width leaves fractional viewports matching no query at all, which
+  // collapses the grid to the one-column base rule.
+  assert.doesNotMatch(css, /max-width:\s*(?:959|1919|2879)px/);
   assert.doesNotMatch(css, /(?:radial|linear)-gradient|backdrop-filter|card-lift|@keyframes shimmer/i);
 });

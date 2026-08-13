@@ -159,12 +159,18 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
 .modal-panel { background: var(--panel); border-color: var(--rule-strong); }
 .modal-panel[data-placement="sheet"] { max-height: calc(100vh - env(safe-area-inset-top)); max-height: calc(100dvh - env(safe-area-inset-top)); }
 
-@media (max-width: 959px) {
+/* Upper bounds are fractional: an integer max-width paired with the next integer
+   min-width leaves any fractional viewport between them matching neither query, which
+   drops the grid to the single-column base rule. Fractional widths are routine with
+   Windows display scaling and browser zoom. Measured 2026-08-13: at a viewport of
+   exactly 1919 px neither the upper bound below nor the 1920 px lower bound matched,
+   and the three-column layout collapsed to a single 1872 px column. */
+@media (max-width: 959.98px) {
   .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); }
   .quota-ruler > div:nth-of-type(2) { height: 104px; }
 }
 
-@media (min-width: 960px) and (max-width: 1919px) {
+@media (min-width: 960px) and (max-width: 1919.98px) {
   .instrument-header > div,
   .instrument-shell { width: calc(100% - 2 * clamp(24px, 4vw, 64px)); margin-inline: auto; }
   .instrument-header > div,
@@ -176,7 +182,7 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .quota-ruler > div:nth-of-type(1) { min-height: 176px; }
 }
 
-@media (min-width: 1920px) and (max-width: 2879px) {
+@media (min-width: 1920px) and (max-width: 2879.98px) {
   .instrument-header > div,
   .instrument-shell { width: min(3264px, 90vw); margin-inline: auto; }
   .instrument-header > div,

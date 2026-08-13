@@ -46,3 +46,6 @@ next-env.d.ts
 
 # convex codegen (regenerated on deploy)
 convex/_generated
+
+.vercel
+.env*

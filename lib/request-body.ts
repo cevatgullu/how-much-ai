@@ -1,3 +1,5 @@
+import { strictLocalModeEnabled } from "@/lib/strict-local-mode";
+
 export const DEFAULT_JSON_BODY_LIMIT = 32 * 1024;
 
 export class RequestBodyError extends Error {
@@ -89,10 +91,21 @@ export function requestBodyFailure(error: unknown): { error: string; status: 400
 // cross-site/same-site Fetch Metadata value is rejected. This keeps zero-config local/open mode
 // usable without turning localhost APIs into CSRF targets.
 export function browserMutationFailure(req: Request): { error: string; status: 403 } | null {
+  const strictLocal = strictLocalModeEnabled();
+  if (strictLocal && req.headers.get("host") !== "127.0.0.1:37645") {
+    return { error: "Cross-origin request is not allowed", status: 403 };
+  }
+  const fetchSite = req.headers.get("sec-fetch-site")?.trim().toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    return { error: "Cross-origin request is not allowed", status: 403 };
+  }
   const suppliedOrigin = req.headers.get("origin")?.trim();
   if (suppliedOrigin) {
     try {
-      if (new URL(suppliedOrigin).origin !== new URL(req.url).origin) {
+      const expectedOrigin = strictLocal
+        ? "http://127.0.0.1:37645"
+        : new URL(req.url).origin;
+      if (new URL(suppliedOrigin).origin !== expectedOrigin) {
         return { error: "Cross-origin request is not allowed", status: 403 };
       }
     } catch {
@@ -101,9 +114,5 @@ export function browserMutationFailure(req: Request): { error: string; status: 4
     return null;
   }
 
-  const fetchSite = req.headers.get("sec-fetch-site")?.trim().toLowerCase();
-  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
-    return { error: "Cross-origin request is not allowed", status: 403 };
-  }
   return null;
 }

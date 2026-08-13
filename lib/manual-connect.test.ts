@@ -29,7 +29,8 @@ const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "hmc-manual-connect-"));
 
-delete process.env.APP_PASSWORD;
+process.env.APP_PASSWORD = "manual-connect-test-password";
+process.env.AUTH_SECRET = "manual-connect-test-auth-secret";
 delete process.env.CONVEX_URL;
 delete process.env.NEXT_PUBLIC_CONVEX_URL;
 delete process.env.KV_REST_API_URL;
@@ -40,7 +41,15 @@ process.env.VAULT_DATA_DIR = dataDir;
 
 const { POST } = await import("../app/api/connect/manual/route.ts");
 const { dedicatedTokenAccountId } = await import("./connect-account.ts");
+const { createSession, SESSION_COOKIE } = await import("./session.ts");
 const { loadAccounts, saveAccounts } = await import("./vault.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
+
+function authenticatedRequest(input: string, init: RequestInit): Request {
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", sessionCookie);
+  return new Request(input, { ...init, headers });
+}
 
 let profileAvailable = true;
 let usageRequiresProfile = false;
@@ -102,7 +111,7 @@ test("manual setup-token connection is durable before success is returned", asyn
   await saveAccounts("default", []);
   const token = { accessToken: "sk-ant-oat01-durable", refreshToken: null, expiresAt: Date.now() + 365 * 86_400_000 };
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tokens: token }),
@@ -130,7 +139,7 @@ test("a verified manual account returns a safe incident reference when encrypted
 
   try {
     const response = await POST(
-      new Request("http://localhost/api/connect/manual", {
+      authenticatedRequest("http://localhost/api/connect/manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -171,7 +180,7 @@ test("a verified rotating credential with missing expiry gets a conservative acc
   await saveAccounts("default", []);
   const before = Date.now();
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -189,7 +198,7 @@ test("a verified rotating credential with missing expiry gets a conservative acc
 test("manual reconnect rejects a different verified account without changing the vault", async () => {
   await saveAccounts("default", []);
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -204,7 +213,7 @@ test("manual reconnect rejects a different verified account without changing the
 
 test("manual connection rejects malformed credential input before upstream work", async () => {
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tokens: { accessToken: 42 } }),
@@ -223,7 +232,7 @@ test("a dedicated setup token is saved with an honest stable local identity when
   };
   const connect = () =>
     POST(
-      new Request("http://localhost/api/connect/manual", {
+      authenticatedRequest("http://localhost/api/connect/manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tokens: token }),
@@ -269,7 +278,7 @@ test("a rotating credential is never saved when profile identity is unavailable"
   profileAvailable = false;
   await saveAccounts("default", []);
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -290,7 +299,7 @@ test("an inference-only setup token gets an actionable error when usage requires
   usageRequiresProfile = true;
   await saveAccounts("default", []);
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -341,7 +350,7 @@ test("a profile-less dedicated token cannot be attached to a different selected 
   await saveAccounts("default", [existing, syntheticDuplicate]);
 
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ expectedAccountId: existing.id, tokens: replacement }),
@@ -374,7 +383,7 @@ test("a profile-less dedicated reconnect can update its own token-hash identity"
   await saveAccounts("default", [existing]);
 
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ expectedAccountId: id, tokens: token }),
@@ -404,7 +413,7 @@ test("a profile-less token cannot replace a selected rotating account", async ()
   };
   await saveAccounts("default", [rotating]);
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

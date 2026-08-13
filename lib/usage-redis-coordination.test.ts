@@ -91,9 +91,19 @@ test("separate Redis-backed server processes cannot spend the same refresh token
       return 1;
     }
 
+    // Exact guarded read for the encrypted token-recovery generation.
+    if (script.includes("return redis.call('GET', KEYS[1])")) {
+      const [, , , key, proofKey, proof] = args;
+      const storedProof = values.get(proofKey);
+      if (storedProof === undefined || storedProof !== proof) return -1;
+      return values.get(key) ?? null;
+    }
+
     // Exact auxiliary compare-and-set for the encrypted token-recovery generation.
-    if (script.includes("local current = redis.call('GET', KEYS[1])")) {
-      const [, , , key, expected, next] = args;
+    if (script.includes("if not proof or proof ~= ARGV[3] then return -1 end")) {
+      const [, , , key, proofKey, expected, next, proof] = args;
+      const storedProof = values.get(proofKey);
+      if (storedProof === undefined || storedProof !== proof) return -1;
       const current = values.get(key);
       const missing = expected === "__HMC_VAULT_MISSING__" && current === undefined;
       if (!missing && current !== expected) return 0;

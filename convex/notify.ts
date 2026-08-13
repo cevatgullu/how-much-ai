@@ -12,8 +12,11 @@ const NOTIFICATION_LEASE_MS = 10 * 60_000; // Mirror lib/notification-lease-core
 // Every function retains an explicit `userId` storage scope for upgrade compatibility. The
 // self-hosted app always passes `default` and never accepts this value from a browser client.
 function assertSecret(secret: string) {
-  const expected = process.env.VAULT_ACCESS_SECRET;
-  if (!expected || secret !== expected) throw new Error("Unauthorized");
+  const expected = process.env.VAULT_ACCESS_SECRET?.trim();
+  const supplied = secret.trim();
+  if (!expected || expected.length < 32 || !supplied || supplied !== expected) {
+    throw new Error("Unauthorized");
+  }
 }
 
 // Defaults mirror lib/notify-detect.ts DEFAULT_TOGGLES / DEFAULT_THRESHOLDS. Kept in sync by

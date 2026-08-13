@@ -10,18 +10,21 @@ test("getProvider dispatches by id and falls back to anthropic", () => {
   assert.equal(getProvider("bogus").id, "anthropic");
   assert.equal(getProvider("anthropic").id, "anthropic");
   assert.equal(getProvider("openai").id, "openai");
+  assert.equal(getProvider("grok").id, "grok");
 });
 
-test("PROVIDERS lists anthropic then openai", () => {
+test("PROVIDERS lists anthropic, openai, then grok", () => {
+  // Order is UI-significant: it drives the provider picker.
   assert.deepEqual(
     PROVIDERS.map((p) => p.id),
-    ["anthropic", "openai"],
+    ["anthropic", "openai", "grok"],
   );
 });
 
 test("isProviderId guards known ids", () => {
   assert.equal(isProviderId("openai"), true);
   assert.equal(isProviderId("anthropic"), true);
+  assert.equal(isProviderId("grok"), true);
   assert.equal(isProviderId("nope"), false);
   assert.equal(isProviderId(undefined), false);
 });

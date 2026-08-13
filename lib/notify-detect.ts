@@ -94,7 +94,11 @@ export function diffLimit(
   };
 
   if (rolledOver) {
-    if (toggles.everyReset) events.push({ type: "every_reset", ...base, peakPct: priorPeak });
+    // Same rule as the strict-local detector: a window nobody used has nothing to announce when
+    // it rolls over, so an idle account never emits a reset notification.
+    if (toggles.everyReset && priorPeak > 0) {
+      events.push({ type: "every_reset", ...base, peakPct: priorPeak });
+    }
     // Recovery = a window you'd maxed out has rolled over AND the fresh window is actually low
     // again. If you immediately used it back up, "you're clear" would be a lie, so gate on the
     // fresh reading being below the recovery threshold.

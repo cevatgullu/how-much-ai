@@ -9,8 +9,11 @@ import { v } from "convex/values";
 //
 // `key` is the per-account scoped key from lib/usage-service (usageCacheKey).
 function assertSecret(secret: string) {
-  const expected = process.env.VAULT_ACCESS_SECRET;
-  if (!expected || secret !== expected) throw new Error("Unauthorized");
+  const expected = process.env.VAULT_ACCESS_SECRET?.trim();
+  const supplied = secret.trim();
+  if (!expected || expected.length < 32 || !supplied || supplied !== expected) {
+    throw new Error("Unauthorized");
+  }
 }
 
 const REFRESH_LOCK_MS = 120_000; // Mirror of lib/usage-cache-core REFRESH_LOCK_MS (kept in sync by hand).

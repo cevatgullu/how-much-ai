@@ -2,6 +2,9 @@
 // Node route handlers and the Edge/Node middleware. The token is just a signed expiry —
 // there's one user (whoever knows APP_PASSWORD), so there's no per-user state to carry.
 
+// @ts-expect-error Node's native TypeScript test runner needs the extension.
+import { assertProductionSecretEnvironment, assertStrictLocalEnvironment, strictLocalModeEnabled } from "./strict-local-mode.ts";
+
 export const SESSION_COOKIE = "usage_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -34,26 +37,26 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
   ]);
 }
 
-// The secret that signs sessions. Defaults to APP_PASSWORD so there's one thing to configure;
-// set AUTH_SECRET separately if you want sessions to survive a password change.
+// Development keeps the historical convenience fallback. Production requires an independent
+// AUTH_SECRET so knowledge of the human login password can never forge a session token.
 export function authSecret(): string {
+  assertProductionSecretEnvironment();
+  if (process.env.NODE_ENV === "production") return process.env.AUTH_SECRET!;
   return process.env.AUTH_SECRET || process.env.APP_PASSWORD || "";
 }
 
 export function appPassword(): string | undefined {
+  assertProductionSecretEnvironment();
   const pw = process.env.APP_PASSWORD;
   return pw && pw.length > 0 ? pw : undefined;
 }
 
-// The zero-config local default: no APP_PASSWORD runs the app fully OPEN. This is what makes
-// "clone, npm run dev, done" work with no setup. It is ONLY safe on your own machine or a trusted
-// network; set APP_PASSWORD before exposing the app publicly.
+// Authentication stays closed in every environment. Strict-local mode additionally validates its
+// exact environment before the HMAC bootstrap or an ordinary password session can be accepted.
 export function authOpen(): boolean {
-  // A leftover hosted-mode variable must never turn into an accidentally open deployment after an
-  // upgrade to the self-hosted edition. Unsupported legacy values fail closed at the login gate.
-  const legacyMode = process.env.AUTH_MODE?.trim();
-  if (legacyMode && legacyMode !== "password") return false;
-  return !appPassword();
+  assertProductionSecretEnvironment();
+  if (strictLocalModeEnabled()) assertStrictLocalEnvironment();
+  return false;
 }
 
 // Constant-time string comparison to avoid leaking the password via timing.

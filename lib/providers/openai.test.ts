@@ -6,6 +6,7 @@ import "./_resolve-ts.mjs";
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/wham-usage.json", import.meta.url), "utf8"));
 const { normalizeOpenAIUsage } = await import("./openai-usage.ts");
 const { openaiProvider, openaiPlanLabel } = await import("./openai.ts");
+const { extractBars } = await import("../format.ts");
 
 function jwt(payload: Record<string, unknown>): string {
   const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -33,6 +34,20 @@ function stubFetch(handler: (url: string, init: any) => Response): { calls: Arra
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+function additionalLimit(limitName: string, meteredFeature: string, windowSeconds: number, usedPercent: number) {
+  return {
+    limit_name: limitName,
+    metered_feature: meteredFeature,
+    rate_limit: {
+      primary_window: {
+        used_percent: usedPercent,
+        limit_window_seconds: windowSeconds,
+        reset_at: 1_800_000_000,
+      },
+    },
+  };
+}
+
 test("normalizeOpenAIUsage maps the live /wham/usage fixture", () => {
   const usage = normalizeOpenAIUsage(fixture);
   // fixture primary window: used_percent 3, 604800s (weekly), reset_at 1784976109
@@ -41,10 +56,73 @@ test("normalizeOpenAIUsage maps the live /wham/usage fixture", () => {
   const weekly = usage.limits?.find((l) => l.kind === "weekly_all");
   assert.equal(weekly?.percent, 3);
   assert.equal(weekly?.is_active, true);
-  const scoped = usage.limits?.find((l) => l.scope?.model?.display_name === "GPT-5.3-Codex-Spark");
-  assert.ok(scoped, "scoped model limit present");
-  assert.equal(scoped?.kind, "weekly_scoped");
-  assert.equal(scoped?.group, "codex_bengalfox");
+  const spark = usage.limits?.find((l) => l.scope?.model?.display_name === "GPT-5.3-Codex-Spark");
+  assert.equal(spark, undefined);
+});
+
+test("normalizeOpenAIUsage excludes only the Codex Spark weekly limit", () => {
+  const payload = {
+    rate_limit: {
+      primary_window: { used_percent: 10, limit_window_seconds: 604_800, reset_at: 1_800_000_000 },
+    },
+    additional_rate_limits: [
+      {
+        limit_name: "GPT-5.3-Codex-Spark",
+        metered_feature: "codex_bengalfox",
+        rate_limit: {
+          primary_window: { used_percent: 30, limit_window_seconds: 604_800, reset_at: 1_800_000_000 },
+        },
+      },
+      {
+        limit_name: "GPT-5 Codex",
+        metered_feature: "gpt-5-codex",
+        rate_limit: {
+          primary_window: { used_percent: 20, limit_window_seconds: 604_800, reset_at: 1_800_000_000 },
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    extractBars(normalizeOpenAIUsage(payload)).map(({ key, usedPercent }) => [key, usedPercent]),
+    [
+      ["weekly_all", 10],
+      ["weekly_scoped:gpt-5-codex", 20],
+    ],
+  );
+});
+
+test("normalizeOpenAIUsage preserves a non-weekly row with the Spark name and feature", () => {
+  const usage = normalizeOpenAIUsage({
+    additional_rate_limits: [additionalLimit("GPT-5.3-Codex-Spark", "codex_bengalfox", 18_000, 31)],
+  });
+
+  assert.deepEqual(
+    extractBars(usage).map(({ key, usedPercent }) => [key, usedPercent]),
+    [["session", 31]],
+  );
+});
+
+test("normalizeOpenAIUsage preserves a weekly row with the Spark feature but a different name", () => {
+  const usage = normalizeOpenAIUsage({
+    additional_rate_limits: [additionalLimit("GPT-5.3-Codex-Spark Preview", "codex_bengalfox", 604_800, 32)],
+  });
+
+  assert.deepEqual(
+    extractBars(usage).map(({ key, usedPercent }) => [key, usedPercent]),
+    [["weekly_scoped:codex_bengalfox", 32]],
+  );
+});
+
+test("normalizeOpenAIUsage preserves a weekly row with the Spark name but a different feature", () => {
+  const usage = normalizeOpenAIUsage({
+    additional_rate_limits: [additionalLimit("GPT-5.3-Codex-Spark", "codex_bengalfox-preview", 604_800, 33)],
+  });
+
+  assert.deepEqual(
+    extractBars(usage).map(({ key, usedPercent }) => [key, usedPercent]),
+    [["weekly_scoped:codex_bengalfox-preview", 33]],
+  );
 });
 
 test("normalizeOpenAIUsage maps a 5-hour session window", () => {
@@ -54,6 +132,24 @@ test("normalizeOpenAIUsage maps a 5-hour session window", () => {
   assert.equal(usage.five_hour?.utilization, 40);
   assert.equal(usage.limits?.[0].kind, "session");
   assert.equal(usage.limits?.[0].severity, "normal");
+});
+
+test("OpenAI session usage has the shared normalized five-hour limit", () => {
+  const usage = normalizeOpenAIUsage({
+    rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 18_000, reset_at: 1_800_000_000 } },
+  });
+  assert.deepEqual(extractBars(usage), [
+    {
+      key: "session",
+      kind: "session",
+      label: "5 saatlik limit",
+      usedPercent: 40,
+      remainingPercent: 60,
+      resetsAt: new Date(1_800_000_000_000).toISOString(),
+      severity: "normal",
+      isActive: true,
+    },
+  ]);
 });
 
 test("normalizeOpenAIUsage escalates severity by percent", () => {
@@ -146,7 +242,7 @@ test("parseManualCredential parses a pasted auth.json", () => {
 test("readLocalCredential reads ~/.codex/auth.json via injected deps", async () => {
   const parsed = await openaiProvider.readLocalCredential?.({
     readFile: async (file: string) => {
-      assert.match(file, /\.codex\/auth\.json$/);
+      assert.match(file, /\.codex[\/\\]auth\.json$/);
       return JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: token, refresh_token: "rt-local" } });
     },
     homedir: () => "/home/tester",

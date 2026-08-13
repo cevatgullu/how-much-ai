@@ -98,8 +98,12 @@ export function normalizeOpenAIUsage(payload: WhamUsagePayload): UsageData {
     const window = extra?.rate_limit?.primary_window;
     const seconds = typeof window?.limit_window_seconds === "number" ? window.limit_window_seconds : null;
     const name = typeof extra?.limit_name === "string" ? extra.limit_name : null;
+    const kind = seconds != null && seconds <= SESSION_MAX_S ? "session" : "weekly_scoped";
+    if (kind === "weekly_scoped" && name === "GPT-5.3-Codex-Spark" && extra?.metered_feature === "codex_bengalfox") {
+      continue;
+    }
     addWindow(window, {
-      kind: seconds != null && seconds <= SESSION_MAX_S ? "session" : "weekly_scoped",
+      kind,
       group: extra?.metered_feature ?? null,
       scope: name ? { model: { id: extra?.metered_feature ?? null, display_name: name } } : undefined,
       fillBucket: false,

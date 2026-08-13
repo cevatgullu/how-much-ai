@@ -1,0 +1,14 @@
+node:http | NONE
+node:https | NONE
+undici | NONE
+node:net:isIP-only | lib/connect-url.mjs
+node:net:isIP-only | lib/login-rate-limit.ts
+node:net:isIP-only | lib/notify-safety.ts
+node:tls | NONE
+node:dgram | NONE
+native-addon | NONE
+WebSocket | NONE
+EventSource | NONE
+web-push:configuration-gated-and-strict-local-inertness-tested | lib/notify.ts
+child_process:fixed-argv-macos-keychain-exception | lib/credential-source.mjs
+process-fetch-capture:strict-local-four-origin-allowlist | lib/outbound-fetch-policy.ts

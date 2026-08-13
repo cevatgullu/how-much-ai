@@ -25,14 +25,14 @@ function LoginForm() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(typeof data.error === "string" ? data.error : "Sign-in failed");
+        setError("Oturum açılamadı. Parolayı denetleyip yeniden deneyin.");
         setWorking(false);
         return;
       }
       router.replace(safeInternalPath(params.get("next")));
       router.refresh();
     } catch {
-      setError("Network error — try again.");
+      setError("Ağ bağlantısı kurulamadı. Yeniden deneyin.");
       setWorking(false);
     }
   };
@@ -43,11 +43,11 @@ function LoginForm() {
         <div className="flex flex-col items-center text-center">
           <StarburstIcon className="h-10 w-10 text-coral" />
           <h1 className="font-display mt-5 text-2xl text-ivory">How Much AI</h1>
-          <p className="mt-1 text-sm text-muted">Enter the password to continue</p>
+          <p className="mt-1 text-sm text-muted">Devam etmek için parolayı girin</p>
         </div>
         <form onSubmit={submit} className="mt-7 space-y-3">
           <label htmlFor="password" className="sr-only">
-            Password
+            Parola
           </label>
           <input
             id="password"
@@ -57,9 +57,12 @@ function LoginForm() {
               setPassword(e.target.value);
               if (error) setError(null);
             }}
-            placeholder="Password"
+            placeholder="Parola"
             autoFocus
-            autoComplete="current-password"
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore="true"
             aria-invalid={Boolean(error)}
             aria-describedby={error ? "password-error" : undefined}
             className="min-h-11 w-full rounded-lg border border-border bg-surface px-3.5 py-2.5 text-sm text-ivory placeholder:text-faint focus:border-coral/60 focus:outline-none"
@@ -70,7 +73,7 @@ function LoginForm() {
             aria-busy={working}
             className="min-h-11 w-full rounded-lg bg-coral py-2.5 text-sm font-medium text-white transition-colors enabled:hover:bg-coral-pressed disabled:opacity-50"
           >
-            {working ? "Signing in…" : "Sign in"}
+            {working ? "Oturum açılıyor…" : "Oturum aç"}
           </button>
           {error && (
             <p
@@ -87,7 +90,21 @@ function LoginForm() {
   );
 }
 
-export function PasswordLogin() {
+export function PasswordLogin({ strictLocal }: { strictLocal: boolean }) {
+  if (strictLocal) {
+    return (
+      <div className="flex min-h-screen items-center justify-center px-4">
+        <div className="animate-rise w-full max-w-sm text-center">
+          <StarburstIcon className="mx-auto h-10 w-10 text-coral" />
+          <h1 className="font-display mt-5 text-2xl text-ivory">How Much AI</h1>
+          <p className="mt-2 text-sm text-muted">
+            Devam etmek için How Much AI&apos;ı güvenli başlatıcıdan açın.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Suspense fallback={null}>
       <LoginForm />

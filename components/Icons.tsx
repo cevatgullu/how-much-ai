@@ -29,6 +29,15 @@ export function RefreshIcon({ className }: { className?: string }) {
   );
 }
 
+export function RulerIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M3 17h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M4 17v-5M8 17v-3M12 17V9M16 17v-3M20 17v-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
@@ -87,7 +96,7 @@ export function CopyIcon({ className }: { className?: string }) {
   );
 }
 
-// Google's four-color "G" for the "Sign in with Google" CTA — intentionally uses fixed brand
+// Google's four-color "G" for the "Google ile oturum aç" CTA — intentionally uses fixed brand
 // colors (per Google's identity guidelines) rather than currentColor.
 export function GoogleIcon({ className }: { className?: string }) {
   return (
@@ -130,6 +139,19 @@ export function OpenAIIcon({ className }: { className?: string }) {
         fill="currentColor"
         d="M22.28 9.82a5.98 5.98 0 0 0-.52-4.91 6.05 6.05 0 0 0-6.51-2.9A5.98 5.98 0 0 0 10.9 0a6.05 6.05 0 0 0-5.77 4.19 5.98 5.98 0 0 0-4 2.9 6.05 6.05 0 0 0 .75 7.08 5.98 5.98 0 0 0 .51 4.91 6.05 6.05 0 0 0 6.52 2.9A5.98 5.98 0 0 0 13.1 24a6.05 6.05 0 0 0 5.77-4.2 5.98 5.98 0 0 0 4-2.9 6.05 6.05 0 0 0-.59-7.08zm-9.02 12.6a4.48 4.48 0 0 1-2.88-1.04l.14-.08 4.78-2.76a.78.78 0 0 0 .39-.68v-6.74l2.02 1.17a.07.07 0 0 1 .04.05v5.58a4.5 4.5 0 0 1-4.49 4.5zM3.6 18.3a4.47 4.47 0 0 1-.54-3.02l.14.09 4.78 2.76a.78.78 0 0 0 .78 0l5.84-3.37v2.33a.08.08 0 0 1-.03.06L9.74 19.9a4.5 4.5 0 0 1-6.14-1.6zM2.34 7.9a4.48 4.48 0 0 1 2.34-1.97v5.68a.77.77 0 0 0 .39.67l5.8 3.35-2.02 1.17a.07.07 0 0 1-.07 0l-4.83-2.8A4.5 4.5 0 0 1 2.34 7.9zm16.6 3.86L13.1 8.38l2.02-1.16a.07.07 0 0 1 .07 0l4.83 2.79a4.49 4.49 0 0 1-.68 8.1v-5.68a.78.78 0 0 0-.4-.67zm2.01-3.03l-.14-.09-4.78-2.76a.78.78 0 0 0-.79 0L9.4 9.25V6.92a.07.07 0 0 1 .03-.06l4.83-2.78a4.5 4.5 0 0 1 6.68 4.65zM8.3 12.87l-2.02-1.17a.08.08 0 0 1-.04-.06V6.06a4.5 4.5 0 0 1 7.37-3.45l-.14.08L8.7 5.45a.78.78 0 0 0-.39.68zm1.1-2.37L12 8.99l2.6 1.5v3l-2.6 1.5-2.6-1.5z"
       />
+    </svg>
+  );
+}
+
+// Grok's mark is a slashed ring; drawn as strokes so it stays legible at badge size and in
+// forced-colors mode, where filled paths collapse.
+export function GrokIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden fill="none">
+      <g stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4.6 19.4 19.4 4.6" />
+        <path d="M9.5 19.4a7 7 0 0 0 9.9-9.9" />
+      </g>
     </svg>
   );
 }

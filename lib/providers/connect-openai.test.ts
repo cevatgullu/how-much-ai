@@ -44,9 +44,20 @@ for (const key of [
 }
 process.env.VAULT_DATA_DIR = dataDir;
 process.env.VAULT_ENCRYPTION_SECRET = "connect-openai-test-secret";
+process.env.APP_PASSWORD = "connect-openai-test-password";
+process.env.AUTH_SECRET = "connect-openai-test-auth-secret";
 
 const { POST } = await import("../../app/api/connect/manual/route.ts");
+const { buildProviderAccount, saveProviderAccount } = await import("../connect-account.ts");
+const { createSession, SESSION_COOKIE } = await import("../session.ts");
 const { loadAccounts, saveAccounts } = await import("../vault.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
+
+function authenticatedRequest(input: string, init: RequestInit): Request {
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", sessionCookie);
+  return new Request(input, { ...init, headers });
+}
 
 function jwt(payload: Record<string, unknown>): string {
   const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -78,7 +89,7 @@ test("manual connect saves an OpenAI account with provider, id, and plan from /w
   await saveAccounts("default", []);
   const tokens = { accessToken, refreshToken: "rt-openai", expiresAt: Date.now() + 86_400_000 };
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: "openai", tokens }),
@@ -107,11 +118,65 @@ test("manual connect saves an OpenAI account with provider, id, and plan from /w
 
 test("manual connect rejects an unsupported provider", async () => {
   const response = await POST(
-    new Request("http://localhost/api/connect/manual", {
+    authenticatedRequest("http://localhost/api/connect/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: "bogus", tokens: { accessToken, refreshToken: "x", expiresAt: 1 } }),
     }),
   );
   assert.equal(response.status, 400);
+});
+
+test("managed OpenAI accounts require a refresh token", async () => {
+  const identity = {
+    id: "openai-acc-managed",
+    email: "managed@example.com",
+    plan: "ChatGPT Pro",
+  };
+  const tokens = {
+    accessToken,
+    refreshToken: "rt-openai-managed",
+    expiresAt: 2_000,
+  };
+
+  const built = buildProviderAccount(identity, tokens, "openai", 2_000, "managed");
+  assert.equal(built.credentialKind, "managed");
+  assert.throws(
+    () => buildProviderAccount(identity, { ...tokens, refreshToken: null }, "openai", 2_000, "managed"),
+    /managed app login.*refresh token/i,
+  );
+});
+
+test("managed OpenAI reconnect replaces credentials while preserving nickname and addedAt", async () => {
+  const identity = {
+    id: "openai-acc-managed",
+    email: "updated@example.com",
+    plan: "ChatGPT Plus",
+  };
+  const tokens = {
+    accessToken,
+    refreshToken: "rt-openai-managed-new",
+    expiresAt: 3_000,
+  };
+  await saveAccounts("default", [
+    {
+      id: identity.id,
+      email: "old@example.com",
+      label: "Primary",
+      plan: "ChatGPT Pro",
+      addedAt: 1_000,
+      credentialKind: "rotating",
+      provider: "openai",
+      tokens: { ...tokens, refreshToken: "rt-openai-managed-old", expiresAt: 1_500 },
+    },
+  ]);
+
+  await saveProviderAccount("default", identity, tokens, "openai", "managed");
+
+  const [saved] = await loadAccounts("default");
+  assert.equal(saved.credentialKind, "managed");
+  assert.equal(saved.label, "Primary");
+  assert.equal(saved.addedAt, 1_000);
+  assert.equal(saved.email, "updated@example.com");
+  assert.deepEqual(saved.tokens, tokens);
 });

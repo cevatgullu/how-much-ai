@@ -20,6 +20,8 @@ import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { scopedKey } from "./app-config";
 import { withLocalVaultMutationLock } from "./local-file-lock";
+import { assertProductionSecretEnvironment } from "./strict-local-mode";
+import { enforcePrivateWindowsAcl } from "./windows-private-acl";
 import type { AccountCredentialKind, AccountTokens, StoredAccount } from "./types";
 import type { ProviderId } from "./providers/types";
 
@@ -85,16 +87,29 @@ function existingLocalEncryptionSecret(): string | null {
   }
 }
 
+// Recovery classification must be observational: reading an existing key may identify a migration
+// generation, but it must not chmod the key, populate the active cache, or create a replacement.
+function inspectExistingLocalEncryptionSecret(): string | null {
+  if (generatedLocalSecret) return generatedLocalSecret;
+  try {
+    const existing = readFileSync(localKeyFile(), "utf8").trim();
+    if (existing.length < 32) throw new Error("Local vault key is invalid");
+    return existing;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 // All writes in one app process share this per-user queue. The storage backends hold one encrypted
 // array, so an account mutation has to keep its read + transform + write together or two callers can
 // both read the same version and silently discard one another's changes.
 const mutationQueues = new Map<string, Promise<void>>();
 
-// New blobs prefer a dedicated, stable encryption secret. VAULT_ACCESS_SECRET is already required
-// by hosted Convex deployments and is a high-entropy stable fallback; APP_PASSWORD is retained only
-// for backward-compatible/self-hosted setups. Existing blobs remain key-sticky: a mutation encrypts
-// with the exact candidate that successfully decrypted its current generation, so adding or changing
-// a preferred environment variable can never silently re-key a shared remote vault.
+// Production writes are selected later and always require the dedicated VAULT_ENCRYPTION_SECRET.
+// Development retains historical configured fallbacks plus this generated local-file key for
+// zero-config use. A readable development generation remains key-sticky, while production refuses
+// legacy-key ciphertext for explicit offline migration instead of silently re-keying it.
 function localEncryptionSecret(): string {
   const existingSecret = existingLocalEncryptionSecret();
   if (existingSecret) return existingSecret;
@@ -133,7 +148,9 @@ function encryptionKey(secret = encryptionSecret()): Buffer {
 
 function encrypt(plaintext: string, secret = encryptionSecret()): string {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(secret), iv);
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(secret), iv, {
+    authTagLength: 16,
+  });
   const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `v2:${iv.toString("base64")}:${tag.toString("base64")}:${enc.toString("base64")}`;
@@ -145,7 +162,12 @@ function keyProof(secret: string): string {
 
 function decryptParts(ivB64: string, tagB64: string, dataB64: string, secret: string): string {
   if (!ivB64 || !tagB64 || !dataB64) throw new Error("malformed vault blob");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(secret), Buffer.from(ivB64, "base64"));
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    encryptionKey(secret),
+    Buffer.from(ivB64, "base64"),
+    { authTagLength: 16 },
+  );
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
   return Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]).toString("utf8");
 }
@@ -155,13 +177,34 @@ interface DecryptedValue {
   secret: string;
 }
 
-function decryptionCandidates(): string[] {
+interface DecryptionOptions {
+  mutateLocalKeyMetadata?: boolean;
+}
+
+function localDecryptionSecrets(options: DecryptionOptions): {
+  preferred: string;
+  existing: string | null;
+} {
+  const mutateLocalKeyMetadata = options.mutateLocalKeyMetadata !== false;
+  const existing = mutateLocalKeyMetadata
+    ? existingLocalEncryptionSecret()
+    : inspectExistingLocalEncryptionSecret();
+  const configured = configuredEncryptionSecret();
+  const preferred =
+    configured ?? existing ?? (mutateLocalKeyMetadata ? localEncryptionSecret() : LOCAL_FALLBACK_SECRET);
+  return { preferred, existing };
+}
+
+function decryptionCandidates(options: DecryptionOptions = {}): string[] {
   // A remote vault must never inspect a bundled/local key file. Besides being irrelevant to a
   // shared backend, serverless filesystems can expose a traced file as read-only: the chmod used to
   // enforce local 0600 permissions would then throw EROFS before the valid remote key is attempted.
   const local = storageBackend() === "file";
-  const preferredSecret = local ? encryptionSecret() : configuredEncryptionSecret() || LOCAL_FALLBACK_SECRET;
-  const existingLocalSecret = local ? existingLocalEncryptionSecret() : null;
+  const localSecrets = local ? localDecryptionSecrets(options) : null;
+  const preferredSecret = local
+    ? localSecrets!.preferred
+    : configuredEncryptionSecret() || LOCAL_FALLBACK_SECRET;
+  const existingLocalSecret = localSecrets?.existing ?? null;
   return [
     preferredSecret,
     ...decryptionEnvironmentVariants("VAULT_ENCRYPTION_SECRET"),
@@ -172,13 +215,13 @@ function decryptionCandidates(): string[] {
   ].filter((secret, index, all): secret is string => Boolean(secret) && all.indexOf(secret) === index);
 }
 
-function decryptWithSecret(blob: string): DecryptedValue {
+function decryptWithSecret(blob: string, options: DecryptionOptions = {}): DecryptedValue {
   const parts = blob.split(":");
   if (parts[0] === "v2") {
     if (parts.length !== 4) throw new Error("malformed vault blob");
     // Try current supported stable sources so an operator can add VAULT_ENCRYPTION_SECRET after a
     // vault was initially written with the hosted access secret or local fallback.
-    for (const secret of decryptionCandidates()) {
+    for (const secret of decryptionCandidates(options)) {
       try {
         return { plaintext: decryptParts(parts[1], parts[2], parts[3], secret), secret };
       } catch {
@@ -193,12 +236,13 @@ function decryptWithSecret(blob: string): DecryptedValue {
   // fallback. Try each unique candidate so operators can add a stable key without first rewriting
   // the vault under the old password. A later successful mutation writes the versioned v2 format.
   const local = storageBackend() === "file";
+  const localSecrets = local ? localDecryptionSecrets(options) : null;
   const legacySecrets = [
     ...decryptionEnvironmentVariants("APP_PASSWORD"),
     ...decryptionEnvironmentVariants("VAULT_ENCRYPTION_SECRET"),
     LOCAL_FALLBACK_SECRET,
     ...decryptionEnvironmentVariants("VAULT_ACCESS_SECRET"),
-    local ? encryptionSecret() : configuredEncryptionSecret() || LOCAL_FALLBACK_SECRET,
+    local ? localSecrets!.preferred : configuredEncryptionSecret() || LOCAL_FALLBACK_SECRET,
   ].filter((secret, index, all): secret is string => Boolean(secret) && all.indexOf(secret) === index);
   for (const secret of legacySecrets) {
     try {
@@ -208,10 +252,6 @@ function decryptWithSecret(blob: string): DecryptedValue {
     }
   }
   throw new Error("vault authentication failed");
-}
-
-function decrypt(blob: string): string {
-  return decryptWithSecret(blob).plaintext;
 }
 
 // --- storage backends ---------------------------------------------------------
@@ -227,6 +267,60 @@ export class VaultEncryptionKeyMismatchError extends Error {
   constructor() {
     super("Vault encryption key mismatch");
     this.name = "VaultEncryptionKeyMismatchError";
+  }
+}
+
+export class VaultKeyMigrationRequiredError extends VaultEncryptionKeyMismatchError {
+  constructor() {
+    super();
+    this.message = "Vault key migration required";
+    this.name = "VaultKeyMigrationRequiredError";
+  }
+}
+
+function assertCredentialKeyAllowed(secret: string): void {
+  const backend = storageBackend();
+  const requiredProductionSecret =
+    process.env.NODE_ENV === "production"
+      ? normalizedEnvironmentValue("VAULT_ENCRYPTION_SECRET")
+      : null;
+  if (
+    (requiredProductionSecret !== null && secret !== requiredProductionSecret) ||
+    (backend !== "file" && secret === LOCAL_FALLBACK_SECRET)
+  ) {
+    throw new VaultKeyMigrationRequiredError();
+  }
+}
+
+function decryptCredentialPayloadExactly(blob: string, secret: string): string {
+  const parts = blob.split(":");
+  if (parts[0] === "v2") {
+    if (parts.length !== 4) throw new Error("malformed vault blob");
+    return decryptParts(parts[1], parts[2], parts[3], secret);
+  }
+  if (parts.length !== 3) throw new Error("malformed vault blob");
+  return decryptParts(parts[0], parts[1], parts[2], secret);
+}
+
+function decryptCredentialPayload(blob: string, secret: string): string {
+  assertCredentialKeyAllowed(secret);
+  try {
+    return decryptCredentialPayloadExactly(blob, secret);
+  } catch (exactError) {
+    // Never return plaintext under a non-authoritative candidate. A narrow authentication-only
+    // probe retains the actionable migration error for known forbidden historical keys; a journal
+    // under any other allowed-but-divergent key remains a generic wrong-key failure.
+    for (const candidate of decryptionCandidates()) {
+      if (candidate === secret) continue;
+      try {
+        decryptCredentialPayloadExactly(blob, candidate);
+      } catch {
+        continue;
+      }
+      assertCredentialKeyAllowed(candidate);
+      break;
+    }
+    throw exactError;
   }
 }
 
@@ -267,6 +361,9 @@ function pairedRemoteConfig(
 }
 
 function storageSelection(): StorageSelection {
+  // Every vault path (including reads of a missing vault) crosses this selector. Production cannot
+  // reach generated or legacy fallback keys before the shared secret policy has been validated.
+  assertProductionSecretEnvironment();
   const explicitConvexUrl = env("CONVEX_URL");
   const publicConvexUrl = env("NEXT_PUBLIC_CONVEX_URL");
   const convexSecret = env("VAULT_ACCESS_SECRET");
@@ -313,6 +410,37 @@ function fileFor(userId: string): string {
   return path.join(dataDir, `vault${suffix}.enc`);
 }
 
+function localDataDir(): string {
+  return process.env.VAULT_DATA_DIR || path.join(process.cwd(), ".data");
+}
+
+function localDataDirectoryError(): NodeJS.ErrnoException {
+  const error = new Error("Local vault data directory is not a directory") as NodeJS.ErrnoException;
+  error.code = "ENOTDIR";
+  return error;
+}
+
+async function validateLocalDataDirectoryAfterMissing(): Promise<void> {
+  let info;
+  try {
+    info = await fs.stat(localDataDir());
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!info.isDirectory()) throw localDataDirectoryError();
+}
+
+async function readOptionalLocalVaultFile(file: string): Promise<string | null> {
+  try {
+    return await fs.readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await validateLocalDataDirectoryAfterMissing();
+    return null;
+  }
+}
+
 function backupFileFor(userId: string): string {
   return `${fileFor(userId)}.last-good`;
 }
@@ -342,6 +470,10 @@ async function writePrivateFileAtomically(file: string, value: string): Promise<
     await handle.sync();
     await handle.close();
     handle = null;
+    // Windows takes its access control from the parent directory by inheritance, and chmod above
+    // does not touch it. Tighten the temp file before it is published so the rename never exposes
+    // a file the secure-local startup check would reject. See lib/windows-private-acl.ts.
+    await enforcePrivateWindowsAcl(temp);
     await fs.rename(temp, file);
   } catch (err) {
     await handle?.close().catch(() => {});
@@ -393,14 +525,7 @@ async function readRaw(userId: string): Promise<string | null> {
   if (storage.type === "redis") {
     return (await redisCommand(storage.config, ["GET", scopedKey(REDIS_BASE, userId)])) as string | null;
   }
-  try {
-    return await fs.readFile(fileFor(userId), "utf8");
-  } catch (err) {
-    // A missing file is a new/empty vault. Permission errors, directories at the file path, I/O
-    // errors, and every other failure must surface rather than masquerading as an empty vault.
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    throw err;
-  }
+  return readOptionalLocalVaultFile(fileFor(userId));
 }
 
 async function readBackupRaw(userId: string): Promise<string | null> {
@@ -415,12 +540,7 @@ async function readBackupRaw(userId: string): Promise<string | null> {
   if (storage.type === "redis") {
     return (await redisCommand(storage.config, ["GET", scopedKey(REDIS_BACKUP_BASE, userId)])) as string | null;
   }
-  try {
-    return await fs.readFile(backupFileFor(userId), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    throw error;
-  }
+  return readOptionalLocalVaultFile(backupFileFor(userId));
 }
 
 async function readStoredKeyProof(userId: string): Promise<string | null> {
@@ -436,6 +556,15 @@ async function readStoredKeyProof(userId: string): Promise<string | null> {
     return (await redisCommand(storage.config, ["GET", scopedKey(REDIS_KEY_PROOF_KEY, userId)])) as string | null;
   }
   return null;
+}
+
+async function assertEmptyRemoteVaultProofAllowed(userId: string): Promise<void> {
+  if (storageBackend() === "file") return;
+  const storedProof = await readStoredKeyProof(userId);
+  if (storedProof === null) return;
+  const matching = decryptionCandidates().find((candidate) => keyProof(candidate) === storedProof);
+  if (!matching) throw new VaultEncryptionKeyMismatchError();
+  assertCredentialKeyAllowed(matching);
 }
 
 const REDIS_MISSING_SENTINEL = "__HMC_VAULT_MISSING__";
@@ -466,12 +595,20 @@ const REDIS_RESTORE_BACKUP = [
 ].join("\n");
 
 const REDIS_AUX_COMPARE_AND_SET = [
+  "local proof = redis.call('GET', KEYS[2])",
+  "if not proof or proof ~= ARGV[3] then return -1 end",
   "local current = redis.call('GET', KEYS[1])",
   "local expected = ARGV[1]",
   `local matches = (expected == '${REDIS_MISSING_SENTINEL}' and current == false) or current == expected`,
   "if not matches then return 0 end",
   "redis.call('SET', KEYS[1], ARGV[2])",
   "return 1",
+].join("\n");
+
+const REDIS_AUX_READ_WITH_PROOF = [
+  "local proof = redis.call('GET', KEYS[2])",
+  "if not proof or proof ~= ARGV[1] then return -1 end",
+  "return redis.call('GET', KEYS[1])",
 ].join("\n");
 
 // Cross-instance compare-and-set for the shared remote backends. Convex performs this in one
@@ -484,6 +621,18 @@ async function compareAndSetRaw(
   proof: string,
 ): Promise<boolean> {
   const storage = storageSelection();
+  if (storage.type !== "file") {
+    const requiredProductionSecret =
+      process.env.NODE_ENV === "production"
+        ? normalizedEnvironmentValue("VAULT_ENCRYPTION_SECRET")
+        : null;
+    if (
+      proof === keyProof(LOCAL_FALLBACK_SECRET) ||
+      (requiredProductionSecret !== null && proof !== keyProof(requiredProductionSecret))
+    ) {
+      throw new VaultKeyMigrationRequiredError();
+    }
+  }
   if (storage.type === "convex") {
     const client = new ConvexHttpClient(storage.config.url);
     try {
@@ -533,6 +682,18 @@ async function restoreBackupRaw(
   localLockHeld = false,
 ): Promise<boolean> {
   const storage = storageSelection();
+  if (storage.type !== "file") {
+    const requiredProductionSecret =
+      process.env.NODE_ENV === "production"
+        ? normalizedEnvironmentValue("VAULT_ENCRYPTION_SECRET")
+        : null;
+    if (
+      proof === keyProof(LOCAL_FALLBACK_SECRET) ||
+      (requiredProductionSecret !== null && proof !== keyProof(requiredProductionSecret))
+    ) {
+      throw new VaultKeyMigrationRequiredError();
+    }
+  }
   if (storage.type === "convex") {
     const client = new ConvexHttpClient(storage.config.url);
     try {
@@ -587,6 +748,53 @@ export interface VaultRecoveryResult {
   backupArchive?: string;
 }
 
+function sameRecoveryFileIdentity(
+  current: Awaited<ReturnType<typeof fs.lstat>>,
+  expected: Awaited<ReturnType<typeof fs.lstat>>,
+): boolean {
+  return (
+    current.dev === expected.dev &&
+    current.ino === expected.ino &&
+    current.size === expected.size &&
+    current.mtimeMs === expected.mtimeMs
+  );
+}
+
+async function rejectLocalRecoveryKeyMigrationBeforeLock(userId: string): Promise<void> {
+  const source = fileFor(userId);
+  let inspectBackup = false;
+  try {
+    const sourceInfo = await fs.lstat(source);
+    if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) return;
+    try {
+      parseRawAccounts(await fs.readFile(source, "utf8"), { mutateLocalKeyMetadata: false });
+      return;
+    } catch (error) {
+      if (error instanceof VaultKeyMigrationRequiredError) throw error;
+      inspectBackup = true;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    inspectBackup = true;
+  }
+  if (!inspectBackup) return;
+
+  const backup = backupFileFor(userId);
+  let backupInfo: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    backupInfo = await fs.lstat(backup);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!backupInfo.isFile() || backupInfo.isSymbolicLink()) return;
+  try {
+    parseRawAccounts(await fs.readFile(backup, "utf8"), { mutateLocalKeyMetadata: false });
+  } catch (error) {
+    if (error instanceof VaultKeyMigrationRequiredError) throw error;
+  }
+}
+
 // Preserve an unreadable local vault byte-for-byte under a non-sensitive archive name, then leave
 // the canonical path absent so the app can start with an empty vault. This is intentionally much
 // narrower than a general reset API: readable vaults, missing vaults, remote backends, directories,
@@ -598,6 +806,10 @@ export async function recoverUnreadableLocalVault(userId: string): Promise<Vault
       `Unreadable-vault recovery is only available for local file storage. This app uses ${backend} storage; restore the matching encryption secret or recover the saved value in that backend.`,
     );
   }
+
+  // Acquiring the cross-process lock creates lock metadata. Detect a configured historical key
+  // first so the migration-required path is completely observational, including directory entries.
+  await rejectLocalRecoveryKeyMigrationBeforeLock(userId);
 
   return serializeForUser(userId, () =>
     withLocalVaultMutationLock(userId, async () => {
@@ -618,16 +830,14 @@ export async function recoverUnreadableLocalVault(userId: string): Promise<Vault
       }
 
       const dir = path.dirname(source);
-      // Older releases could leave the data directory or a legacy vault/archive world-readable.
-      // Tighten both before reading or renaming so recovery can never preserve those permissions.
-      await fs.chmod(dir, 0o700);
-      await fs.chmod(source, 0o600);
-
       const raw = await fs.readFile(source, "utf8");
       let unreadable = false;
       try {
-        parseRawAccounts(raw);
-      } catch {
+        parseRawAccounts(raw, { mutateLocalKeyMetadata: false });
+      } catch (error) {
+        // A readable generation under a configured historical key is not corruption. It needs an
+        // explicit key migration, and recovery must not even change filesystem permission metadata.
+        if (error instanceof VaultKeyMigrationRequiredError) throw error;
         // This is the one permitted state: the same operation used by loadAccounts cannot read the
         // current bytes. Never include its encryption/schema detail in the archive name or response.
         unreadable = true;
@@ -648,15 +858,15 @@ export async function recoverUnreadableLocalVault(userId: string): Promise<Vault
             "The local last-known-good backup is not a regular file. Nothing was archived; inspect it manually.",
           );
         }
-        await fs.chmod(backupSource, 0o600);
         unreadableBackupRaw = await fs.readFile(backupSource, "utf8");
         try {
-          parseRawAccounts(unreadableBackupRaw);
+          parseRawAccounts(unreadableBackupRaw, { mutateLocalKeyMetadata: false });
           throw new VaultRecoveryError(
             "A readable last-known-good backup is available. Reload saved accounts so it can be restored automatically.",
           );
         } catch (error) {
           if (error instanceof VaultRecoveryError) throw error;
+          if (error instanceof VaultKeyMigrationRequiredError) throw error;
           // Both generations are unreadable. Preserve both under non-canonical archive names so a
           // successful manual recovery cannot immediately resurrect or trip over the stale backup.
         }
@@ -666,16 +876,83 @@ export async function recoverUnreadableLocalVault(userId: string): Promise<Vault
         unreadableBackupRaw = null;
       }
 
+      // Only genuinely corrupt generations reach this point. Validate every path before permission
+      // hardening, then chmod the already-opened inodes so a path swap cannot redirect chmod to a
+      // symlink/hardlink target outside the vault.
+      const directoryBefore = await fs.lstat(dir);
+      if (!directoryBefore.isDirectory() || directoryBefore.isSymbolicLink()) {
+        throw new VaultRecoveryError(
+          "The local vault data directory is not a real directory. Nothing was archived; inspect it manually.",
+        );
+      }
+      const sourceHandle = await fs.open(source, "r");
+      let directoryHandle: Awaited<ReturnType<typeof fs.open>> | null = null;
+      let backupHandle: Awaited<ReturnType<typeof fs.open>> | null = null;
+      try {
+        directoryHandle = await fs.open(dir, "r");
+        const [sourceHandleInfo, sourcePathInfo, directoryHandleInfo, directoryPathInfo] = await Promise.all([
+          sourceHandle.stat(),
+          fs.lstat(source),
+          directoryHandle.stat(),
+          fs.lstat(dir),
+        ]);
+        if (
+          !sourceHandleInfo.isFile() ||
+          !sameRecoveryFileIdentity(sourceHandleInfo, before) ||
+          !sourcePathInfo.isFile() ||
+          sourcePathInfo.isSymbolicLink() ||
+          !sameRecoveryFileIdentity(sourcePathInfo, before) ||
+          !directoryHandleInfo.isDirectory() ||
+          directoryHandleInfo.dev !== directoryBefore.dev ||
+          directoryHandleInfo.ino !== directoryBefore.ino ||
+          !directoryPathInfo.isDirectory() ||
+          directoryPathInfo.isSymbolicLink() ||
+          directoryPathInfo.dev !== directoryBefore.dev ||
+          directoryPathInfo.ino !== directoryBefore.ino
+        ) {
+          throw new VaultRecoveryError(
+            "The local vault changed while recovery was being prepared. Nothing was archived; retry after reloading.",
+          );
+        }
+
+        if (backupBefore) {
+          backupHandle = await fs.open(backupSource, "r");
+          const [backupHandleInfo, backupPathInfo] = await Promise.all([
+            backupHandle.stat(),
+            fs.lstat(backupSource),
+          ]);
+          if (
+            !backupHandleInfo.isFile() ||
+            !sameRecoveryFileIdentity(backupHandleInfo, backupBefore) ||
+            !backupPathInfo.isFile() ||
+            backupPathInfo.isSymbolicLink() ||
+            !sameRecoveryFileIdentity(backupPathInfo, backupBefore)
+          ) {
+            throw new VaultRecoveryError(
+              "The local last-known-good backup changed while recovery was being prepared. Nothing was archived; retry after reloading.",
+            );
+          }
+        }
+
+        await sourceHandle.chmod(0o600);
+        if (backupHandle) await backupHandle.chmod(0o600);
+        // Windows rejects fchmod on directory handles, and path-based chmod would reintroduce the
+        // checked-path/changed-target race. Windows directory confidentiality is enforced by the
+        // reviewed ACL installer; POSIX can safely harden this exact opened directory inode.
+        if (process.platform !== "win32") await directoryHandle.chmod(0o700);
+      } finally {
+        await backupHandle?.close().catch(() => {});
+        await directoryHandle?.close().catch(() => {});
+        await sourceHandle.close().catch(() => {});
+      }
+
       // Refuse to move a path that was replaced between validation and archival. All app writers
       // honor this cross-process lock; this check also fails safe around manual filesystem changes.
       const current = await fs.lstat(source);
       if (
         !current.isFile() ||
         current.isSymbolicLink() ||
-        current.dev !== before.dev ||
-        current.ino !== before.ino ||
-        current.size !== before.size ||
-        current.mtimeMs !== before.mtimeMs
+        !sameRecoveryFileIdentity(current, before)
       ) {
         throw new VaultRecoveryError(
           "The local vault changed while recovery was being prepared. Nothing was archived; retry after reloading.",
@@ -687,10 +964,7 @@ export async function recoverUnreadableLocalVault(userId: string): Promise<Vault
         if (
           !currentBackup.isFile() ||
           currentBackup.isSymbolicLink() ||
-          currentBackup.dev !== backupBefore.dev ||
-          currentBackup.ino !== backupBefore.ino ||
-          currentBackup.size !== backupBefore.size ||
-          currentBackup.mtimeMs !== backupBefore.mtimeMs
+          !sameRecoveryFileIdentity(currentBackup, backupBefore)
         ) {
           throw new VaultRecoveryError(
             "The local last-known-good backup changed while recovery was being prepared. Nothing was archived; retry after reloading.",
@@ -741,9 +1015,6 @@ export async function recoverUnreadableLocalVault(userId: string): Promise<Vault
           }
           throw error;
         }
-        await fs.chmod(destination, 0o600);
-        if (backupDestination) await fs.chmod(backupDestination, 0o600);
-        await fs.chmod(dir, 0o700);
         return { archive, ...(backupArchive ? { backupArchive } : {}) };
       }
       throw new VaultRecoveryError("Couldn't allocate a unique local vault archive name. Nothing was changed.");
@@ -785,20 +1056,36 @@ function recoveryStorageKey(base: string, userId: string, accountId: string): st
   return scopedKey(`${base}:${crypto.createHash("sha256").update(accountId).digest("hex")}`, userId);
 }
 
-async function readTokenRecoveryRaw(userId: string, accountId: string): Promise<string | null> {
+async function readTokenRecoveryRaw(
+  userId: string,
+  accountId: string,
+  proof: string,
+): Promise<string | null> {
   const storage = storageSelection();
   if (storage.type === "convex") {
     const client = new ConvexHttpClient(storage.config.url);
-    return (await client.query(anyApi.vault.get, {
-      secret: storage.config.secret,
-      key: recoveryStorageKey(RECOVERY_CONVEX_BASE, userId, accountId),
-    })) as string | null;
+    try {
+      return (await client.query(anyApi.vault.getAuxiliary, {
+        secret: storage.config.secret,
+        key: recoveryStorageKey(RECOVERY_CONVEX_BASE, userId, accountId),
+        proofKey: scopedKey(CONVEX_KEY_PROOF_BASE, userId),
+        keyProof: proof,
+      })) as string | null;
+    } catch (error) {
+      throwMappedKeyMismatch(error);
+    }
   }
   if (storage.type === "redis") {
-    return (await redisCommand(storage.config, [
-      "GET",
+    const result = await redisCommand(storage.config, [
+      "EVAL",
+      REDIS_AUX_READ_WITH_PROOF,
+      "2",
       recoveryStorageKey(RECOVERY_REDIS_BASE, userId, accountId),
-    ])) as string | null;
+      scopedKey(REDIS_KEY_PROOF_KEY, userId),
+      proof,
+    ]);
+    if (Number(result) === -1) throw new VaultEncryptionKeyMismatchError();
+    return result as string | null;
   }
   try {
     return await fs.readFile(recoveryFileFor(userId, accountId), "utf8");
@@ -813,42 +1100,57 @@ async function compareAndSetTokenRecoveryRaw(
   accountId: string,
   expected: string | null,
   value: string,
+  proof: string,
 ): Promise<boolean> {
   const storage = storageSelection();
   if (storage.type === "convex") {
     const client = new ConvexHttpClient(storage.config.url);
-    return (await client.mutation(anyApi.vault.compareAndSetAuxiliary, {
-      secret: storage.config.secret,
-      key: recoveryStorageKey(RECOVERY_CONVEX_BASE, userId, accountId),
-      expected,
-      data: value,
-    })) as boolean;
+    try {
+      return (await client.mutation(anyApi.vault.compareAndSetAuxiliary, {
+        secret: storage.config.secret,
+        key: recoveryStorageKey(RECOVERY_CONVEX_BASE, userId, accountId),
+        expected,
+        data: value,
+        proofKey: scopedKey(CONVEX_KEY_PROOF_BASE, userId),
+        keyProof: proof,
+      })) as boolean;
+    } catch (error) {
+      throwMappedKeyMismatch(error);
+    }
   }
   if (storage.type === "redis") {
     const result = await redisCommand(storage.config, [
       "EVAL",
       REDIS_AUX_COMPARE_AND_SET,
-      "1",
+      "2",
       recoveryStorageKey(RECOVERY_REDIS_BASE, userId, accountId),
+      scopedKey(REDIS_KEY_PROOF_KEY, userId),
       expected ?? REDIS_MISSING_SENTINEL,
       value,
+      proof,
     ]);
+    if (Number(result) === -1) throw new VaultEncryptionKeyMismatchError();
     return Number(result) === 1;
   }
   return withLocalVaultMutationLock(userId, async () => {
-    const current = await readTokenRecoveryRaw(userId, accountId);
+    const current = await readTokenRecoveryRaw(userId, accountId, proof);
     if (current !== expected) return false;
     await writePrivateFileAtomically(recoveryFileFor(userId, accountId), value);
     return true;
   });
 }
 
-function parseTokenRecoveryRaw(raw: string | null, accountId: string): TokenRecoveryRecord | null {
+function parseTokenRecoveryRaw(
+  raw: string | null,
+  accountId: string,
+  secret: string,
+): TokenRecoveryRecord | null {
   if (raw === null) return null;
   let value: unknown;
   try {
-    value = JSON.parse(decrypt(raw));
-  } catch {
+    value = JSON.parse(decryptCredentialPayload(raw, secret));
+  } catch (error) {
+    if (error instanceof VaultKeyMigrationRequiredError) throw error;
     throw new Error("The encrypted rotated-token recovery journal is corrupt or uses the wrong encryption secret");
   }
   if (value === null) return null;
@@ -900,10 +1202,11 @@ export async function saveTokenRecovery(
     throw new VaultValidationError("Rotated-token recovery record is invalid");
   }
   const secret = await credentialRecordEncryptionSecret(userId);
+  const proof = keyProof(secret);
   const ciphertext = encrypt(JSON.stringify(record), secret);
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const currentRaw = await readTokenRecoveryRaw(userId, record.accountId);
-    const current = parseTokenRecoveryRaw(currentRaw, record.accountId);
+    const currentRaw = await readTokenRecoveryRaw(userId, record.accountId, proof);
+    const current = parseTokenRecoveryRaw(currentRaw, record.accountId, secret);
     if (current && sameRecoveryRecord(current, record)) {
       return { record: current, ciphertext: currentRaw! };
     }
@@ -912,7 +1215,15 @@ export async function saveTokenRecovery(
     if (current && current.tokens.refreshToken !== record.expectedRefreshToken) {
       throw new VaultRecoveryError("A different rotated-token recovery generation is already pending");
     }
-    if (await compareAndSetTokenRecoveryRaw(userId, record.accountId, currentRaw, ciphertext)) {
+    if (
+      await compareAndSetTokenRecoveryRaw(
+        userId,
+        record.accountId,
+        currentRaw,
+        ciphertext,
+        proof,
+      )
+    ) {
       return { record, ciphertext };
     }
   }
@@ -923,8 +1234,10 @@ export async function loadTokenRecovery(
   userId: string,
   accountId: string,
 ): Promise<TokenRecoveryGeneration | null> {
-  const raw = await readTokenRecoveryRaw(userId, accountId);
-  const recovered = parseTokenRecoveryRaw(raw, accountId);
+  const secret = await credentialRecordEncryptionSecret(userId);
+  const proof = keyProof(secret);
+  const raw = await readTokenRecoveryRaw(userId, accountId, proof);
+  const recovered = parseTokenRecoveryRaw(raw, accountId, secret);
   return recovered && raw ? { record: recovered, ciphertext: raw } : null;
 }
 
@@ -936,14 +1249,20 @@ export async function clearTokenRecovery(
   if (generation.record.accountId !== accountId || !generation.ciphertext) {
     throw new VaultValidationError("Rotated-token recovery generation is invalid");
   }
+  const secret = await credentialRecordEncryptionSecret(userId);
+  const proof = keyProof(secret);
+  const storedGeneration = parseTokenRecoveryRaw(generation.ciphertext, accountId, secret);
+  if (!storedGeneration || !sameRecoveryRecord(storedGeneration, generation.record)) {
+    throw new VaultValidationError("Rotated-token recovery generation is invalid");
+  }
   // An encrypted tombstone removes all credential material while keeping the operation supported by
   // the secret-gated backends. Exact ciphertext CAS means a stale worker cannot clear a newer record.
-  const secret = await credentialRecordEncryptionSecret(userId);
   return compareAndSetTokenRecoveryRaw(
     userId,
     accountId,
     generation.ciphertext,
     encrypt("null", secret),
+    proof,
   );
 }
 
@@ -1065,12 +1384,18 @@ export function parseStoredAccounts(value: unknown): StoredAccount[] {
     // Provider discriminator. Absent ≡ "anthropic"; only non-default ids are stored, so Anthropic
     // records round-trip byte-identically (and pre-provider vaults keep validating unchanged).
     const providerValue = candidate.provider;
-    if (providerValue !== undefined && providerValue !== "anthropic" && providerValue !== "openai") {
+    if (
+      providerValue !== undefined &&
+      providerValue !== "anthropic" &&
+      providerValue !== "openai" &&
+      providerValue !== "grok"
+    ) {
       throw new VaultValidationError(
-        `accounts[${index}].provider must be "anthropic" or "openai" when present`,
+        `accounts[${index}].provider must be "anthropic", "openai", or "grok" when present`,
       );
     }
-    const provider: ProviderId | undefined = providerValue === "openai" ? "openai" : undefined;
+    const provider: ProviderId | undefined =
+      providerValue === "openai" ? "openai" : providerValue === "grok" ? "grok" : undefined;
 
     const fullName = optionalBoundedString(candidate.fullName, "fullName", index);
     const label = optionalBoundedString(candidate.label, "label", index);
@@ -1119,21 +1444,29 @@ interface ParsedVaultState {
   encryptionSecretUsed: string | null;
 }
 
-function parseRawAccountsState(raw: string | null): ParsedVaultState {
+function parseRawAccountsState(
+  raw: string | null,
+  options: DecryptionOptions = {},
+): ParsedVaultState {
   if (raw === null) return { raw, accounts: [], encryptionSecretUsed: null };
   if (typeof raw !== "string") throw new Error("Saved accounts vault returned an invalid storage value");
   try {
-    const decrypted = decryptWithSecret(raw);
+    const decrypted = decryptWithSecret(raw, options);
+    assertCredentialKeyAllowed(decrypted.secret);
     const parsed = JSON.parse(decrypted.plaintext);
     return { raw, accounts: parseStoredAccounts(parsed), encryptionSecretUsed: decrypted.secret };
   } catch (err) {
+    if (err instanceof VaultKeyMigrationRequiredError) throw err;
     const detail = err instanceof VaultValidationError ? err.message : "decryption or JSON parsing failed";
     throw new Error(`Saved accounts vault is corrupt or uses the wrong encryption secret: ${detail}`);
   }
 }
 
-function parseRawAccounts(raw: string | null): StoredAccount[] {
-  return parseRawAccountsState(raw).accounts;
+function parseRawAccounts(
+  raw: string | null,
+  options: DecryptionOptions = {},
+): StoredAccount[] {
+  return parseRawAccountsState(raw, options).accounts;
 }
 
 async function encryptionSecretForNewVault(userId: string): Promise<string> {
@@ -1141,15 +1474,23 @@ async function encryptionSecretForNewVault(userId: string): Promise<string> {
   if (storedProof !== null) {
     const matching = decryptionCandidates().find((candidate) => keyProof(candidate) === storedProof);
     if (!matching) throw new VaultEncryptionKeyMismatchError();
+    assertCredentialKeyAllowed(matching);
     return matching;
   }
 
   const storage = storageSelection();
-  // Convex's access secret is required by and stored with the backend deployment, so it is the one
-  // server-proven bootstrap key every fresh instance shares. A preferred override is honored only
-  // after a proof exists; otherwise two rolling deployments could create the first generation with
-  // different values before either can read the other's ciphertext.
-  if (storage.type === "convex") return storage.config.secret;
+  if (process.env.NODE_ENV === "production") {
+    const stable = env("VAULT_ENCRYPTION_SECRET")!;
+    assertCredentialKeyAllowed(stable);
+    return stable;
+  }
+  // Production always uses the separately validated vault-encryption secret. Development retains
+  // the historical Convex access-key bootstrap so existing non-production rollout fixtures and
+  // deployments remain readable without weakening the production key boundary.
+  if (storage.type === "convex") {
+    assertCredentialKeyAllowed(storage.config.secret);
+    return storage.config.secret;
+  }
   if (storage.type === "redis") {
     const stable = env("VAULT_ENCRYPTION_SECRET");
     if (!stable) {
@@ -1157,6 +1498,7 @@ async function encryptionSecretForNewVault(userId: string): Promise<string> {
         "Redis vault storage requires VAULT_ENCRYPTION_SECRET before the first account can be saved",
       );
     }
+    assertCredentialKeyAllowed(stable);
     return stable;
   }
   return encryptionSecret();
@@ -1194,6 +1536,7 @@ async function readParsedAccounts(
         lastRaceError = new Error("Saved accounts changed while their encryption guard was being established");
         continue;
       } catch (error) {
+        if (error instanceof VaultKeyMigrationRequiredError) throw error;
         mainError = error instanceof Error ? error : new Error("Saved accounts vault is unreadable");
       }
     }
@@ -1201,6 +1544,9 @@ async function readParsedAccounts(
     const backupRaw = await readBackupRaw(userId);
     if (backupRaw === null) {
       if (mainError) throw mainError;
+      // A proof without main/backup ciphertext still fences this tenant. Validate it before an
+      // empty account list can escape or a mutator callback can observe the synthetic empty state.
+      await assertEmptyRemoteVaultProofAllowed(userId);
       return { raw: null, accounts: [], encryptionSecretUsed: null };
     }
 
@@ -1208,6 +1554,7 @@ async function readParsedAccounts(
     try {
       backup = parseRawAccountsState(backupRaw);
     } catch (error) {
+      if (error instanceof VaultKeyMigrationRequiredError) throw error;
       if (mainError) throw mainError;
       throw error;
     }

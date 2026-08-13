@@ -4,6 +4,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     # Keep the public repository single-branch; security updates remain enabled
     # in GitHub's repository settings.
     open-pull-requests-limit: 0
@@ -12,4 +14,6 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 0

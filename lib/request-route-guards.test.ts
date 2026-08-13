@@ -25,13 +25,16 @@ const moduleHooks = registerHooks({
 });
 
 const originalEnv = { ...process.env };
-delete process.env.APP_PASSWORD;
+process.env.APP_PASSWORD = "request-route-guards-test-password";
+process.env.AUTH_SECRET = "request-route-guards-test-auth-secret";
 delete process.env.VERCEL;
 process.env.CONVEX_URL = "https://request-guard-test.convex.cloud";
 process.env.VAULT_ACCESS_SECRET = "request-guard-secret";
 
 const { POST: manualPost } = await import("../app/api/connect/manual/route.ts");
 const { POST: localPost } = await import("../app/api/connect/local/route.ts");
+const { POST: openaiDeviceStartPost } = await import("../app/api/connect/openai/device/start/route.ts");
+const { POST: openaiDeviceStatusPost } = await import("../app/api/connect/openai/device/status/route.ts");
 const { POST: oauthPost } = await import("../app/api/connect/oauth/route.ts");
 const { POST: pairStartPost } = await import("../app/api/connect/pair/start/route.ts");
 const { POST: pairCompletePost } = await import("../app/api/connect/pair/complete/route.ts");
@@ -44,6 +47,8 @@ const { POST: subscribePost, DELETE: subscribeDelete } = await import("../app/ap
 const { POST: recoverPost } = await import("../app/api/vault/recover/route.ts");
 const { pairingBackendAvailable, pairingRateBucket, PAIRING_RATE_BUCKET_COUNT } =
   await import("./pairings-store.ts");
+const { createSession, SESSION_COOKIE } = await import("./session.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
 
 after(() => {
   process.env = originalEnv;
@@ -53,7 +58,7 @@ after(() => {
 function jsonPrimitive(pathname: string, body = "null"): Request {
   return new Request(`http://localhost${pathname}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Cookie: sessionCookie },
     body,
   });
 }
@@ -62,6 +67,8 @@ test("JSON API routes return 400 for valid JSON null instead of throwing", async
   const cases: Array<[string, (request: Request) => Promise<Response>]> = [
     ["/api/connect/manual", manualPost],
     ["/api/connect/local", localPost],
+    ["/api/connect/openai/device/start", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", openaiDeviceStatusPost],
     ["/api/connect/pair/start", pairStartPost],
     ["/api/connect/pair/complete", pairCompletePost],
     ["/api/usage", usagePost],
@@ -76,6 +83,8 @@ test("JSON API routes return 400 for valid JSON null instead of throwing", async
 test("JSON API routes reject array bodies as non-object input", async () => {
   for (const [pathname, handler] of [
     ["/api/connect/manual", manualPost],
+    ["/api/connect/openai/device/start", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", openaiDeviceStatusPost],
     ["/api/usage", usagePost],
   ] as const) {
     const response = await handler(jsonPrimitive(pathname, "[]"));
@@ -90,6 +99,8 @@ test("browser state mutations reject cross-origin requests before route-specific
     ["/api/connect/local", "POST", localPost],
     ["/api/connect/manual", "POST", manualPost],
     ["/api/connect/oauth", "POST", oauthPost],
+    ["/api/connect/openai/device/start", "POST", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", "POST", openaiDeviceStatusPost],
     ["/api/connect/pair/start", "POST", pairStartPost],
     ["/api/notify", "PUT", notifyPut],
     ["/api/notify/subscribe", "POST", subscribePost],
@@ -103,7 +114,11 @@ test("browser state mutations reject cross-origin requests before route-specific
     const response = await handler(
       new Request(`http://localhost${pathname}`, {
         method,
-        headers: { "Content-Type": "application/json", Origin: "https://attacker.example" },
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://attacker.example",
+          Cookie: sessionCookie,
+        },
         body: "{}",
       }),
     );
@@ -114,6 +129,8 @@ test("browser state mutations reject cross-origin requests before route-specific
 test("browser JSON mutations reject text/plain no-CORS bodies", async () => {
   for (const [pathname, method, handler] of [
     ["/api/connect/manual", "POST", manualPost],
+    ["/api/connect/openai/device/start", "POST", openaiDeviceStartPost],
+    ["/api/connect/openai/device/status", "POST", openaiDeviceStatusPost],
     ["/api/notify", "PUT", notifyPut],
     ["/api/notify/subscribe", "POST", subscribePost],
     ["/api/usage", "POST", usagePost],
@@ -123,7 +140,7 @@ test("browser JSON mutations reject text/plain no-CORS bodies", async () => {
     const response = await handler(
       new Request(`http://localhost${pathname}`, {
         method,
-        headers: { "Content-Type": "text/plain", "Sec-Fetch-Site": "same-origin" },
+        headers: { "Content-Type": "text/plain", "Sec-Fetch-Site": "same-origin", Cookie: sessionCookie },
         body: "{}",
       }),
     );

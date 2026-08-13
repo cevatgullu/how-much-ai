@@ -6,7 +6,7 @@ This guide covers the open-source, single-tenant edition. It does not require or
 
 Pick one storage path before connecting the first account:
 
-| Topology | Vault | Shared refresh coordination | Scheduled notifications | Device pairing |
+| Topology | Vault | Shared refresh coordination | Hosted scheduled notifications | Device pairing |
 | --- | --- | --- | --- | --- |
 | One persistent machine | Encrypted file | Local file lock/cache | No | No |
 | Durable Convex deployment | Convex | Convex lease/cache | Yes | Yes |
@@ -20,7 +20,7 @@ The selection is automatic:
 
 A partial Convex or Redis configuration is an error. If both remote backends are complete, Convex takes precedence.
 
-Notifications require Convex. Configuring Convex for notifications also makes Convex the vault and usage-coordination backend.
+Hosted scheduled notifications require Convex. Configuring Convex for those channels also makes Convex the vault and usage-coordination backend. The reviewed Windows strict-local installation has a separate, on-device notification path described below; it does not change the storage selection.
 
 ## 2. Requirements
 
@@ -36,16 +36,18 @@ Clone and install exactly from the lockfile:
 ```bash
 git clone https://github.com/SeraphKc/how-much-ai.git
 cd how-much-ai
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 ```
 
-Run the zero-configuration local edition:
+Create the local configuration and set `APP_PASSWORD` to an independent strong
+value before starting:
 
 ```bash
+cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Do not expose this default to an untrusted network: without `APP_PASSWORD`, every dashboard and API route is intentionally open.
+Open [http://localhost:3000](http://localhost:3000). The development command binds explicitly to `127.0.0.1`, but the dashboard and APIs still require the password session. Development fails closed without `APP_PASSWORD`; production additionally requires independent `AUTH_SECRET` and `VAULT_ENCRYPTION_SECRET` values.
 
 ## 3. Configure secrets
 
@@ -63,7 +65,8 @@ openssl rand -hex 32
 
 Repeat that command for each value; do not reuse one output everywhere. Put secrets in `.env.local` for a private machine or in the hosting platform's encrypted environment settings.
 
-Recommended baseline:
+Production requires all three values below. Each must contain at least 32
+characters after trimming, and the values must be generated independently:
 
 ```dotenv
 APP_PASSWORD=<a strong login password>
@@ -72,11 +75,25 @@ VAULT_ENCRYPTION_SECRET=<an independent random value>
 TRUST_PROXY_IP_HEADERS=0
 ```
 
-- `APP_PASSWORD` enables the password gate.
-- `AUTH_SECRET` signs the 30-day session cookie. Keeping it independent allows password changes without immediately invalidating every session.
-- `VAULT_ENCRYPTION_SECRET` separates credential encryption from the login password. It is mandatory for Redis and strongly recommended for any networked install.
+- `APP_PASSWORD` is required for ordinary development and self-hosting login.
+- `AUTH_SECRET` signs the 30-day session cookie. Production never falls back to
+  the login password for session signatures.
+- `VAULT_ENCRYPTION_SECRET` encrypts connected-account credentials. Every
+  production mode requires it, including local-file, Convex, and Redis storage.
 
-Do not rotate or delete vault key sources casually. Existing remote generations stay pinned to the exact key that encrypted them.
+Every configured production backend credential (`VAULT_ACCESS_SECRET`,
+`KV_REST_API_TOKEN`, or `UPSTASH_REDIS_REST_TOKEN`) must also contain at least
+32 characters after trimming and must not reuse any of those three application
+secrets. `VAULT_ACCESS_SECRET` must also differ from both Redis tokens; only the
+two Redis token aliases may contain the same backend credential. A
+configured production `CRON_SECRET` must be at least 32 characters and distinct
+from every application and backend credential.
+
+Do not rotate or delete `VAULT_ENCRYPTION_SECRET` casually. Production accepts
+credential ciphertext only under that exact configured value. Older production
+generations encrypted with `APP_PASSWORD`, `VAULT_ACCESS_SECRET`, or the
+historical public fallback stop with a migration-required error before any
+account or token is returned.
 
 ## 4. Connect provider accounts
 
@@ -115,13 +132,20 @@ When the app runs on the same computer as Codex, it can read `~/.codex/auth.json
 
 With Convex configured, the Claude dialog can generate a short-lived, single-use pairing code and an exact command for the computer holding the Claude Code login. Copy the generated command rather than constructing a target manually. The helper shows the destination and asks for confirmation before it transmits a credential.
 
+### Provider-returned usage rows
+
+The visual dashboard does not depend on notification configuration. It renders every normalized limit returned by the selected provider. Claude responses can include a five-hour row, an overall weekly row, connected-app usage, and model-scoped weekly rows such as Opus or Sonnet. OpenAI rows are rendered only when OpenAI returns them; a returned session row is labeled **Codex · 5 saatlik limit**. Do not interpret that conditional label as a universal five-hour ChatGPT allowance.
+
+For every row, the provider-native **used** percentage is primary and the progress fill runs from 0% to 100% used. Remaining is secondary and is the only value that controls urgency badges/colors and strict-local notification thresholds. When available, the row also shows the reset countdown, exact reset time, and reading freshness; stale/error data remains visibly marked.
+
 ## 5. Storage option A: encrypted local file
 
-No storage variables are required. The default files are:
+Development local-file storage needs no storage variable. Production local-file
+storage requires `VAULT_ENCRYPTION_SECRET`. The default files are:
 
 - `.data/vault.enc` — AES-256-GCM encrypted account data;
 - `.data/vault.enc.last-good` — previous readable generation, when present;
-- `.data/vault.key` — generated local key when no configured secret supplies encryption;
+- `.data/vault.key` — development-only generated key when no configured secret supplies encryption;
 - `.data/token-recovery/` — encrypted crash-recovery journals for rotating tokens.
 
 You may place them on another persistent volume:
@@ -154,7 +178,7 @@ Start the Convex setup and follow its project prompts:
 npx convex dev
 ```
 
-The CLI normally writes `CONVEX_DEPLOYMENT` and `NEXT_PUBLIC_CONVEX_URL` into `.env.local`. Add a strong `VAULT_ACCESS_SECRET` to the same file, then set the identical value in that Convex deployment without putting it in shell history:
+The CLI normally writes `CONVEX_DEPLOYMENT` and `NEXT_PUBLIC_CONVEX_URL` into `.env.local`. Add a random `VAULT_ACCESS_SECRET` containing at least 32 characters after trimming to the same file, then set the identical value in that Convex deployment without putting it in shell history. Convex functions enforce this minimum in development and production because both deployments are internet-reachable:
 
 ```bash
 npx convex env set VAULT_ACCESS_SECRET
@@ -165,6 +189,7 @@ Omitting the value makes the CLI prompt for it. The app accepts the generated `N
 ```dotenv
 CONVEX_URL=https://your-deployment.convex.cloud
 VAULT_ACCESS_SECRET=<same value stored in Convex>
+VAULT_ENCRYPTION_SECRET=<independent stable random value>
 ```
 
 Never prefix the access secret with `NEXT_PUBLIC_`.
@@ -183,7 +208,10 @@ Set the production backend secret interactively:
 npx convex env set --prod VAULT_ACCESS_SECRET
 ```
 
-Copy the production deployment URL from the CLI or Convex dashboard into the Next.js host as `CONVEX_URL`, and put the same access secret in the host as `VAULT_ACCESS_SECRET`.
+Copy the production deployment URL from the CLI or Convex dashboard into the
+Next.js host as `CONVEX_URL`, put the same access secret in the host as
+`VAULT_ACCESS_SECRET`, and configure a separate `VAULT_ENCRYPTION_SECRET` only
+in the Next.js host.
 
 The URL is not a credential; `VAULT_ACCESS_SECRET` is. Anyone with both can call the secret-gated backend functions, so use a deployment-specific value and do not share a production Convex deployment with an untrusted app.
 
@@ -197,15 +225,25 @@ npx convex run migrations:backfillNotifyUserIds --prod
 
 The migration is idempotent.
 
-### Access-secret rotation
+### Access-secret and encryption-key rotation
 
-A fresh Convex vault uses `VAULT_ACCESS_SECRET` as its first server-consistent encryption key and records a proof of that key. Before changing the Convex access secret, preserve the old value as a supported decryption source, deploy and verify the app, and only then update the secret in both the app and Convex.
+Fresh Convex vaults use `VAULT_ENCRYPTION_SECRET` for credential encryption;
+`VAULT_ACCESS_SECRET` only authorizes calls to the Convex deployment. Rotate the
+access secret in the app and Convex together without changing the encryption
+secret.
 
-If you are not certain which key encrypted the current generation, do not rotate it. Back up the ciphertext and test the migration on a copy first.
+Changing `VAULT_ENCRYPTION_SECRET` requires a controlled offline migration of
+the main vault, last-known-good backup, key proof, and outstanding token-recovery
+records. Back up the ciphertext and test the migration on a copy first. The app
+fails closed instead of attempting a partial online migration.
 
 ## 7. Storage option C: Redis/KV REST
 
 The Redis implementation expects an Upstash-compatible REST API, not a `redis://` TCP URL.
+
+In production the configured REST token must contain at least 32 characters
+after trimming, be independent from the three application secrets, and remain
+private. Development retains provider-issued token compatibility.
 
 Configure either pair:
 
@@ -229,13 +267,21 @@ Redis provides durable vault storage and distributed refresh coordination. It do
 
 ## 8. Configure notifications
 
-First complete the Convex setup. Then give both the Next.js app and Convex the same scheduler secret.
+### Reviewed Windows strict-local device notifications
+
+Strict-local device notifications are independent of the hosted topology. They require no new environment variable and never import or call Convex, VAPID, Telegram, webhook, or other remote-notification paths. Delivery uses privacy-minimized state in the dedicated browser profile, an exclusive Web Lock, and the same-origin service worker. It operates only while the reviewed local browser/app process is open or minimized; closing the process stops live notifications until it is reopened.
+
+The browser asks permission only after an explicit press of **Bildirim izni ver**. Denied, unavailable, or revoked permission fails closed, does not advance an undelivered event, and is surfaced without repeated prompts. Keep automatic refresh enabled for live notifications; a manual refresh runs the same detector. The first successful observation seeds state without an alert. Stale or failed provider readings are suppressed. Each provider-returned account/limit row is tracked independently at exactly 50%, 40%, 30%, 20%, 15%, 10%, 5%, and 0% remaining. A confirmed later reset timestamp produces copy containing exactly `limit sıfırlandı`. A jump across several thresholds emits only the tightest newly crossed threshold and does not replay the skipped thresholds later.
+
+### Convex-hosted channels
+
+For scheduled delivery while no local app process is running, first complete the Convex setup. Then give both the Next.js app and Convex the same scheduler secret.
 
 In the app environment:
 
 ```dotenv
 APP_URL=https://your-app.example
-CRON_SECRET=<independent random value>
+CRON_SECRET=<independent random value of at least 32 characters>
 ```
 
 In the production Convex deployment:
@@ -245,7 +291,7 @@ npx convex env set --prod APP_URL https://your-app.example
 npx convex env set --prod CRON_SECRET
 ```
 
-`APP_URL` must be the public HTTPS origin that reaches this app. The Convex cron runs every five minutes and calls `/api/cron/check`; that route rejects requests without the matching `CRON_SECRET`.
+`APP_URL` must be the public HTTPS origin that reaches this app. The Convex cron runs every five minutes and calls `/api/cron/check`; that route rejects requests without the matching `CRON_SECRET`. In production this secret must contain at least 32 characters after trimming and must not reuse an application or backend credential.
 
 ### Browser Web Push
 
@@ -287,7 +333,7 @@ The app sends JSON containing `source`, human-readable `text`, and structured `e
 Verify the exact checkout before deployment:
 
 ```bash
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 npm test
 npm run typecheck
 npm run build
@@ -325,7 +371,7 @@ Upgrade:
 
 ```bash
 git pull --ff-only
-npm ci
+npm ci --ignore-scripts --include=dev --audit=false --fund=false
 npm test
 npm run typecheck
 npm run build
@@ -350,7 +396,7 @@ Then restart the application and verify:
 
 ### The app opens without a login
 
-`APP_PASSWORD` is blank or missing. That is the intended local default. Set it in the runtime environment and restart the already-built server.
+No supported environment enters unauthenticated open mode. Set `APP_PASSWORD` in the runtime environment, restart, and verify that login is required. Development and production both fail closed when it is blank or missing.
 
 If this is an upgrade from a hosted-mode build, remove any stale `AUTH_MODE` variable. Unsupported legacy auth modes deliberately fail closed; this edition requires `APP_PASSWORD` for network access.
 
@@ -368,11 +414,17 @@ Set a stable `VAULT_ENCRYPTION_SECRET` before saving any account.
 
 ### The vault is unreadable
 
-Do not overwrite it with an empty vault. Restore the exact previous encryption/access/password source and the matching last-known-good backup. Use the in-app archive/recovery action only after preserving the unreadable ciphertext for investigation.
+Do not overwrite it with an empty vault or downgrade the app. Preserve the main
+ciphertext, last-known-good backup, key proof, and recovery records. A production
+generation under an old password, access secret, or public fallback requires a
+controlled offline migration to the configured `VAULT_ENCRYPTION_SECRET`; rotate
+and reconnect provider credentials if the old key may be public or guessable.
 
 ### Notifications are unavailable
 
-Confirm that the app has a complete Convex URL/access-secret pair. For scheduled checks, also verify that production Convex has `APP_URL` and `CRON_SECRET`, and that the app has the matching `CRON_SECRET`. Web Push additionally needs a valid VAPID pair and HTTPS.
+In reviewed Windows strict-local mode, use the notification panel's explicit permission button, verify browser permission is granted, keep automatic refresh enabled, and leave the local app open or minimized. The first observation is intentionally silent, and stale readings are intentionally suppressed. No Convex or remote notification variable is required for this path.
+
+For hosted channels, confirm that the app has a complete Convex URL/access-secret pair. For scheduled checks, also verify that production Convex has `APP_URL` and `CRON_SECRET`, and that the app has the matching `CRON_SECRET`. Web Push additionally needs a valid VAPID pair and HTTPS. Redis-only and file-only ordinary self-hosting have no scheduled delivery.
 
 ### “Connect from this machine” finds the wrong account
 
@@ -384,13 +436,19 @@ Reconnect the selected account. Do not repeatedly retry a shared rotating CLI cr
 
 ## 12. Final exposure checklist
 
-- [ ] `APP_PASSWORD` is set and tested.
-- [ ] `AUTH_SECRET` and vault secrets are independent and backed up.
+- [ ] `APP_PASSWORD`, `AUTH_SECRET`, and `VAULT_ENCRYPTION_SECRET` are each at
+      least 32 characters after trimming, independent, and backed up.
+- [ ] Every configured backend credential is at least 32 characters where
+      required, does not reuse an application secret, and Convex uses a strong
+      access secret even for development deployments.
+- [ ] A configured production `CRON_SECRET` is at least 32 characters and is
+      independent from all application and backend credentials.
 - [ ] The vault backend is durable for the chosen host.
 - [ ] The app is reachable only over HTTPS.
 - [ ] `TRUST_PROXY_IP_HEADERS` matches the real proxy boundary.
 - [ ] `.env*`, `.data/`, provider credentials, and backups are absent from Git and build artifacts.
 - [ ] `npm test`, `npm run typecheck`, and `npm run build` pass.
 - [ ] Both provider paths needed by the operator have been exercised.
-- [ ] Convex cron and notification channels have been verified, if enabled.
+- [ ] Strict-local permission, automatic refresh, and open/minimized limitation have been verified, if that mode is used.
+- [ ] Convex cron and hosted notification channels have been verified, if enabled.
 - [ ] Recovery and rollback copies can be located without relying on the running server.

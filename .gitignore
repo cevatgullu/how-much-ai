@@ -13,6 +13,11 @@ next-env.d.ts
 # local AI-agent state
 /.claude/
 
+# local security and audit evidence
+/audit/
+/.secure-local-test/
+/.supply-chain-risk-auditor/
+
 # misc
 .DS_Store
 *.pem
@@ -42,3 +47,6 @@ next-env.d.ts
 
 # convex codegen (regenerated on deploy)
 convex/_generated
+
+.vercel
+.env*

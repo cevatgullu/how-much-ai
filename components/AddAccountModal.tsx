@@ -1,17 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { DUMP_COMMANDS, parseCredentials } from "@/lib/credentials";
-import { serverErrorText } from "@/lib/error-reference";
+import { safeServerErrorId, serverErrorText } from "@/lib/error-reference";
 import { buildAuthorizeUrl, clearPkce, loadOrCreatePkce, parsePastedCode, type PkceBundle } from "@/lib/oauth";
 import type { BrowserAccount } from "@/lib/types";
 import type { ProviderId } from "@/lib/providers/types";
 import { CheckIcon, CopyIcon, DesktopIcon, SpinnerIcon, TerminalIcon } from "./Icons";
 import { ModalShell } from "./ModalShell";
-import { PROVIDER_META, PROVIDER_ORDER, parseCodexCredential } from "./providers-ui";
+import { OpenAIDeviceLogin } from "./OpenAIDeviceLogin";
+import { PROVIDER_META, PROVIDER_ORDER, parseCodexCredential, parseGrokSession } from "./providers-ui";
 
 interface AddAccountModalProps {
   open: boolean;
+  strictLocal: boolean;
   onClose: () => void;
   reconnectAccount?: BrowserAccount | null;
   // Local / pairing flow: the server added the account to the vault directly, so the dashboard should
@@ -19,8 +21,8 @@ interface AddAccountModalProps {
   onServerConnected: () => void | Promise<void>;
 }
 
-function errText(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value : fallback;
+function errText(_value: unknown, fallback: string): string {
+  return fallback;
 }
 
 type OS = "macOS" | "linux" | "windows";
@@ -49,7 +51,7 @@ async function copyText(value: string): Promise<void> {
   textarea.select();
   const copied = document.execCommand("copy");
   textarea.remove();
-  if (!copied) throw new Error("Copy is blocked in this browser. Select the command and copy it manually.");
+  if (!copied) throw new Error("Bu tarayıcıda kopyalama engelli. Komutu seçip elle kopyalayın.");
 }
 
 // The accent-btn class follows the nearest [data-provider] scope (coral for Claude, mono for ChatGPT);
@@ -59,6 +61,12 @@ const PRIMARY_BTN =
 const PRIMARY_BUTTON = PRIMARY_BTN;
 const PRIMARY_LINK = PRIMARY_BTN;
 const REQUEST_TIMEOUT_MS = 30_000;
+
+class StrictLocalDisplayError extends Error {}
+
+function connectionDisplayError(strictLocal: boolean, localMessage: string, hostedMessage: string): Error {
+  return strictLocal ? new StrictLocalDisplayError(localMessage) : new Error(hostedMessage);
+}
 
 function timeoutError(action: string): Error {
   return new Error(`${action} timed out after 30 seconds. Check your connection and try again.`);
@@ -78,11 +86,361 @@ async function withDeadline<T>(promise: Promise<T>, action: string): Promise<T> 
   }
 }
 
-export function AddAccountModal({ open, onClose, reconnectAccount, onServerConnected }: AddAccountModalProps) {
-  const [mode, setMode] = useState<Mode>("paste");
+export function strictLocalClaudeConnectionErrorText(
+  status: number,
+  _serverError: unknown,
+  errorId: unknown,
+): string {
+  const message = status === 401
+    ? "Claude yetkilendirme kodu kabul edilmedi. Yeni bir oturum açıp yeniden deneyin."
+    : "Claude bağlantısı tamamlanamadı. Yeniden deneyin.";
+  const reference = safeServerErrorId(errorId);
+  return reference ? `${message} Referans: ${reference}.` : message;
+}
+
+interface ConnectedInfo {
+  email: string;
+  plan?: string;
+  label?: string;
+}
+
+interface AddAccountSuccessCardProps {
+  strictLocal: boolean;
+  connected: ConnectedInfo;
+  completionError: string | null;
+  onRetry: () => void;
+}
+
+export function AddAccountSuccessCard({
+  strictLocal,
+  connected,
+  completionError,
+  onRetry,
+}: AddAccountSuccessCardProps) {
+  return (
+    <div className="space-y-3">
+      <div
+        role="status"
+        className="flex items-center gap-3 rounded-xl border px-4 py-3.5"
+        style={{
+          borderColor: "color-mix(in srgb, var(--accent) 40%, transparent)",
+          background: "var(--accent-soft)",
+        }}
+      >
+        <span
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+          style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
+        >
+          <CheckIcon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-ivory">
+            {strictLocal
+              ? `${connected.label || connected.email} bağlandı`
+              : `Connected ${connected.label || connected.email}`}
+          </p>
+          <p className="truncate text-xs text-muted">
+            {connected.email}
+            {connected.plan ? ` · ${connected.plan}` : ""}
+          </p>
+        </div>
+      </div>
+      {!completionError && (
+        <p role="status" className="inline-flex items-center gap-2 text-xs text-muted" aria-live="polite">
+          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-[var(--accent-bright)]" />
+          {"Kimlik bilgisi güvenle kaydedildi. Pano eşitleniyor…"}
+        </p>
+      )}
+      {completionError && (
+        <div role="alert" className="rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-[#ff9c95]">
+          <p>{completionError}</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-2 min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-medium hover:bg-white/5"
+          >
+            {"Pano eşitlemesini yeniden dene"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface LocalMachineError {
+  message: string;
+  recommendation?: string;
+}
+
+interface ClaudeLocalMachinePanelProps {
+  strictLocal: boolean;
+  busy: boolean;
+  working: boolean;
+  error: LocalMachineError | null;
+  onConnect: () => void;
+  actionRef?: RefObject<HTMLButtonElement | null>;
+}
+
+export function ClaudeLocalMachinePanel({
+  strictLocal,
+  busy,
+  working,
+  error,
+  onConnect,
+  actionRef,
+}: ClaudeLocalMachinePanelProps) {
+  return (
+    <>
+      <div className="rounded-xl border border-border bg-surface p-5">
+        <div className="flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
+            <DesktopIcon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-ivory">{"Bu makineden bağlan"}</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              {"Bu bilgisayardaki Claude Code oturumunu okuyacağız. Bu hızlı seçenek CLI ile dönen oturumu paylaşır ve özel uygulama oturumu kadar güvenilir değildir."}
+            </p>
+          </div>
+        </div>
+        <button
+          ref={actionRef}
+          type="button"
+          onClick={onConnect}
+          disabled={busy}
+          className={`mt-4 ${PRIMARY_BUTTON}`}
+        >
+          {working ? (
+            <>
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow" />
+              {"Bağlanıyor…"}
+            </>
+          ) : (
+            <>
+              <DesktopIcon className="h-4 w-4" />
+              {"Bu makineden bağlan"}
+            </>
+          )}
+        </button>
+      </div>
+      {error && (
+        <div role="alert" className="mt-4 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2.5 text-xs leading-relaxed text-[#ff9c95]">
+          <p>{error.message}</p>
+          {error.recommendation && <p className="mt-1 text-muted">{error.recommendation}</p>}
+        </div>
+      )}
+    </>
+  );
+}
+
+type OpenAILocalFailureKind = "provider" | "timeout" | "network";
+
+export function strictLocalOpenAILocalConnectionErrorText(
+  kind: OpenAILocalFailureKind,
+  _serverError: unknown,
+  errorId: unknown,
+): string {
+  const message = kind === "provider"
+    ? "Bu makinedeki Codex oturumu okunamadı."
+    : kind === "timeout"
+      ? "Codex oturumunu okuma işlemi zaman aşımına uğradı. Yeniden deneyin."
+      : "Codex oturumu okunamadı. Uygulamanın çalıştığını denetleyip yeniden deneyin.";
+  const reference = safeServerErrorId(errorId);
+  return reference ? `${message} Referans: ${reference}.` : message;
+}
+
+interface OpenAILocalMachinePanelProps {
+  strictLocal: boolean;
+  busy: boolean;
+  working: boolean;
+  error: LocalMachineError | null;
+  onConnect: () => void;
+  actionRef?: RefObject<HTMLButtonElement | null>;
+}
+
+export function OpenAILocalMachinePanel({
+  busy,
+  working,
+  error,
+  onConnect,
+  actionRef,
+}: OpenAILocalMachinePanelProps) {
+  return (
+    <div className="rounded-xl border border-border bg-surface p-4">
+      <div className="flex items-start gap-3">
+        <span
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+          style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
+        >
+          <DesktopIcon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-ivory">Bu bilgisayardaki Codex oturumunu oku</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            Codex CLI&apos;ın bu makinedeki <code>~/.codex/auth.json</code> dosyasına kaydettiği ChatGPT oturumunu kullanır.
+          </p>
+          <button
+            ref={actionRef}
+            type="button"
+            onClick={onConnect}
+            disabled={busy}
+            className={`mt-3 ${PRIMARY_BUTTON}`}
+          >
+            {working ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
+            {working ? "Okunuyor…" : "ChatGPT oturumunu bu makineden oku"}
+          </button>
+          {error ? (
+            <div role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
+              <p>{error.message}</p>
+              {error.recommendation ? <p className="mt-1 text-faint">{error.recommendation}</p> : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type PairingPanelState = "starting" | "waiting" | "processing" | "expired" | "error";
+
+interface ClaudePairingPanelProps {
+  strictLocal: boolean;
+  state: PairingPanelState;
+  command: string;
+  error: string | null;
+  busy: boolean;
+  copied: boolean;
+  copyError?: string | null;
+  onCopy: () => void;
+  onRetry: () => void;
+  headingRef?: RefObject<HTMLParagraphElement | null>;
+}
+
+export function ClaudePairingPanel({
+  strictLocal,
+  state,
+  command,
+  error,
+  busy,
+  copied,
+  copyError,
+  onCopy,
+  onRetry,
+  headingRef,
+}: ClaudePairingPanelProps) {
+  const starting = state === "starting";
+  return (
+    <>
+      <div className="flex gap-3">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
+          <TerminalIcon className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p ref={headingRef} tabIndex={-1} className="text-sm text-ivory outline-none">
+            {"Hesabın açık olduğu yerde tek bir komut çalıştır"}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            {"Claude Code kullandığınız bilgisayarda bu komutu terminale yapıştırın. O makinedeki geçerli dönen oturumu okur ve daha az güvenilir hızlı seçenek olarak buraya bağlar."}
+          </p>
+          {starting && !command && (
+            <div role="status" className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
+              {"Tek kullanımlık eşleştirme kodu alınıyor…"}
+            </div>
+          )}
+          {command && (
+            <div className="mt-2.5 flex items-stretch gap-2">
+              <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary">
+                {command}
+              </code>
+              <button
+                type="button"
+                onClick={onCopy}
+                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-muted transition-colors hover:bg-surface-hover hover:text-ivory"
+              >
+                <CopyIcon className="h-3.5 w-3.5" />
+                {copied ? ("Kopyalandı") : ("Kopyala")}
+              </button>
+            </div>
+          )}
+          {copyError && (
+            <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">{copyError}</p>
+          )}
+          {command && state === "waiting" && (
+            <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
+              {"Komutu çalıştırmanız bekleniyor…"}
+            </div>
+          )}
+          {state === "processing" && (
+            <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted" role="status">
+              <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
+              {"Hesap doğrulandı — güvenle kaydediliyor…"}
+            </div>
+          )}
+          {state === "expired" && (
+            <div className="mt-3 flex items-center gap-3">
+              <span className="text-xs text-[#e3b56e]">Kodun süresi doldu.</span>
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={busy}
+                aria-busy={busy}
+                className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
+              >
+                {busy
+                  ? ("Kod alınıyor…")
+                  : ("Yeni kod al")}
+              </button>
+            </div>
+          )}
+          {state === "error" && (
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <p role="alert" className="text-xs text-[#ff9c95]">
+                {strictLocal ? "Eşleştirme hizmetine ulaşılamadı." : error ?? "Eşleştirme servisine ulaşılamadı."}
+              </p>
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={busy}
+                aria-busy={busy}
+                className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
+              >
+                {busy
+                  ? ("Yeniden deneniyor…")
+                  : ("Yeniden dene")}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mt-4 rounded-xl border border-border/70 bg-surface/60 p-3.5 text-[11px] leading-relaxed text-faint">
+        <p className="mb-1.5 font-medium text-muted">Ne olur ve neden güvenlidir</p>
+        <ul className="space-y-1">
+          <li>Claude Code&apos;un o makinede kullandığı oturum belirtecini gönderir.</li>
+          <li>HTTPS ile iletilir ve şifreli saklanır; yalnızca panonuz okuyabilir.</li>
+          <li>Yardımcı açık kaynaklıdır; çalıştırmadan önce ne yaptığını inceleyebilirsiniz.</li>
+        </ul>
+      </div>
+    </>
+  );
+}
+
+export function AddAccountModal({
+  open,
+  strictLocal,
+  onClose,
+  reconnectAccount,
+  onServerConnected,
+}: AddAccountModalProps) {
+  const [mode, setMode] = useState<Mode>(() =>
+    strictLocal ? "local" : "paste",
+  );
   const [showPaste, setShowPaste] = useState(true);
   // Which provider is being connected. Reconnect is locked to the account's own provider.
-  const [provider, setProvider] = useState<ProviderId>("anthropic");
+  const [provider, setProvider] = useState<ProviderId>(
+    () => reconnectAccount?.provider ?? "anthropic",
+  );
 
   // Paste flow.
   const [os, setOs] = useState<OS>("macOS");
@@ -98,6 +456,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
   // Local flow.
   const [localWorking, setLocalWorking] = useState(false);
   const [localError, setLocalError] = useState<{ message: string; recommendation?: string } | null>(null);
+  const [deviceBusy, setDeviceBusy] = useState(false);
 
   // Pairing flow.
   const [pairCode, setPairCode] = useState<string | null>(null);
@@ -139,12 +498,10 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     try {
       await withDeadline(Promise.resolve(onServerConnected()), "Dashboard sync");
       if (!closedRef.current) onClose();
-    } catch (error) {
+    } catch {
       if (!closedRef.current) {
         setCompletionError(
-          error instanceof Error
-            ? error.message
-            : "The account connected, but the dashboard couldn't reload it. Try syncing again.",
+          "Hesap bağlandı, ancak pano yeniden yüklenemedi. Eşitlemeyi yeniden deneyin.",
         );
       }
     }
@@ -192,7 +549,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
             failures += 1;
             if (failures >= 3) {
               stopPolling();
-              setPairError(errText(data.error, "Couldn't reach the pairing service. Try again."));
+              setPairError(errText(data.error, "Eşleştirme servisine ulaşılamadı. Yeniden deneyin."));
               setPairState("error");
               return;
             }
@@ -207,7 +564,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
             schedule(1500);
           } else if (data.status === "failed") {
             stopPolling();
-            setPairError(errText(data.error, "The account couldn't be saved. Get a new code and try again."));
+            setPairError(errText(data.error, "Hesap kaydedilemedi. Yeni kod alıp yeniden deneyin."));
             setPairState("error");
           } else if (data.status === "expired") {
             stopPolling();
@@ -220,7 +577,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
           failures += 1;
           if (failures >= 3) {
             stopPolling();
-            setPairError("Couldn't reach the pairing service. Check your connection and try again.");
+            setPairError("Eşleştirme servisine ulaşılamadı. Bağlantınızı denetleyip yeniden deneyin.");
             setPairState("error");
           } else {
             schedule(Math.min(7500, 1500 * 2 ** failures));
@@ -270,7 +627,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         const data = (await res.json().catch(() => ({}))) as { code?: string; command?: string; error?: string };
         if (closedRef.current || generation !== pairStartGeneration.current) return false;
         if (!res.ok || !data.code || !data.command) {
-          setPairError(errText(data.error, "Couldn't start pairing. Try again."));
+          setPairError(errText(data.error, "Eşleştirme başlatılamadı. Yeniden deneyin."));
           setPairState("error");
           return false;
         }
@@ -289,12 +646,12 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
           (startError instanceof Error && startError.name === "AbortError")
         ) {
           if (!closedRef.current && generation === pairStartGeneration.current) {
-            setPairError("Getting a pairing code timed out after 30 seconds. Check your connection and try again.");
+            setPairError("Eşleştirme kodu alma işlemi 30 saniyede zaman aşımına uğradı. Bağlantınızı denetleyip yeniden deneyin.");
             setPairState("error");
           }
           return false;
         }
-        setPairError("Couldn't start pairing. Check your connection and try again.");
+        setPairError("Eşleştirme başlatılamadı. Bağlantınızı denetleyip yeniden deneyin.");
         setPairState("error");
         return false;
       } finally {
@@ -322,7 +679,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     operationController.current?.abort();
     operationController.current = null;
     operationRef.current = null;
-    setMode("paste");
+    setMode(strictLocal ? "local" : "paste");
     setShowPaste(true);
     setProvider(reconnectAccount?.provider ?? "anthropic");
     setPasted("");
@@ -335,6 +692,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     setOauthOpened(false);
     setLocalWorking(false);
     setLocalError(null);
+    setDeviceBusy(false);
     setPairCode(null);
     setPairCommand("");
     setPairState("waiting");
@@ -351,12 +709,15 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         if (!cancelled) setOauthBundle(bundle);
       },
       () => {
-        if (!cancelled) setError("Couldn't prepare a secure Claude sign-in. Close this dialog and try again.");
+        if (!cancelled) {
+          setError(
+            "Güvenli Claude oturumu hazırlanamadı. Bu pencereyi kapatıp yeniden deneyin.",
+          );
+        }
       },
     );
-    (async () => {
-      // Self-hosted local quick-connect is available only on the machine running the app. Otherwise
-      // offer device pairing as the legacy alternative; availability is checked only if selected.
+    void (async () => {
+      // Self-hosted local quick-connect is available only on the machine running the app.
       try {
         const res = await fetch("/api/connect/local", { cache: "no-store" });
         if (cancelled) return;
@@ -367,7 +728,9 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       } catch {
         /* fall through */
       }
-      setMode("pair");
+      if (!strictLocal) {
+        setMode("pair");
+      }
     })();
 
     return () => {
@@ -375,7 +738,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     };
     // Runs only on open transitions; the convenience probe must not hide the durable setup flow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, strictLocal]);
 
   // Stop polling + mark closed whenever the modal is not open / unmounts.
   useEffect(() => {
@@ -452,8 +815,11 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       };
       if (!res.ok) {
         setLocalError({
-          message: errText(data.error, "Couldn't connect from this machine."),
-          recommendation: typeof data.recommendation === "string" ? data.recommendation : undefined,
+          message: errText(
+            data.error,
+            "Bu makineden bağlantı kurulamadı.",
+          ),
+          recommendation: undefined,
         });
         return;
       }
@@ -463,8 +829,8 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         setLocalError({
           message:
             connectError instanceof Error && connectError.name === "AbortError"
-              ? "Connection timed out after 30 seconds. Check that the app is running and try again."
-              : "Network error — is the app still running?",
+              ? "Bağlantı 30 saniye içinde tamamlanamadı. Uygulamanın çalıştığını denetleyip yeniden deneyin."
+              : "Ağ bağlantısı kurulamadı. Uygulamanın çalıştığını denetleyin.",
         });
       }
     } finally {
@@ -473,7 +839,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       if (operationRef.current === "local") operationRef.current = null;
       if (!closedRef.current) setLocalWorking(false);
     }
-  }, [localWorking, finishServerConnect, reconnectAccount?.id]);
+  }, [localWorking, finishServerConnect, reconnectAccount?.id, strictLocal]);
 
   const connectPaste = useCallback(async () => {
     if (!pasted.trim() || working || operationRef.current) return;
@@ -489,14 +855,26 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       let res: Response;
       if (oauthFlow) {
         if (!oauthBundle) {
-          throw new Error("Secure sign-in is still preparing. Wait a moment and try again.");
+          throw connectionDisplayError(
+            strictLocal,
+            "Güvenli oturum hâlâ hazırlanıyor. Biraz bekleyip yeniden deneyin.",
+            "Güvenli oturum açma hâlâ hazırlanıyor. Biraz bekleyip yeniden deneyin.",
+          );
         }
         const authorization = parsePastedCode(pasted);
         if (!authorization.code || !authorization.state) {
-          throw new Error("Paste the complete authorization code from Claude, including the #state suffix.");
+          throw connectionDisplayError(
+            strictLocal,
+            "Claude tarafından gösterilen yetkilendirme kodunun tamamını #state son ekiyle birlikte yapıştırın.",
+            "Claude'un verdiği yetkilendirme kodunu #state ekiyle birlikte eksiksiz yapıştırın.",
+          );
         }
         if (authorization.state !== oauthBundle.state) {
-          throw new Error("That code belongs to an older sign-in attempt. Open Claude sign-in again and paste its new code.");
+          throw connectionDisplayError(
+            strictLocal,
+            "Bu kod önceki bir oturum açma denemesine ait. Claude oturumunu yeniden açıp yeni kodu yapıştırın.",
+            "Bu kod daha eski bir oturum açma denemesine ait. Claude oturum açma sayfasını yeniden açıp yeni kodu yapıştırın.",
+          );
         }
         res = await fetch("/api/connect/oauth", {
           method: "POST",
@@ -535,17 +913,21 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         return;
       }
       if (!res.ok) {
-        throw new Error(
-          serverErrorText(
-            data.error,
-            res.status === 401
-              ? oauthFlow
-                ? "Claude rejected that authorization code. Open a fresh sign-in and try again."
-                : "That shared login may already have rotated. Copy a fresh credential and try again."
-              : "Couldn't complete the Claude connection.",
-            data.errorId,
-          ),
-        );
+        throw strictLocal && oauthFlow
+          ? new StrictLocalDisplayError(
+              strictLocalClaudeConnectionErrorText(res.status, data.error, data.errorId),
+            )
+          : new Error(
+              serverErrorText(
+                data.error,
+                res.status === 401
+                  ? oauthFlow
+                    ? "Claude bu yetkilendirme kodunu kabul etmedi. Yeni bir oturum açıp yeniden deneyin."
+                    : "Bu paylaşılan oturum yenilenmiş olabilir. Yeni bir kimlik bilgisi kopyalayıp yeniden deneyin."
+                  : "Claude bağlantısı tamamlanamadı.",
+                data.errorId,
+              ),
+            );
       }
       if (oauthFlow) clearPkce();
       finishServerConnect({
@@ -557,10 +939,14 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       if (!closedRef.current) {
         setError(
           err instanceof Error && err.name === "AbortError"
-            ? "Connection timed out after 30 seconds. Check your connection and try again."
-            : err instanceof Error
+            ? "Bağlantı 30 saniye içinde tamamlanamadı. Bağlantınızı denetleyip yeniden deneyin."
+            : strictLocal && err instanceof StrictLocalDisplayError
               ? err.message
-              : "Something went wrong — try again.",
+              : strictLocal
+                ? "Claude bağlantısı tamamlanamadı. Yeniden deneyin."
+                : err instanceof Error
+              ? err.message
+              : "Bir şeyler ters gitti — yeniden deneyin.",
         );
       }
     } finally {
@@ -569,7 +955,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       if (operationRef.current === operation) operationRef.current = null;
       if (!closedRef.current) setWorking(false);
     }
-  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, working]);
+  }, [credentialMethod, finishServerConnect, oauthBundle, pasted, reconnectAccount, strictLocal, working]);
 
   // OpenAI: one-click read of this machine's ~/.codex/auth.json.
   const connectOpenAILocal = useCallback(async () => {
@@ -596,12 +982,15 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         plan?: string;
         label?: string;
         error?: string;
+        errorId?: unknown;
         recommendation?: string;
       };
       if (!res.ok) {
         setLocalError({
-          message: errText(data.error, "Couldn't read the Codex login on this machine."),
-          recommendation: typeof data.recommendation === "string" ? data.recommendation : undefined,
+          message: strictLocal
+            ? strictLocalOpenAILocalConnectionErrorText("provider", data.error, data.errorId)
+            : errText(data.error, "Bu makinedeki Codex oturumu okunamadı."),
+          recommendation: undefined,
         });
         return;
       }
@@ -611,8 +1000,12 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         setLocalError({
           message:
             connectError instanceof Error && connectError.name === "AbortError"
-              ? "Connection timed out after 30 seconds. Check that the app is running and try again."
-              : "Network error — is the app still running?",
+              ? strictLocal
+                ? strictLocalOpenAILocalConnectionErrorText("timeout", undefined, undefined)
+                : "Bağlantı 30 saniyede zaman aşımına uğradı. Uygulamanın çalıştığını denetleyip yeniden deneyin."
+              : strictLocal
+                ? strictLocalOpenAILocalConnectionErrorText("network", undefined, undefined)
+                : "Ağ hatası — uygulama hâlâ çalışıyor mu?",
         });
       }
     } finally {
@@ -621,11 +1014,54 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       if (operationRef.current === "local") operationRef.current = null;
       if (!closedRef.current) setLocalWorking(false);
     }
-  }, [localWorking, finishServerConnect, reconnectAccount?.id]);
+  }, [localWorking, finishServerConnect, reconnectAccount?.id, strictLocal]);
+
+  // Grok: paste the grok.com session → parse client-side → verify + save server-side.
+  // xAI refuses quota reads from OAuth tokens (403 oauth2-auth-forbidden), so a browser session
+  // is the only credential that can read remaining queries. See lib/providers/grok.ts.
+  const connectGrokPaste = useCallback(async () => {
+    if (strictLocal || !pasted.trim() || working || operationRef.current) return;
+    const controller = new AbortController();
+    operationController.current = controller;
+    operationRef.current = "manual";
+    setWorking(true);
+    setError(null);
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const tokens = parseGrokSession(pasted);
+      if (!tokens) {
+        throw new Error("Bunu okuyamadım. grok.com çerezlerindeki `sso` değerini yapıştırın.");
+      }
+      const res = await fetch("/api/connect/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "grok", tokens, expectedAccountId: reconnectAccount?.id }),
+        signal: controller.signal,
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        email?: string;
+        plan?: string;
+        label?: string;
+      };
+      if (!res.ok) throw new Error(data.error || "Grok oturumu doğrulanamadı.");
+      setPasted("");
+      finishServerConnect({ email: data.email ?? "", plan: data.plan, label: data.label });
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : "Grok oturumu doğrulanamadı.");
+      }
+    } finally {
+      clearTimeout(timeout);
+      operationController.current = null;
+      if (operationRef.current === "manual") operationRef.current = null;
+      setWorking(false);
+    }
+  }, [pasted, working, strictLocal, reconnectAccount?.id, finishServerConnect]);
 
   // OpenAI: paste ~/.codex/auth.json → parse client-side → verify + save server-side.
   const connectOpenAIPaste = useCallback(async () => {
-    if (!pasted.trim() || working || operationRef.current) return;
+    if (strictLocal || !pasted.trim() || working || operationRef.current) return;
     const controller = new AbortController();
     operationController.current = controller;
     operationRef.current = "manual";
@@ -659,8 +1095,8 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
           serverErrorText(
             data.error,
             res.status === 401
-              ? "That ChatGPT login expired or was rotated. Paste a fresh ~/.codex/auth.json."
-              : "Couldn't connect the ChatGPT account.",
+              ? "Bu ChatGPT oturumunun süresi dolmuş ya da yenilenmiş. Güncel ~/.codex/auth.json içeriğini yapıştırın."
+              : "ChatGPT hesabı bağlanamadı.",
             data.errorId,
           ),
         );
@@ -674,10 +1110,10 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       if (!closedRef.current) {
         setError(
           err instanceof Error && err.name === "AbortError"
-            ? "Connection timed out after 30 seconds. Check your connection and try again."
+            ? "Bağlantı 30 saniyede zaman aşımına uğradı. Bağlantınızı denetleyip yeniden deneyin."
             : err instanceof Error
               ? err.message
-              : "Something went wrong — try again.",
+              : "Bir şeyler ters gitti — yeniden deneyin.",
         );
       }
     } finally {
@@ -686,56 +1122,20 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       if (operationRef.current === "manual") operationRef.current = null;
       if (!closedRef.current) setWorking(false);
     }
-  }, [finishServerConnect, pasted, reconnectAccount, working]);
+  }, [finishServerConnect, pasted, reconnectAccount, strictLocal, working]);
 
   if (!open) return null;
-  const requestBusy = working || localWorking || pairStarting || pairState === "processing";
+  const requestBusy = working || localWorking || deviceBusy || pairStarting || pairState === "processing";
   const command = DUMP_COMMANDS[os];
   const oauthUrl = oauthBundle ? buildAuthorizeUrl(oauthBundle) : null;
 
   const successCard = connected && (
-    <div className="space-y-3">
-      <div
-        role="status"
-        className="flex items-center gap-3 rounded-xl border px-4 py-3.5"
-        style={{
-          borderColor: "color-mix(in srgb, var(--accent) 40%, transparent)",
-          background: "var(--accent-soft)",
-        }}
-      >
-        <span
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
-          style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
-        >
-          <CheckIcon className="h-5 w-5" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-ivory">Connected {connected.label || connected.email}</p>
-          <p className="truncate text-xs text-muted">
-            {connected.email}
-            {connected.plan ? ` · ${connected.plan}` : ""}
-          </p>
-        </div>
-      </div>
-      {!completionError && (
-        <p role="status" className="inline-flex items-center gap-2 text-xs text-muted" aria-live="polite">
-          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-[var(--accent-bright)]" />
-          Credential saved securely. Syncing the dashboard…
-        </p>
-      )}
-      {completionError && (
-        <div role="alert" className="rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-[#ff9c95]">
-          <p>{completionError}</p>
-          <button
-            type="button"
-            onClick={() => void reloadAndClose()}
-            className="mt-2 min-h-11 rounded-lg border border-current/30 px-3 py-1.5 font-medium hover:bg-white/5"
-          >
-            Retry dashboard sync
-          </button>
-        </div>
-      )}
-    </div>
+    <AddAccountSuccessCard
+      strictLocal={strictLocal}
+      connected={connected}
+      completionError={completionError}
+      onRetry={() => void reloadAndClose()}
+    />
   );
 
   // The private app-owned OAuth flow is primary. Importing the CLI's current rotating credential is
@@ -748,17 +1148,17 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         </span>
         <div className="min-w-0 flex-1">
           <p ref={pasteHeadingRef} tabIndex={-1} className="text-sm text-ivory outline-none">
-            {credentialMethod === "private-login" ? "Authorize a private login for this dashboard" : "Copy your current Claude Code session"}
+            {credentialMethod === "private-login" ? "Bu pano için özel oturumu yetkilendir" : "Geçerli Claude Code oturumunu kopyala"}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-muted">
             {credentialMethod === "private-login"
-              ? "Sign in once with Claude. This app receives its own renewable session, stores it encrypted, and refreshes it without touching the login used by Claude Code."
-              : "This quick method copies Claude Code's rotating login. The CLI and dashboard can invalidate one another when either renews it, so the private app login is more reliable."}
+              ? "Claude ile bir kez oturum açın. Uygulama kendi yenilenebilir oturumunu şifreli saklar ve Claude Code oturumuna dokunmadan yeniler."
+              : "Bu hızlı yöntem Claude Code'un yenilenen oturumunu kopyalar. CLI ve pano birbirinin oturumunu geçersiz kılabileceği için özel uygulama oturumu daha güvenilirdir."}
           </p>
           {credentialMethod === "private-login" && (
             <>
               <p className="mt-2 inline-flex rounded-full border border-coral/35 bg-coral/10 px-2.5 py-1 text-[11px] font-medium text-coral-bright">
-                Recommended · connect once · renews automatically
+                {"Önerilen · bir kez bağla · otomatik yenilenir"}
               </p>
               <a
                 href={oauthUrl ?? undefined}
@@ -776,15 +1176,15 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
                 }}
                 className={`mt-3 ${PRIMARY_LINK} ${!oauthUrl || requestBusy ? "pointer-events-none opacity-50" : ""}`}
               >
-                {oauthUrl ? "Open secure Claude sign-in" : "Preparing secure sign-in…"}
+                Güvenli Claude oturum açma sayfasını aç
               </a>
               <p className="mt-2 text-[11px] leading-relaxed text-faint">
-                Claude opens in a new tab and gives you a one-time authorization code. A <code>claude setup-token</code>{" "}
-                token cannot be used here because Anthropic limits it to inference and blocks usage checks.
+                Claude yeni sekmede açılır ve tek kullanımlık yetkilendirme kodu verir. <code>claude setup-token</code>{" "}
+                belirteci kullanım kontrollerini desteklemediği için burada kullanılamaz.
               </p>
               {oauthOpened && (
                 <p role="status" className="mt-2 text-[11px] leading-relaxed text-muted">
-                  Sign-in opened. Approve access, then copy the complete code shown by Claude.
+                  {"Oturum açma sayfası açıldı. Erişimi onaylayıp Claude tarafından gösterilen kodun tamamını kopyalayın."}
                 </p>
               )}
             </>
@@ -824,8 +1224,9 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
                         setCopied(true);
                         setTimeout(() => setCopied(false), 2000);
                       },
-                      (copyFailure) =>
-                        setCopyError(copyFailure instanceof Error ? copyFailure.message : "Couldn't copy the command."),
+                      () => setCopyError(
+                        "Komut kopyalanamadı. Komutu seçip elle kopyalayın.",
+                      ),
                     );
                   }}
                   className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-muted transition-colors hover:bg-surface-hover hover:text-ivory"
@@ -855,11 +1256,11 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
         </span>
         <div className="min-w-0 flex-1">
           <label htmlFor="claude-credentials" className="text-sm text-ivory">
-            {credentialMethod === "private-login" ? "Paste the authorization code" : "Paste the credential JSON"}
+            {credentialMethod === "private-login" ? "Yetkilendirme kodunu yapıştır" : "Kimlik bilgisi JSON'unu yapıştır"}
           </label>
           <textarea
             id="claude-credentials"
-            aria-label={credentialMethod === "private-login" ? "Claude authorization code" : "Claude Code credentials"}
+            aria-label={credentialMethod === "private-login" ? "Claude yetkilendirme kodu" : "Claude Code kimlik bilgileri"}
             value={pasted}
             disabled={requestBusy}
             onChange={(e) => setPasted(e.target.value)}
@@ -882,27 +1283,29 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
             disabled={!pasted.trim() || requestBusy}
             className={`mt-2 ${PRIMARY_BUTTON}`}
           >
-            {working ? "Connecting…" : credentialMethod === "private-login" ? "Finish secure connection" : "Connect shared session"}
+            {working ? "Bağlanıyor…" : credentialMethod === "private-login" ? "Güvenli bağlantıyı tamamla" : "Paylaşılan oturumu bağla"}
           </button>
-          <button
-            type="button"
-            disabled={requestBusy}
-            onClick={() => {
-              setCredentialMethod((current) =>
-                current === "private-login" ? "existing-session" : "private-login",
-              );
-              setPasted("");
-              setError(null);
-              setCopied(false);
-              setCopyError(null);
-              setOauthOpened(false);
-            }}
-            className="mt-2 inline-flex min-h-11 items-center text-xs font-medium text-muted underline decoration-border underline-offset-4 transition-colors enabled:hover:text-ivory"
-          >
-            {credentialMethod === "private-login"
-              ? "Use my existing Claude Code login instead"
-              : "Use a private app login (recommended)"}
-          </button>
+          {!strictLocal && (
+            <button
+              type="button"
+              disabled={requestBusy}
+              onClick={() => {
+                setCredentialMethod((current) =>
+                  current === "private-login" ? "existing-session" : "private-login",
+                );
+                setPasted("");
+                setError(null);
+                setCopied(false);
+                setCopyError(null);
+                setOauthOpened(false);
+              }}
+              className="mt-2 inline-flex min-h-11 items-center text-xs font-medium text-muted underline decoration-border underline-offset-4 transition-colors enabled:hover:text-ivory"
+            >
+              {credentialMethod === "private-login"
+                ? "Bu makinedeki Claude Code oturumunu kullan"
+                : "Panoya özel oturum kullan (önerilen)"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -941,7 +1344,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
           disabled={requestBusy}
           className="inline-flex min-h-11 items-center text-xs font-medium text-muted underline decoration-border underline-offset-4 transition-colors enabled:hover:text-ivory disabled:cursor-not-allowed disabled:opacity-45"
         >
-          Back to the private app login (recommended)
+          {"Özel uygulama oturumuna dön (önerilen)"}
         </button>
       )}
     </div>
@@ -949,11 +1352,11 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
 
   const quickAlternative = mode !== "paste" && showPaste && !connected && (
     <div className="mt-5 rounded-xl border border-border/70 bg-surface/55 p-4">
-      <p className="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Quick legacy alternative</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Eski hızlı alternatif</p>
       <p className="mt-1.5 text-xs leading-relaxed text-muted">
         {mode === "local"
-          ? "Use the Claude Code login on this machine without copying it. This shares the CLI's rotating session and can disconnect when either process renews it."
-          : "Pair the Claude Code login from another machine. This shares that CLI's rotating session and can disconnect when either process renews it."}
+          ? "Bu makinedeki Claude Code oturumunu kopyalamadan kullanın. CLI ile dönen oturum paylaşılır; süreçlerden biri yenilediğinde bağlantı kesilebilir."
+          : "Başka bir makinedeki Claude Code oturumunu eşleştirin. CLI ile dönen oturum paylaşılır; süreçlerden biri yenilediğinde bağlantı kesilebilir."}
       </p>
       <button
         type="button"
@@ -968,10 +1371,10 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       >
         {mode === "pair" && pairStarting && <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />}
         {mode === "local"
-          ? "Use this machine's current login"
+          ? "Bu makinedeki geçerli oturumu kullan"
           : pairStarting
-            ? "Getting a pairing code…"
-            : "Use the device pairing helper"}
+            ? "Eşleştirme kodu alınıyor…"
+            : "Cihaz eşleştirme yardımcısını kullan"}
       </button>
     </div>
   );
@@ -1006,82 +1409,137 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     </div>
   );
 
+  const grokBlock = (
+    <div className="mt-5">
+      {connected ? (
+        successCard
+      ) : strictLocal ? (
+        <p className="text-sm leading-relaxed text-muted">
+          Grok bu yerel kurulumda bağlanamıyor. Kota verisini yalnız bir tarayıcı oturumu okuyabiliyor
+          ve strict-local mod dışarıdan kimlik yapıştırmayı kabul etmiyor. Grok&apos;u barındırılan
+          sürümden bağlayın.
+        </p>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="grok-session" className="text-sm text-ivory">
+              grok.com oturumunu yapıştırın
+            </label>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              grok.com açıkken <span className="font-mono">F12</span> → <span className="font-mono">Application</span>
+              {" → "}<span className="font-mono">Cookies</span> → <span className="font-mono">https://grok.com</span> →
+              {" "}<span className="font-mono">sso</span> satırının değerini kopyalayın. Şifreli saklanır ve bir daha gösterilmez.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-[#e3b56e]">
+              Bu bir oturum çerezi: kapsamı dar bir token değil, Grok hesabınızın tamamına erişim. Ayrıca
+              süresi dolduğunda kart yeniden bağlanma ister — xAI kota okumasını OAuth token&apos;larına kapattığı
+              için başka bir yol yok.
+            </p>
+            <textarea
+              id="grok-session"
+              value={pasted}
+              onChange={(event) => setPasted(event.target.value)}
+              disabled={requestBusy}
+              rows={3}
+              spellCheck={false}
+              autoComplete="off"
+              className="mt-3 w-full rounded-lg border border-border bg-bg p-3 font-mono text-xs text-ivory outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:opacity-50"
+              placeholder="sso=..."
+            />
+          </div>
+          <button
+            type="button"
+            disabled={requestBusy || !pasted.trim()}
+            onClick={connectGrokPaste}
+            className={`${PRIMARY_LINK} disabled:pointer-events-none disabled:opacity-50`}
+          >
+            {working ? "Doğrulanıyor…" : "Grok hesabını bağla"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   const openaiBlock = (
     <div className="mt-5">
       {connected ? (
         successCard
       ) : (
         <div className="space-y-4">
-          {mode === "local" && (
-            <div className="rounded-xl border border-border bg-surface p-5">
-              <div className="flex items-start gap-3">
-                <span
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
-                  style={{ background: "var(--accent-soft)", color: "var(--accent-bright)" }}
-                >
-                  <DesktopIcon className="h-5 w-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm text-ivory">Read the Codex login on this computer</p>
+          <OpenAIDeviceLogin
+            expectedAccountId={reconnectAccount?.id}
+            disabled={requestBusy}
+            onBusyChange={setDeviceBusy}
+            onConnected={(account) => {
+              finishServerConnect({
+                email: account.email,
+                plan: account.plan,
+                label: account.label,
+              });
+            }}
+          />
+
+          <details className="rounded-xl border border-border/70 bg-surface/55">
+            <summary className="min-h-11 cursor-pointer px-4 py-3 text-xs font-medium text-muted transition-colors hover:text-ivory focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]">
+              Eski paylaşılan CLI oturumu
+            </summary>
+            <div className="space-y-4 border-t border-border/60 px-4 pb-4 pt-3">
+              <p className="text-xs leading-relaxed text-[#e3b56e]">
+                Codex CLI yenilemesi panonun bağlantısını kesebilir. Bu seçeneği yalnızca özel oturum kullanılamıyorsa kullanın.
+              </p>
+
+              {mode === "local" ? (
+                <OpenAILocalMachinePanel
+                  strictLocal={strictLocal}
+                  busy={requestBusy}
+                  working={localWorking}
+                  error={localError}
+                  onConnect={connectOpenAILocal}
+                  actionRef={localActionRef}
+                />
+              ) : null}
+
+              {!strictLocal ? (
+                <div className={mode === "local" ? "border-t border-border/60 pt-4" : ""}>
+                  <label htmlFor="openai-cli-credentials" className="text-sm text-ivory">
+                    {mode === "local" ? "Ya da ~/.codex/auth.json içeriğini yapıştırın" : "~/.codex/auth.json içeriğini yapıştırın"}
+                  </label>
                   <p className="mt-1 text-xs leading-relaxed text-muted">
-                    Uses the ChatGPT login the Codex CLI already stored in <code>~/.codex/auth.json</code>. It is stored
-                    encrypted in your vault and never displayed or sent anywhere else.
+                    Run <code className="rounded bg-bg px-1 py-0.5 font-mono">cat ~/.codex/auth.json</code> and paste the
+                    whole output. The tokens are stored encrypted and never shown.
                   </p>
-                  <button
-                    ref={localActionRef}
-                    type="button"
-                    onClick={connectOpenAILocal}
+                  <textarea
+                    id="openai-cli-credentials"
+                    value={pasted}
                     disabled={requestBusy}
+                    onChange={(event) => {
+                      setPasted(event.target.value);
+                      setError(null);
+                    }}
+                    spellCheck={false}
+                    autoComplete="off"
+                    rows={4}
+                    placeholder={'{ "tokens": { "access_token": "…", "refresh_token": "…" } }'}
+                    className="mt-2 w-full resize-y rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary outline-none focus:border-[var(--accent)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={connectOpenAIPaste}
+                    disabled={!pasted.trim() || requestBusy}
                     className={`mt-3 ${PRIMARY_BUTTON}`}
                   >
-                    {localWorking && <SpinnerIcon className="h-4 w-4 animate-spin-slow" />}
-                    {localWorking ? "Reading…" : "Read ChatGPT login from this machine"}
+                    {working ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
+                    {working ? "Connecting…" : "Paylaşılan ChatGPT oturumunu bağla"}
                   </button>
-                  {localError && (
-                    <div role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
-                      <p>{localError.message}</p>
-                      {localError.recommendation && <p className="mt-1 text-faint">{localError.recommendation}</p>}
-                    </div>
-                  )}
+                  {error ? (
+                    <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
+                      {error}
+                    </p>
+                  ) : null}
                 </div>
-              </div>
+              ) : null}
             </div>
-          )}
-
-          <div className={mode === "local" ? "border-t border-border/60 pt-4" : ""}>
-            <p className="text-sm text-ivory">
-              {mode === "local" ? "Or paste your ~/.codex/auth.json" : "Paste your ~/.codex/auth.json"}
-            </p>
-            <p className="mt-1 text-xs leading-relaxed text-muted">
-              Run <code className="rounded bg-bg px-1 py-0.5 font-mono">cat ~/.codex/auth.json</code> and paste the whole
-              output. The tokens are stored encrypted and never shown.
-            </p>
-            <textarea
-              value={pasted}
-              onChange={(event) => {
-                setPasted(event.target.value);
-                setError(null);
-              }}
-              spellCheck={false}
-              rows={4}
-              placeholder={'{ "tokens": { "access_token": "…", "refresh_token": "…" } }'}
-              className="mt-2 w-full resize-y rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary outline-none focus:border-[var(--accent)]"
-            />
-            <button
-              type="button"
-              onClick={connectOpenAIPaste}
-              disabled={!pasted.trim() || working}
-              className={`mt-3 ${PRIMARY_BUTTON}`}
-            >
-              {working && <SpinnerIcon className="h-4 w-4 animate-spin-slow" />}
-              {working ? "Connecting…" : "Connect ChatGPT account"}
-            </button>
-            {error && (
-              <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
-                {error}
-              </p>
-            )}
-          </div>
+          </details>
         </div>
       )}
     </div>
@@ -1090,9 +1548,11 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
   return (
     <ModalShell
       open={open}
-      title={reconnectAccount ? `Reconnect ${reconnectAccount.label || reconnectAccount.email}` : "Connect an account"}
+      title={reconnectAccount ? `${reconnectAccount.label || reconnectAccount.email} hesabını yeniden bağla` : "Hesap bağla"}
       description={
-        reconnectAccount ? "Authorize this same account so its expired session can be replaced without changing its dashboard identity." : undefined
+        reconnectAccount
+          ? "Bu hesabı, panodaki kimliğini değiştirmeden süresi dolan oturumunu yenilemek için yeniden yetkilendirin."
+          : undefined
       }
       onClose={onClose}
       dismissible={!requestBusy && (!connected || Boolean(completionError))}
@@ -1101,6 +1561,8 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       {providerPicker}
       {provider === "openai" ? (
         openaiBlock
+      ) : provider === "grok" ? (
+        grokBlock
       ) : (
       <div className="mt-5">
           {(mode === "paste" || showPaste) && !connected && pasteBlock}
@@ -1112,45 +1574,14 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
                 successCard
               ) : (
                 <>
-                  <div className="rounded-xl border border-border bg-surface p-5">
-                    <div className="flex items-start gap-3">
-                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
-                        <DesktopIcon className="h-5 w-5" />
-                      </span>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-ivory">Connect from this machine</p>
-                        <p className="mt-1 text-xs leading-relaxed text-muted">
-                          We&apos;ll read the Claude Code login already on this computer. This is quick, but it shares a
-                          rotating session with the CLI and is less reliable than the private app login.
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      ref={localActionRef}
-                      type="button"
-                      onClick={connectLocal}
-                      disabled={requestBusy}
-                      className={`mt-4 ${PRIMARY_BUTTON}`}
-                    >
-                      {localWorking ? (
-                        <>
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow" />
-                          Connecting…
-                        </>
-                      ) : (
-                        <>
-                          <DesktopIcon className="h-4 w-4" />
-                          Connect from this machine
-                        </>
-                      )}
-                    </button>
-                  </div>
-                  {localError && (
-                    <div role="alert" className="mt-4 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2.5 text-xs leading-relaxed text-[#ff9c95]">
-                      <p>{localError.message}</p>
-                      {localError.recommendation && <p className="mt-1 text-muted">{localError.recommendation}</p>}
-                    </div>
-                  )}
+                  <ClaudeLocalMachinePanel
+                    strictLocal={strictLocal}
+                    busy={requestBusy}
+                    working={localWorking}
+                    error={localError}
+                    onConnect={connectLocal}
+                    actionRef={localActionRef}
+                  />
                   {pasteFallback}
                 </>
               )}
@@ -1163,106 +1594,29 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
                 successCard
               ) : (
                 <>
-                  <div className="flex gap-3">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-coral/15 text-coral-bright">
-                      <TerminalIcon className="h-3.5 w-3.5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p ref={pairHeadingRef} tabIndex={-1} className="text-sm text-ivory outline-none">
-                        Run one command where this account is signed in
-                      </p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted">
-                        On the computer where you use Claude Code, paste this into a terminal. It reads that
-                        machine&apos;s current rotating login and connects it here as a less-reliable quick option.
-                      </p>
-                      {pairStarting && !pairCommand && (
-                        <div role="status" className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
-                          Getting a single-use pairing code…
-                        </div>
-                      )}
-                      {pairCommand && <div className="mt-2.5 flex items-stretch gap-2">
-                        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-secondary">
-                          {pairCommand}
-                        </code>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPairCopyError(null);
-                            void copyText(pairCommand).then(
-                              () => {
-                                setPairCopied(true);
-                                setTimeout(() => setPairCopied(false), 2000);
-                              },
-                              (copyFailure) =>
-                                setPairCopyError(copyFailure instanceof Error ? copyFailure.message : "Couldn't copy the command."),
-                            );
-                          }}
-                          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-muted transition-colors hover:bg-surface-hover hover:text-ivory"
-                        >
-                          <CopyIcon className="h-3.5 w-3.5" />
-                          {pairCopied ? "Copied" : "Copy"}
-                        </button>
-                      </div>}
-                      {pairCopyError && (
-                        <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">
-                          {pairCopyError}
-                        </p>
-                      )}
-
-                      {pairCommand && pairState === "waiting" && !pairStarting && (
-                        <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
-                          Waiting for you to run it…
-                        </div>
-                      )}
-                      {pairState === "processing" && (
-                        <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted" role="status">
-                          <SpinnerIcon className="h-4 w-4 animate-spin-slow text-coral" />
-                          Account verified — saving it securely…
-                        </div>
-                      )}
-                      {pairState === "expired" && (
-                        <div className="mt-3 flex items-center gap-3">
-                          <span className="text-xs text-[#e3b56e]">That code expired.</span>
-                          <button
-                            type="button"
-                            onClick={() => void startPairing()}
-                            disabled={requestBusy}
-                            aria-busy={pairStarting}
-                            className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
-                          >
-                            {pairStarting ? "Getting code…" : "Get a new code"}
-                          </button>
-                        </div>
-                      )}
-                      {pairState === "error" && (
-                        <div className="mt-3 flex flex-wrap items-center gap-3">
-                          <p role="alert" className="text-xs text-[#ff9c95]">
-                            {pairError ?? "Couldn't reach the pairing service."}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => void startPairing()}
-                            disabled={requestBusy}
-                            aria-busy={pairStarting}
-                            className="min-h-11 rounded-lg border border-border px-3 py-1 text-xs font-medium text-ivory transition-colors enabled:hover:bg-surface-hover"
-                          >
-                            {pairStarting ? "Trying again…" : "Try again"}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="mt-4 rounded-xl border border-border/70 bg-surface/60 p-3.5 text-[11px] leading-relaxed text-faint">
-                    <p className="mb-1.5 font-medium text-muted">What happens &amp; why it&apos;s safe</p>
-                    <ul className="space-y-1">
-                      <li>It sends the same login token Claude Code already uses on that machine.</li>
-                      <li>Sent over HTTPS and stored encrypted — only your dashboard can read it.</li>
-                      <li>The helper is open source, so you can read exactly what it does before running it.</li>
-                    </ul>
-                  </div>
+                  <ClaudePairingPanel
+                    strictLocal={strictLocal}
+                    state={pairStarting ? "starting" : pairState}
+                    command={pairCommand}
+                    error={pairError}
+                    busy={requestBusy}
+                    copied={pairCopied}
+                    copyError={pairCopyError}
+                    headingRef={pairHeadingRef}
+                    onCopy={() => {
+                      setPairCopyError(null);
+                      void copyText(pairCommand).then(
+                        () => {
+                          setPairCopied(true);
+                          setTimeout(() => setPairCopied(false), 2000);
+                        },
+                        () => setPairCopyError(
+                          "Komut kopyalanamadı. Komutu seçip elle kopyalayın.",
+                        ),
+                      );
+                    }}
+                    onRetry={() => void startPairing()}
+                  />
                   {pasteFallback}
                 </>
               )}
@@ -1270,9 +1624,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
           )}
 
           <p className="mt-5 border-t border-border/60 pt-4 text-[11px] leading-relaxed text-faint">
-              Credentials are encrypted in your private vault and used only for account checks with Anthropic. The
-              recommended login has its own renewable session, so your normal Claude Code CLI cannot rotate it away.
-              Quick connect imports the CLI&apos;s shared session and may need replacement if another process refreshes it first.
+              {"Kimlik bilgileri şifreli yerel kasanızda saklanır ve yalnızca Anthropic hesap kontrolleri için kullanılır. Önerilen oturumun kendine ait yenilenebilir oturumu vardır; normal Claude Code CLI bunu döndüremez. Hızlı bağlantı, CLI'ın paylaşılan oturumunu içe aktarır ve başka bir süreç önce yenilerse değiştirilmesi gerekebilir."}
           </p>
       </div>
       )}

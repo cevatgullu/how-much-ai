@@ -44,10 +44,14 @@ for (const key of [
 }
 process.env.VAULT_DATA_DIR = dataDir;
 process.env.VAULT_ENCRYPTION_SECRET = "oauth-connect-test-secret";
+process.env.APP_PASSWORD = "oauth-connect-test-password";
+process.env.AUTH_SECRET = "oauth-connect-test-auth-secret";
 
 const { POST } = await import("../app/api/connect/oauth/route.ts");
 const { CLAUDE_SUBSCRIPTION_OAUTH } = await import("./anthropic.ts");
+const { createSession, SESSION_COOKIE } = await import("./session.ts");
 const { loadAccounts, saveAccounts } = await import("./vault.ts");
+const sessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
 
 const ACCESS_TOKEN = "sk-ant-oat01-oauth-access-secret";
 const REFRESH_TOKEN = "oauth-refresh-secret";
@@ -97,7 +101,8 @@ beforeEach(async () => {
   mode = "success";
   profileAccountId = "acct-oauth";
   calls = [];
-  delete process.env.APP_PASSWORD;
+  process.env.APP_PASSWORD = "oauth-connect-test-password";
+  process.env.AUTH_SECRET = "oauth-connect-test-auth-secret";
   await saveAccounts("default", []);
 });
 
@@ -108,13 +113,128 @@ after(async () => {
   moduleHooks.deregister();
 });
 
-function request(overrides: Record<string, unknown> = {}, headers: HeadersInit = {}): Request {
+function request(
+  overrides: Record<string, unknown> = {},
+  headers: HeadersInit = {},
+  authenticated = true,
+): Request {
   return new Request("http://localhost/api/connect/oauth", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Origin: "http://localhost", ...headers },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "http://localhost",
+      ...(authenticated ? { Cookie: sessionCookie } : {}),
+      ...headers,
+    },
     body: JSON.stringify({ code: CODE, state: STATE, verifier: VERIFIER, ...overrides }),
   });
 }
+
+test("strict-local OAuth accepts the public loopback origin through Next's internal URL", async () => {
+  const previousEnvironment = process.env;
+  const originalConsoleError = console.error;
+  const logged: unknown[][] = [];
+  const strictDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "hmc-oauth-connect-strict-"));
+  process.env = {
+    ...process.env,
+    HMC_STRICT_LOCAL_MODE: "1",
+    HMC_LISTEN_HOST: "127.0.0.1",
+    HMC_LISTEN_PORT: "37645",
+    PORT: "37645",
+    NODE_ENV: "production",
+    APP_PASSWORD: "p".repeat(64),
+    AUTH_SECRET: "s".repeat(64),
+    VAULT_ENCRYPTION_SECRET: "v".repeat(64),
+    VAULT_DATA_DIR: strictDataDir,
+    TRUST_PROXY_IP_HEADERS: "0",
+    ENABLE_LOCAL_CONNECT: "1",
+    NEXT_TELEMETRY_DISABLED: "1",
+  };
+  const strictSessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    const response = await POST(
+      new Request("http://next-internal.invalid:3000/api/connect/oauth", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Host: "127.0.0.1:37645",
+          Origin: "http://127.0.0.1:37645",
+          "Sec-Fetch-Site": "same-origin",
+          Cookie: strictSessionCookie,
+        },
+        body: JSON.stringify({ code: CODE, state: STATE, verifier: VERIFIER }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as Record<string, unknown>;
+    assert.deepEqual(body, { ok: true });
+    const publicEvidence = JSON.stringify({ body, logged });
+    for (const secret of [CODE, VERIFIER, profileAccountId, "oauth@example.com", ACCESS_TOKEN, REFRESH_TOKEN]) {
+      assert.equal(publicEvidence.includes(secret), false);
+    }
+    const stored = await loadAccounts("default");
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].credentialKind, "managed");
+  } finally {
+    console.error = originalConsoleError;
+    process.env = previousEnvironment;
+    await fs.rm(strictDataDir, { recursive: true, force: true });
+  }
+});
+
+test("strict-local OAuth mismatch response never identifies the verified Claude account", async () => {
+  const previousEnvironment = process.env;
+  const strictDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "hmc-oauth-connect-strict-mismatch-"));
+  process.env = {
+    ...process.env,
+    HMC_STRICT_LOCAL_MODE: "1",
+    HMC_LISTEN_HOST: "127.0.0.1",
+    HMC_LISTEN_PORT: "37645",
+    PORT: "37645",
+    NODE_ENV: "production",
+    APP_PASSWORD: "p".repeat(64),
+    AUTH_SECRET: "s".repeat(64),
+    VAULT_ENCRYPTION_SECRET: "v".repeat(64),
+    VAULT_DATA_DIR: strictDataDir,
+    TRUST_PROXY_IP_HEADERS: "0",
+    ENABLE_LOCAL_CONNECT: "1",
+    NEXT_TELEMETRY_DISABLED: "1",
+  };
+  const strictSessionCookie = `${SESSION_COOKIE}=${await createSession()}`;
+  try {
+    const response = await POST(
+      new Request("http://next-internal.invalid:3000/api/connect/oauth", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Host: "127.0.0.1:37645",
+          Origin: "http://127.0.0.1:37645",
+          "Sec-Fetch-Site": "same-origin",
+          Cookie: strictSessionCookie,
+        },
+        body: JSON.stringify({ code: CODE, state: STATE, verifier: VERIFIER, expectedAccountId: "other-account" }),
+      }),
+    );
+    assert.equal(response.status, 409);
+    const body = (await response.json()) as { error: string };
+    assert.equal(body.error.includes(profileAccountId), false);
+    assert.equal(body.error.includes("oauth@example.com"), false);
+  } finally {
+    process.env = previousEnvironment;
+    await fs.rm(strictDataDir, { recursive: true, force: true });
+  }
+});
+
+test("strict-local OAuth fails closed when the strict-local environment is invalid", async () => {
+  const previousEnvironment = process.env;
+  process.env = { ...process.env, HMC_STRICT_LOCAL_MODE: "1" };
+  try {
+    await assert.rejects(() => POST(request()), /Strict-local configuration refused to start/);
+  } finally {
+    process.env = previousEnvironment;
+  }
+});
 
 test("OAuth connection exchanges once, verifies both APIs, and persists before a token-free 200", async () => {
   const before = Date.now();
@@ -271,17 +391,15 @@ test("verified reconnect dedupes by account id and retains the user's metadata",
 });
 
 test("route rejects unauthenticated, cross-origin, primitive, oversized, and malformed input before exchange", async () => {
-  process.env.APP_PASSWORD = "configured-password";
-  const unauthenticated = await POST(request());
+  const unauthenticated = await POST(request({}, {}, false));
   assert.equal(unauthenticated.status, 401);
-  delete process.env.APP_PASSWORD;
 
   const crossOrigin = await POST(request({}, { Origin: "https://attacker.example" }));
   assert.equal(crossOrigin.status, 403);
   const primitive = await POST(
     new Request("http://localhost/api/connect/oauth", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Cookie: sessionCookie },
       body: "null",
     }),
   );
@@ -291,7 +409,7 @@ test("route rejects unauthenticated, cross-origin, primitive, oversized, and mal
   const oversized = await POST(
     new Request("http://localhost/api/connect/oauth", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": "99999" },
+      headers: { "Content-Type": "application/json", "Content-Length": "99999", Cookie: sessionCookie },
       body: "{}",
     }),
   );

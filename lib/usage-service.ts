@@ -26,6 +26,7 @@ import {
   isProfilePermissionError,
 } from "./anthropic";
 import { getProvider, httpStatusOf } from "./providers/index";
+import type { ProviderId } from "./providers/types";
 import {
   LocalUsageCoordinator,
   type AccountUsageResult,
@@ -116,14 +117,19 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : "Failed to reach Anthropic";
 }
 
-function providerProductName(providerId: "anthropic" | "openai"): "Claude" | "ChatGPT" {
-  return providerId === "openai" ? "ChatGPT" : "Claude";
+function providerProductName(providerId: ProviderId): "Claude" | "ChatGPT" | "Grok" {
+  if (providerId === "openai") return "ChatGPT";
+  if (providerId === "grok") return "Grok";
+  return "Claude";
 }
 
-function replacementAccessTokenRejected(providerId: "anthropic" | "openai"): Error {
-  return new Error(
-    `${providerProductName(providerId)} rejected the replacement access token. Reconnect with the private app login.`,
-  );
+function replacementAccessTokenRejected(providerId: ProviderId): Error {
+  // Grok holds a browser session rather than a grant that can be re-issued, so it is sent to a
+  // fresh paste instead of a private app login it does not have.
+  const remedy = providerId === "grok"
+    ? "Reconnect by pasting a current grok.com session."
+    : "Reconnect with the private app login.";
+  return new Error(`${providerProductName(providerId)} rejected the replacement access token. ${remedy}`);
 }
 
 // Only an explicit auth rejection from token refresh proves the grant is dead/revoked. A 429 is
@@ -242,7 +248,7 @@ function staleResult(now: number, prior: Prior): AccountUsageResult {
 function failedRefreshResult(
   prior: Prior,
   error: unknown,
-  providerId: "anthropic" | "openai",
+  providerId: ProviderId,
 ): AccountUsageResult {
   if (error instanceof RotatedTokenPersistenceError) {
     return {

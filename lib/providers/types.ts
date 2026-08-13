@@ -5,7 +5,7 @@
 
 import type { AccountTokens, UsageData } from "../types";
 
-export type ProviderId = "anthropic" | "openai";
+export type ProviderId = "anthropic" | "openai" | "grok";
 
 export const DEFAULT_PROVIDER: ProviderId = "anthropic";
 

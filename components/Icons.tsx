@@ -143,6 +143,19 @@ export function OpenAIIcon({ className }: { className?: string }) {
   );
 }
 
+// Grok's mark is a slashed ring; drawn as strokes so it stays legible at badge size and in
+// forced-colors mode, where filled paths collapse.
+export function GrokIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden fill="none">
+      <g stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4.6 19.4 19.4 4.6" />
+        <path d="M9.5 19.4a7 7 0 0 0 9.9-9.9" />
+      </g>
+    </svg>
+  );
+}
+
 export function GitHubIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>

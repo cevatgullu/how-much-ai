@@ -2,7 +2,7 @@
 // registry (it pulls in Node built-ins), so the display label + icon + connect capabilities live here.
 import type { ReactElement } from "react";
 import type { ProviderId } from "@/lib/providers/types";
-import { AnthropicIcon, OpenAIIcon } from "./Icons";
+import { AnthropicIcon, GrokIcon, OpenAIIcon } from "./Icons";
 
 export interface ProviderMeta {
   id: ProviderId;
@@ -27,10 +27,19 @@ export const PROVIDER_META: Record<ProviderId, ProviderMeta> = {
     supportsOAuth: false,
     supportsPrivateLogin: true,
   },
+  grok: {
+    id: "grok",
+    label: "Grok",
+    Icon: GrokIcon,
+    // xAI refuses quota reads from OAuth tokens, so the only connect path is a pasted
+    // grok.com session cookie. See the note at the top of lib/providers/grok.ts.
+    supportsOAuth: false,
+    supportsPrivateLogin: false,
+  },
 };
 
 // Picker order (matches lib/providers PROVIDERS).
-export const PROVIDER_ORDER: ProviderId[] = ["anthropic", "openai"];
+export const PROVIDER_ORDER: ProviderId[] = ["anthropic", "openai", "grok"];
 
 export function providerMeta(id: ProviderId | undefined): ProviderMeta {
   return PROVIDER_META[id ?? "anthropic"] ?? PROVIDER_META.anthropic;

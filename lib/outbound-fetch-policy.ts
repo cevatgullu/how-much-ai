@@ -5,6 +5,7 @@ const ALLOWED_PROVIDER_ORIGINS = new Set([
   "https://platform.claude.com",
   "https://auth.openai.com",
   "https://chatgpt.com",
+  "https://grok.com",
 ]);
 
 export class OutboundPolicyError extends Error {

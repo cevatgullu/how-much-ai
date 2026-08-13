@@ -40,6 +40,8 @@ function scopedLimit(scope: LimitEntry["scope"], group: unknown, fallback: strin
 }
 
 function kindRank(kind: string): number {
+  // Grok's two-hour window is the shortest horizon on any card, so it leads like `session` does.
+  if (kind === "grok_mode") return 0;
   if (kind === "session") return 0;
   if (kind === "weekly_all") return 1;
   if (kind === "weekly_oauth_apps") return 2;
@@ -49,6 +51,17 @@ function kindRank(kind: string): number {
 
 function canonicalRichLimit(limit: LimitEntry): { key: string; kind: string; label: string } | null {
   if (typeof limit.kind !== "string") return null;
+  // Grok reports one rolling window per mode. The label already carries the mode name and the
+  // raw counts (see grok-usage.ts), so it is used verbatim rather than fitted to a fixed phrase.
+  if (limit.kind === "grok_mode") {
+    const display = scopeText(limit.scope?.model?.display_name);
+    const stable = scopeText(limit.scope?.model?.id) ?? scopeText(limit.group) ?? "mod";
+    return {
+      key: `grok_mode:${encodeURIComponent(stable.toLowerCase())}`,
+      kind: "grok_mode",
+      label: display ?? stable,
+    };
+  }
   if (limit.kind === "weekly_scoped") {
     const scoped = scopedLimit(limit.scope, limit.group);
     return { ...scoped, kind: "weekly_scoped" };

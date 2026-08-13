@@ -96,7 +96,7 @@ export function CopyIcon({ className }: { className?: string }) {
   );
 }
 
-// Google's four-color "G" for the "Sign in with Google" CTA — intentionally uses fixed brand
+// Google's four-color "G" for the "Google ile oturum aç" CTA — intentionally uses fixed brand
 // colors (per Google's identity guidelines) rather than currentColor.
 export function GoogleIcon({ className }: { className?: string }) {
   return (

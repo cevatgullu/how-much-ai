@@ -52,7 +52,7 @@ export async function readHostedPushStatus(
   } catch {
     return {
       state: "error",
-      message: "Couldn't check this browser's push subscription.",
+      message: "Bu tarayıcının bildirim aboneliği denetlenemedi.",
     };
   }
 }
@@ -423,7 +423,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
     void refreshPushState(generation).catch(() => {
       if (generationRef.current !== generation) return;
       setPushState("error");
-      setPushError("Couldn't check this browser's push subscription.");
+      setPushError("Bu tarayıcının bildirim aboneliği denetlenemedi.");
     });
   }, [refreshPushState]);
 
@@ -524,7 +524,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
       }
     } catch (error) {
       if (generationRef.current === generation) {
-        setActionError(messageFrom(error, "Couldn't save notification settings."));
+        setActionError(messageFrom(error, "Bildirim ayarları kaydedilemedi."));
       }
     } finally {
       if (generationRef.current === generation) setSaving(false);
@@ -547,16 +547,16 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
   const ready = settings?.ready ?? false;
   const pushDescription =
     pushState === "on"
-      ? "On — this browser will get alerts."
+      ? "Açık — bu tarayıcı uyarı alacak."
       : pushState === "denied"
-        ? "Blocked in this browser's site settings."
+        ? "Bu tarayıcının site ayarlarında engellenmiş."
         : pushState === "unsupported"
           ? "This browser doesn't support web push."
           : pushState === "loading"
-            ? "Checking this browser…"
+            ? "Bu tarayıcı denetleniyor…"
             : pushState === "error"
-              ? "Couldn't determine this browser's current subscription."
-              : "Off for this device.";
+              ? "Bu tarayıcının geçerli aboneliği belirlenemedi."
+              : "Bu cihaz için kapalı.";
 
   return (
     <ModalShell
@@ -691,7 +691,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
                   setSaved(false);
                 }}
                 label="Any limit resets"
-                description="Every window rollover, even ones you barely touched. Chatty — off by default."
+                description="Her pencere yenilenmesinde, neredeyse hiç kullanmadıklarınızda bile. Konuşkan — varsayılan olarak kapalı."
                 disabled={saving}
               />
             </fieldset>
@@ -818,7 +818,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
 
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="min-h-5 text-xs text-muted" aria-live="polite">
-                {saving ? "Saving settings…" : saved ? "Settings saved." : dirty ? "Unsaved changes" : ""}
+                {saving ? "Saving settings…" : saved ? "Ayarlar kaydedildi." : dirty ? "Unsaved changes" : ""}
               </p>
               <div className="flex gap-2">
                 <button

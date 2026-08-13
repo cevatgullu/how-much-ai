@@ -57,9 +57,12 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
           )}
         </span>
         <span className="flex min-w-0 items-baseline justify-between gap-2 xs:shrink-0 xs:justify-end">
-          <span className="text-[11px] tabular-nums text-faint">%{remaining} kaldı</span>
-          <span className="ml-auto shrink-0 text-right text-sm font-semibold tabular-nums text-ivory">
-            Kullanılan: %{used}
+          <span
+            className="ml-auto shrink-0 text-right text-[15px] font-semibold leading-none tabular-nums"
+            style={{ color: fillColor }}
+          >
+            %{remaining}
+            <span className="ml-1 text-[10px] font-normal text-faint">kaldı</span>
           </span>
         </span>
       </div>
@@ -76,13 +79,26 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
         aria-valuemax={100}
         aria-valuenow={used}
         aria-valuetext={valueText}
-        className="mt-1.5 h-2 overflow-hidden rounded-full bg-track"
+        className="usage-ruler mt-1.5"
       >
-        <div
-          className="bar-fill h-full rounded-full"
-          style={{ width: `${used}%`, backgroundColor: fillColor }}
+        <span className="usage-ruler-mm" aria-hidden="true" />
+        <span className="usage-ruler-major" style={{ left: "25%" }} aria-hidden="true" />
+        <span className="usage-ruler-major" style={{ left: "50%" }} aria-hidden="true" />
+        <span className="usage-ruler-major" style={{ left: "75%" }} aria-hidden="true" />
+        {/* Dolgu kalanı gösterir: çubuk bir yakıt göstergesi gibi okunur. */}
+        <span
+          className="usage-ruler-fill bar-fill"
+          style={{ width: `${remaining}%`, backgroundColor: fillColor }}
         />
+        {remaining > 2 && remaining < 100 && (
+          <span
+            className="usage-ruler-edge"
+            style={{ left: `calc(${remaining}% - 1px)`, backgroundColor: fillColor, color: fillColor }}
+            aria-hidden="true"
+          />
+        )}
       </div>
+      <div className="mt-1 text-[10px] tabular-nums text-faint">kullanılan %{used}</div>
     </div>
   );
 }

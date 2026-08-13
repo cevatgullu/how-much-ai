@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { AccountSnapshot, BrowserAccount, UsageResponse, VaultMutation } from "@/lib/types";
 import type { ProviderId } from "@/lib/providers/types";
+import { PROVIDER_META } from "@/components/providers-ui";
 import { loadSettings, saveSettings, type Settings } from "@/lib/storage";
 import { refreshAllAccounts } from "@/lib/refresh-all";
 import {
@@ -68,13 +69,9 @@ export function strictLocalDashboardMessage(
   key: StrictLocalDashboardMessageKey,
 ): string {
   if (key === "auto_refresh_save_failed") {
-    return strictLocal
-      ? "Otomatik yenileme tercihi bu cihaza kaydedilemedi."
-      : "Couldn't save the auto-refresh preference on this device.";
+    return "Otomatik yenileme tercihi bu cihaza kaydedilemedi.";
   }
-  return strictLocal
-    ? "Yeniden yüklemek kayıtlı kasanın kilidini açamaz. Aşağıdaki kurtarma seçeneklerini kullanın veya önceki şifreleme anahtarını geri yükleyin."
-    : "Reloading cannot unlock the saved vault. Use the recovery options below, or restore its previous encryption secret.";
+  return "Yeniden yüklemek kayıtlı kasanın kilidini açamaz. Aşağıdaki kurtarma seçeneklerini kullanın veya önceki şifreleme anahtarını geri yükleyin.";
 }
 
 export function dashboardVaultRecoveryNotice(
@@ -283,9 +280,25 @@ export function DashboardAccountList({
   onRename,
 }: DashboardAccountListProps) {
   const rows = dashboardAccountRows(accounts, visibleAccountIds, metrics, providerOrdinals, expandedAccountIds);
+  // Hesaplar ailelerine göre gruplanır; sıralama zaten uygulanmış olduğu için her ailenin
+  // kendi içindeki sıra korunur. Böylece sıralama seçimi aile içinde geçerli olur.
+  const families = (["anthropic", "openai", "grok"] as const)
+    .map((id) => ({
+      id,
+      meta: PROVIDER_META[id],
+      rows: rows.filter((row) => (row.account.provider ?? "anthropic") === id),
+    }))
+    .filter((family) => family.rows.length > 0);
   return (
     <ol role="list" className="dashboard-account-list account-grid list-none">
-      {rows.map((row) => {
+      {families.flatMap((family) => [
+        <li key={`family-${family.id}`} className="dashboard-family-head list-none" data-family={family.id}>
+          <family.meta.Icon className="h-3.5 w-3.5 shrink-0" />
+          <span className="dashboard-family-name">{family.meta.label}</span>
+          <span className="dashboard-family-rule" aria-hidden="true" />
+          <span className="dashboard-family-count">{family.rows.length} hesap</span>
+        </li>,
+        ...family.rows.map((row) => {
         const usageBars = row.account.id in snapshots && snapshots[row.account.id]?.usage
           ? extractBars(snapshots[row.account.id]!.usage!)
           : [];
@@ -315,7 +328,8 @@ export function DashboardAccountList({
             />
           </li>
         );
-      })}
+        }),
+      ])}
     </ol>
   );
 }
@@ -331,7 +345,7 @@ export function localAccountLabel(
     !LOCAL_LABEL_CONTROL_PATTERN.test(nickname) &&
     !nickname.includes("@")
   ) return nickname;
-  return `${account.provider === "openai" ? "ChatGPT" : "Claude"} ${providerOrdinal}`;
+  return `${PROVIDER_META[account.provider ?? "anthropic"].label} ${providerOrdinal}`;
 }
 
 type DashboardLocalNotificationProcessor = (
@@ -636,7 +650,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     try {
       const recovery = await archiveUnreadableVault();
       const loaded = await loadVault();
-      if (!loaded) throw new Error("The old vault was archived, but the new empty vault couldn't be loaded.");
+      if (!loaded) throw new Error("Eski kasa arşivlendi, ancak yeni boş kasa yüklenemedi.");
       setActionError(null);
       setVaultRecoveryNotice(dashboardVaultRecoveryNotice(strictLocal, recovery));
     } catch (error) {
@@ -736,7 +750,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           } else {
             commitSnapshot(id, (previous) => previous?.usage
               ? { ...previous, status: "ready", stale: true }
-              : { ...previous, status: "error", error: "Usage is still refreshing — retry in a moment." });
+              : { ...previous, status: "error", error: "Kullanım verisi hâlâ yenileniyor — birazdan yeniden deneyin." });
           }
           return false;
         }

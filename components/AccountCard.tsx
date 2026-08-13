@@ -102,10 +102,11 @@ export function AccountCard({
       ? { ...bar, label: "Codex · 5 saatlik limit" }
       : bar)
     : null;
-  const controlledMobileLedger = metric !== undefined
-    && fiveHourPeak !== undefined
-    && mobileExpanded !== undefined
-    && onMobileExpandedChange !== undefined;
+  // Mobil ve masaüstü aynı bilgiyi gösterir: her limit kendi satırında, kalan yüzdesi ve
+  // yenilenme saatiyle. Daha önce dar ekranda yalnız özet veren "ledger" görünümü kapatıldı.
+  const controlledMobileLedger = false;
+  void metric;
+  void onMobileExpandedChange;
   const expanded = mobileExpanded ?? false;
   const resolvedFiveHourPeak = fiveHourPeak === undefined
     ? deriveFiveHourPeak(bars ?? [])
@@ -367,7 +368,7 @@ export function AccountCard({
           data-ledger-expand={account.id}
           aria-expanded={expanded}
           aria-controls={ledgerPanelId}
-          onClick={() => onMobileExpandedChange(!expanded)}
+          onClick={() => onMobileExpandedChange?.(!expanded)}
           className="block min-h-11 w-full min-w-0 text-left"
         >
           <span className="flex min-w-0 items-start justify-between gap-3">

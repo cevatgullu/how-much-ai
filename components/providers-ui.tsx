@@ -31,8 +31,8 @@ export const PROVIDER_META: Record<ProviderId, ProviderMeta> = {
     id: "grok",
     label: "Grok",
     Icon: GrokIcon,
-    // xAI refuses quota reads from OAuth tokens, so the only connect path is a pasted
-    // grok.com session cookie. See the note at the top of lib/providers/grok.ts.
+    // xAI refuses quota reads from OAuth tokens, so the only connect paths are a pasted
+    // credential. See the note at the top of lib/providers/grok.ts.
     supportsOAuth: false,
     supportsPrivateLogin: false,
   },
@@ -66,19 +66,50 @@ function jwtExpiryMs(token: string): number {
   }
 }
 
-// Parse a pasted ~/.codex/auth.json (or a bare tokens object) client-side into vault tokens. Mirrors
-// the server-side extractOpenAITokens; kept here so the Connect dialog never imports Node-only code.
 /**
- * Read a grok.com session out of whatever the user pastes: the bare `sso` value, an `sso=…`
- * pair, or a whole cookie header copied from devtools. Mirrors the server-side parser in
- * lib/providers/grok.ts — the two must agree, so both accept the same three shapes.
+ * Read whichever Grok credential the user pastes.
  *
- * There is no expiry to read: a session cookie carries none in its value, so `expiresAt` is 0
- * ("unknown") and an expired session surfaces as a 401 that routes the card to reconnect.
+ * Two are usable and they authenticate different sources: a `~/.grok/auth.json` bearer (or the bare
+ * JWT inside it) reaches the CLI billing facade, and the `sso` cookie reaches grok.com. The cookie
+ * is accepted bare, as an `sso=…` pair, or inside a whole `document.cookie` string copied from
+ * devtools. Mirrors the server-side parser in lib/providers/grok.ts — the two must agree, so both
+ * accept the same shapes.
+ *
+ * There is no expiry to read from either: a session cookie carries none in its value and the bearer
+ * is treated as opaque here, so `expiresAt` is 0 ("unknown") and a dead credential surfaces as the
+ * 401 that routes the card to reconnect.
  */
+const GROK_JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
+
+function grokBearerFromAuthFile(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const candidates: unknown[] = [payload, ...Object.values(payload as Record<string, unknown>)];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const entry = candidate as { key?: unknown; access_token?: unknown; accessToken?: unknown };
+    for (const value of [entry.key, entry.access_token, entry.accessToken]) {
+      if (typeof value === "string" && GROK_JWT_PATTERN.test(value.trim())) return value.trim();
+    }
+  }
+  return null;
+}
+
 export function parseGrokSession(text: string): ParsedCredentialTokens | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
+  if (trimmed.startsWith("{")) {
+    try {
+      const bearer = grokBearerFromAuthFile(JSON.parse(trimmed) as unknown);
+      // A JSON document that is not an auth file carries no cookie either; falling through would
+      // store the raw text as a session value and produce an account that can never authenticate.
+      return bearer ? { accessToken: bearer, refreshToken: null, expiresAt: 0 } : null;
+    } catch {
+      return null;
+    }
+  }
+  if (GROK_JWT_PATTERN.test(trimmed)) {
+    return { accessToken: trimmed, refreshToken: null, expiresAt: 0 };
+  }
   let value = "";
   if (trimmed.includes("=")) {
     for (const part of trimmed.split(";")) {
@@ -96,6 +127,8 @@ export function parseGrokSession(text: string): ParsedCredentialTokens | null {
   return { accessToken: `sso=${value}`, refreshToken: null, expiresAt: 0 };
 }
 
+// Parse a pasted ~/.codex/auth.json (or a bare tokens object) client-side into vault tokens. Mirrors
+// the server-side extractOpenAITokens; kept here so the Connect dialog never imports Node-only code.
 export function parseCodexCredential(text: string): ParsedCredentialTokens | null {
   let obj: unknown;
   try {

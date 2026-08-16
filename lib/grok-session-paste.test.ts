@@ -53,7 +53,14 @@ const moduleHooks = registerHooks({
 const { parseGrokSession } = await import("../components/providers-ui.tsx");
 const { grokProvider } = await import("./providers/grok.ts");
 
+// A structurally valid JWT. Unsigned: both parsers treat it as opaque and never verify it.
+const BEARER = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1LTEifQ.c2ln";
+
 const CASES: { input: string; expect: string | null; why: string }[] = [
+  { input: BEARER, expect: BEARER, why: "çıplak CLI token'ı" },
+  { input: JSON.stringify({ "grok.com": { key: BEARER } }), expect: BEARER, why: "~/.grok/auth.json" },
+  { input: JSON.stringify({ a: { access_token: BEARER } }), expect: BEARER, why: "access_token alanı" },
+  { input: JSON.stringify({ hello: "world" }), expect: null, why: "auth dosyası olmayan JSON" },
   { input: "abc123", expect: "sso=abc123", why: "çıplak değer" },
   { input: "  sso=abc123  ", expect: "sso=abc123", why: "ad=değer çifti" },
   { input: "i18nextLng=tr; sso=abc123; x-userid=z", expect: "sso=abc123", why: "tam çerez başlığı" },

@@ -15,6 +15,11 @@ const KIND_LABELS: Record<string, string> = {
   session: "5 saatlik limit",
   weekly_all: "Haftalık limit",
   weekly_oauth_apps: "Bağlı uygulamalar haftalık limiti",
+  // Grok's per-product pools. They share the weekly rollover, so they carry no stamp of their own.
+  grok_build: "Grok Build",
+  grok_app_builder: "App Builder",
+  grok_chat: "Sohbet",
+  grok_imagine: "Imagine",
 };
 
 function normalizeUsed(value: unknown): number | null {
@@ -40,25 +45,37 @@ function scopedLimit(scope: LimitEntry["scope"], group: unknown, fallback: strin
 }
 
 function kindRank(kind: string): number {
-  // Grok's two-hour window is the shortest horizon on any card, so it leads like `session` does.
-  if (kind === "grok_mode") return 0;
   if (kind === "session") return 0;
   if (kind === "weekly_all") return 1;
   if (kind === "weekly_oauth_apps") return 2;
   if (kind === "weekly_scoped") return 3;
-  return 4;
+  // Grok's product pools sit under its weekly bar, in the order grok.com's Usage panel lists them.
+  // Fixed ranks rather than alphabetical: "App Builder" sorts before "Grok Build" and would put
+  // the panel's second row first.
+  if (kind === "grok_build") return 4;
+  if (kind === "grok_app_builder") return 5;
+  if (kind === "grok_chat") return 6;
+  if (kind === "grok_imagine") return 7;
+  if (kind === "grok_product") return 8;
+  return 9;
 }
 
 function canonicalRichLimit(limit: LimitEntry): { key: string; kind: string; label: string } | null {
   if (typeof limit.kind !== "string") return null;
-  // Grok reports one rolling window per mode. The label already carries the mode name and the
-  // raw counts (see grok-usage.ts), so it is used verbatim rather than fitted to a fixed phrase.
-  if (limit.kind === "grok_mode") {
+  // A weekly bar may name its own pool: Grok's says which subscription the allowance belongs to
+  // ("Haftalık SuperGrok Plus limiti"). Anthropic sends no scope here, so it keeps the plain label.
+  if (limit.kind === "weekly_all") {
     const display = scopeText(limit.scope?.model?.display_name);
-    const stable = scopeText(limit.scope?.model?.id) ?? scopeText(limit.group) ?? "mod";
+    return { key: "weekly_all", kind: "weekly_all", label: display ?? KIND_LABELS.weekly_all };
+  }
+  // A product xAI has added since this build shipped. It still has a real percentage, so it gets a
+  // bar under its own name rather than being dropped for want of a hardcoded label.
+  if (limit.kind === "grok_product") {
+    const display = scopeText(limit.scope?.model?.display_name);
+    const stable = scopeText(limit.scope?.model?.id) ?? scopeText(limit.group) ?? "ürün";
     return {
-      key: `grok_mode:${encodeURIComponent(stable.toLowerCase())}`,
-      kind: "grok_mode",
+      key: `grok_product:${encodeURIComponent(stable.toLowerCase())}`,
+      kind: "grok_product",
       label: display ?? stable,
     };
   }

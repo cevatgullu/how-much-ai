@@ -93,12 +93,20 @@
 }
 
 * { box-sizing: border-box; }
-html { color-scheme: dark; scroll-padding-top: 6rem; }
+html {
+  color-scheme: dark;
+  scroll-padding-top: 6rem;
+  /* Stops the pull-to-refresh gesture and the elastic bounce at both ends of the document. In an
+     installed iOS shell that bounce is the "drift": the whole page slides under the status bar and
+     exposes a strip of nothing, because there is no browser chrome behind it to absorb the pull. */
+  overscroll-behavior: none;
+}
 body {
   min-height: 100vh;
   min-height: 100dvh;
   margin: 0;
   overflow-x: hidden;
+  overscroll-behavior: none;
   background: var(--canvas);
   color: var(--text-primary);
 }
@@ -175,6 +183,43 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
 .modal-root { padding-right: calc(12px + env(safe-area-inset-right)); padding-left: calc(12px + env(safe-area-inset-left)); }
 .modal-panel { background: var(--panel); border-color: var(--rule-strong); }
 .modal-panel[data-placement="sheet"] { max-height: calc(100vh - env(safe-area-inset-top)); max-height: calc(100dvh - env(safe-area-inset-top)); }
+
+/* ---- Ana ekrana eklenmiş kabuk: lastik gibi kayma yok ---- */
+/*
+   Suppressing the bounce is not enough on its own: iOS still rubber-bands the *document*, so the
+   scroll has to belong to an element instead. The dashboard shell becomes that element and the
+   document stops scrolling entirely.
+
+   Scoped with :has() on purpose. The login, bootstrap, and OAuth-callback pages have no shell to
+   hand the scroll to, and locking the document there would clip them with no way to reach the rest.
+   A browser without :has() drops the whole block and keeps today's behaviour, which is the right
+   way for this to fail.
+*/
+@media (display-mode: standalone) {
+  html:has(.instrument-app),
+  body:has(.instrument-app) {
+    height: 100%;
+    overflow: hidden;
+  }
+  .instrument-app {
+    height: 100%;
+    /* Clears the base rule's 100dvh floor. Left in place, the shell can measure a hair taller than
+       its now-clipped parent and the last row becomes unreachable. */
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* `contain` rather than `none`: the shell may hold its own scrollers (sheets, long lists), and
+       those should still bounce internally without handing the gesture up to the document. */
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Sheets and modals get the same treatment: a scroll that reaches its end inside a dialog must
+     not start moving the shell behind it. */
+  .modal-panel,
+  .dashboard-sheet {
+    overscroll-behavior: contain;
+  }
+}
 
 /* Upper bounds are fractional: an integer max-width paired with the next integer
    min-width leaves any fractional viewport between them matching neither query, which
@@ -304,4 +349,48 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--color-faint);
+}
+
+/* ---- 7 günlük eğri: özetin altında, kartların üstünde ---- */
+.weekly-trend-plot {
+  height: auto;
+  /* The plot is geometry, not text: without this it inherits the surrounding line-height and gains
+     a few pixels of phantom descender space under the last gridline. */
+  display: block;
+  overflow: visible;
+}
+.weekly-trend-grid {
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+}
+.weekly-trend-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  margin: 2px 0 0;
+  padding: 0;
+  font-size: 10px;
+  color: var(--color-faint);
+  text-align: center;
+}
+.weekly-trend-days > li:first-child { text-align: left; }
+.weekly-trend-days > li:last-child { text-align: right; }
+.weekly-trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 11px;
+  color: var(--color-muted);
+}
+.weekly-trend-legend-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.weekly-trend-swatch {
+  width: 16px;
+  height: 8px;
+  flex: none;
 }

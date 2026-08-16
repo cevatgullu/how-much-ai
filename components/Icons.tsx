@@ -120,14 +120,31 @@ export function GoogleIcon({ className }: { className?: string }) {
 
 // Provider marks for the connect picker + account-card badge. Both use currentColor so they adapt
 // to the surrounding text color / theme, and are used nominatively to identify each provider.
+
+/**
+ * Claude's mark is the radial asterisk, not Anthropic's "A".
+ *
+ * The card badges a *product* the user signed into — a Claude subscription — and the corporate
+ * wordmark is a different thing that happens to be adjacent. The twelve spokes are drawn as rotated
+ * rounded bars rather than one hand-fitted path so the geometry stays exact at 14px badge size,
+ * where a traced outline turns to mush.
+ */
 export function AnthropicIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} aria-hidden>
-      <path
-        fill="currentColor"
-        d="M13.6 3.5h3.35L23 20.5h-3.35l-1.2-3.27h-6.02l-1.2 3.27H7.9L13.6 3.5zm-.14 10.9h4.03l-2.01-5.5-2.02 5.5zM4.03 3.5h3.2L1.5 20.5H-1.7l0 0z"
-        transform="translate(1.7 0)"
-      />
+      <g fill="currentColor">
+        {Array.from({ length: 12 }, (_, spoke) => (
+          <rect
+            key={spoke}
+            x="11.02"
+            y="1.7"
+            width="1.96"
+            height="9.1"
+            rx="0.98"
+            transform={`rotate(${spoke * 30} 12 12)`}
+          />
+        ))}
+      </g>
     </svg>
   );
 }
@@ -143,15 +160,21 @@ export function OpenAIIcon({ className }: { className?: string }) {
   );
 }
 
-// Grok's mark is a slashed ring; drawn as strokes so it stays legible at badge size and in
-// forced-colors mode, where filled paths collapse.
+/**
+ * Grok's mark is the angular "G" with the slanted cut, drawn as one filled letterform.
+ *
+ * The previous stand-in was a circle crossed by a diagonal, which is a different glyph entirely and
+ * read as a generic "no entry" sign next to two real logos. The bevels here are straight cuts, not
+ * curves: that flat-cut geometry is what makes the letter identifiable at badge size.
+ */
 export function GrokIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden fill="none">
-      <g stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4.6 19.4 19.4 4.6" />
-        <path d="M9.5 19.4a7 7 0 0 0 9.9-9.9" />
-      </g>
+    <svg viewBox="0 0 24 24" className={className} aria-hidden>
+      <path
+        fill="currentColor"
+        fillRule="evenodd"
+        d="M20.6 3.4H9.6L3.4 9.6v4.8l6.2 6.2h11v-9.2h-7.4v3.2h4.2v2.8h-6.6L6.6 13.2v-2.4l4.2-4.2h6.6z"
+      />
     </svg>
   );
 }

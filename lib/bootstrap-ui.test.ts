@@ -491,15 +491,16 @@ test("the private ChatGPT starting state provides an explicit cancel action", ()
 
 test("document and visual system expose the Turkish local instrument contract", () => {
   const layout = readFileSync(path.join(projectRoot, "app", "layout.tsx"), "utf8");
+  const shell = readFileSync(path.join(projectRoot, "lib", "pwa-shell.ts"), "utf8");
   const css = readFileSync(path.join(projectRoot, "app", "globals.css"), "utf8");
   assert.match(layout, /<html lang="tr"/);
-  assert.match(layout, /viewportFit:\s*"cover"/);
   assert.match(layout, /Barlow_Condensed/);
   assert.match(layout, /Atkinson_Hyperlegible_Next/);
   assert.match(layout, /Atkinson_Hyperlegible_Mono/);
-  // The manifest is a route (app/manifest.ts), not layout metadata, so the document itself
-  // stays free of install plumbing while the shell is still installable on a phone.
-  assert.doesNotMatch(layout, /appleWebApp/i);
+  // The document's metadata moved to lib/pwa-shell so it can be asserted as values rather than as
+  // file text (see pwa-shell.test.ts); the layout keeps only what needs the font modules.
+  assert.match(layout, /from "@\/lib\/pwa-shell"/);
+  assert.match(shell, /viewportFit:\s*"cover"/);
   for (const token of ["#111614", "#19201D", "#697770", "#F1F4EF", "#A5B1AA", "#78A7BF", "#D97757", "#D9A557", "#E05B5B"]) {
     assert.match(css, new RegExp(token, "i"));
   }

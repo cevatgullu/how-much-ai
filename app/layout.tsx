@@ -4,6 +4,7 @@ import {
   Atkinson_Hyperlegible_Next,
   Barlow_Condensed,
 } from "next/font/google";
+import { appMetadata, appViewport } from "@/lib/pwa-shell";
 import "./globals.css";
 
 const headingFont = Barlow_Condensed({
@@ -23,20 +24,10 @@ const dataFont = Atkinson_Hyperlegible_Mono({
   variable: "--font-data",
 });
 
-export const metadata: Metadata = {
-  title: "How Much AI",
-  description: "Claude ve ChatGPT/Codex kullanım limitleri için yerel kota cetveli.",
-  applicationName: "How Much AI",
-  // A self-hosted credential dashboard should never be indexed accidentally.
-  robots: { index: false, follow: false },
-};
-
-export const viewport: Viewport = {
-  width: "device-width",
-  initialScale: 1,
-  viewportFit: "cover",
-  themeColor: "#111614",
-};
+// Declared in lib/pwa-shell so the installed-shell contract can be tested without loading the
+// font modules this file pulls in.
+export const metadata: Metadata = appMetadata;
+export const viewport: Viewport = appViewport;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

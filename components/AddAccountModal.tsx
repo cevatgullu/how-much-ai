@@ -1423,17 +1423,23 @@ export function AddAccountModal({
         <div className="space-y-4">
           <div>
             <label htmlFor="grok-session" className="text-sm text-ivory">
-              grok.com oturumunu yapıştırın
+              Grok kimliğini yapıştırın
             </label>
             <p className="mt-1 text-xs leading-relaxed text-muted">
-              grok.com açıkken <span className="font-mono">F12</span> → <span className="font-mono">Application</span>
+              <strong className="font-semibold text-ivory">Önerilen:</strong> Grok CLI kuruluysa
+              {" "}<span className="font-mono">~/.grok/auth.json</span> dosyasının tamamını yapıştırın. Kapsamı dar
+              bir token&apos;dır ve süresi dolunca <span className="font-mono">grok login</span> ile yenilenir.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-muted">
+              <strong className="font-semibold text-ivory">Alternatif:</strong> grok.com açıkken
+              {" "}<span className="font-mono">F12</span> → <span className="font-mono">Application</span>
               {" → "}<span className="font-mono">Cookies</span> → <span className="font-mono">https://grok.com</span> →
-              {" "}<span className="font-mono">sso</span> satırının değerini kopyalayın. Şifreli saklanır ve bir daha gösterilmez.
+              {" "}<span className="font-mono">sso</span> satırının değeri. Şifreli saklanır ve bir daha gösterilmez.
             </p>
             <p className="mt-2 text-xs leading-relaxed text-[#e3b56e]">
-              Bu bir oturum çerezi: kapsamı dar bir token değil, Grok hesabınızın tamamına erişim. Ayrıca
-              süresi dolduğunda kart yeniden bağlanma ister — xAI kota okumasını OAuth token&apos;larına kapattığı
-              için başka bir yol yok.
+              <span className="font-mono">sso</span> bir oturum çerezidir: kapsamı dar bir token değil, Grok
+              hesabınızın tamamına erişim. Süresi dolduğunda kart yeniden bağlanma ister ve yenileme yolu yoktur —
+              xAI kota okumasını OAuth token&apos;larına kapattığı için başka bir yol yok.
             </p>
             <textarea
               id="grok-session"
@@ -1444,7 +1450,7 @@ export function AddAccountModal({
               spellCheck={false}
               autoComplete="off"
               className="mt-3 w-full rounded-lg border border-border bg-bg p-3 font-mono text-xs text-ivory outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:opacity-50"
-              placeholder="sso=..."
+              placeholder={'{"grok.com":{"key":"..."}}  ya da  sso=...'}
             />
           </div>
           <button

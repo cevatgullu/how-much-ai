@@ -37,7 +37,7 @@ function LoginForm() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
+    <div className="login-page">
       <div className="login-stage animate-rise">
         <div className="flex flex-col text-left">
           <p className="login-kicker">Kota sayacı</p>
@@ -57,20 +57,19 @@ function LoginForm() {
               if (error) setError(null);
             }}
             placeholder="Parola"
-            autoFocus
             autoComplete="off"
             data-1p-ignore="true"
             data-lpignore="true"
             data-bwignore="true"
             aria-invalid={Boolean(error)}
             aria-describedby={error ? "password-error" : undefined}
-            className="min-h-11 w-full rounded-lg border border-border bg-surface px-3.5 py-2.5 text-sm text-ivory placeholder:text-faint focus:border-coral/60 focus:outline-none"
+            className="min-h-12 w-full border border-border bg-surface px-3.5 py-2.5 text-base text-ivory placeholder:text-faint focus:border-coral/60 focus:outline-none"
           />
           <button
             type="submit"
             disabled={!password || working}
             aria-busy={working}
-            className="min-h-11 w-full rounded-lg bg-coral py-2.5 text-sm font-medium text-white transition-colors enabled:hover:bg-coral-pressed disabled:opacity-50"
+            className="min-h-12 w-full bg-coral py-2.5 text-base font-medium text-white transition-colors enabled:hover:bg-coral-pressed disabled:opacity-50"
           >
             {working ? "Oturum açılıyor…" : "Oturum aç"}
           </button>
@@ -92,7 +91,7 @@ function LoginForm() {
 export function PasswordLogin({ strictLocal }: { strictLocal: boolean }) {
   if (strictLocal) {
     return (
-      <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="login-page">
         <div className="login-stage animate-rise text-left">
           <p className="login-kicker">Kota sayacı</p>
           <h1 className="font-display text-ivory">How Much AI</h1>

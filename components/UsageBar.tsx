@@ -56,12 +56,10 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
         )}
       </div>
       <div className="usage-meter-readout">
-        <span className="min-w-0">
-          <span className="usage-meter-used tabular-nums" style={{ color: fillColor }}>
-            %{used}
-          </span>
-          <span className="usage-meter-caption">kullanıldı</span>
+        <span className="usage-meter-used tabular-nums" style={{ color: fillColor }}>
+          %{used}
         </span>
+        <span className="usage-meter-caption">kullanıldı</span>
         <span className="usage-meter-remain">%{remaining} kaldı</span>
       </div>
       {reset && (

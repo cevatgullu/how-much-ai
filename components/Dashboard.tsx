@@ -1223,7 +1223,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         ) : accounts.length === 0 ? (
           <div className="animate-rise mx-auto mt-12 max-w-md text-center sm:mt-16">
             <StarburstIcon className="mx-auto h-12 w-12 text-coral" />
-            <h2 className="font-display mt-6 text-5xl leading-[0.9] tracking-tight text-ivory">Tüm hesaplar. Tek sayaç.</h2>
+            <h2 className="font-display mt-6 text-[2.1rem] leading-[0.95] tracking-tight text-ivory min-[960px]:text-5xl min-[960px]:leading-[0.9]">Tüm hesaplar. Tek sayaç.</h2>
             <p className="mt-3 text-sm leading-relaxed text-muted">
               Claude ve ChatGPT/Codex hesaplarınızı bağlayın; kullanım limitlerini tek yerde, otomatik olarak izleyin.
             </p>

@@ -47,12 +47,12 @@ export function DashboardHeader({
 }: DashboardHeaderProps) {
   return (
     <header className="dashboard-header instrument-header sticky top-0 z-40 border-b border-border bg-bg">
-      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <StarburstIcon className="h-6 w-6 shrink-0 text-coral" />
+      <div className="flex flex-wrap items-center justify-between gap-2 py-2 min-[960px]:gap-3 min-[960px]:py-3">
+        <div className="flex min-w-0 items-center gap-2 min-[960px]:gap-3">
+          <StarburstIcon className="h-5 w-5 shrink-0 text-coral min-[960px]:h-6 min-[960px]:w-6" />
           <div className="min-w-0">
-            <h1 className="font-display text-[2rem] leading-none tracking-tight text-ivory min-[960px]:text-[2.4rem]">How Much AI</h1>
-            <p className="mt-1 truncate text-[12px] uppercase tracking-[0.16em] text-muted">{healthLabel}</p>
+            <h1 className="font-display text-[1.45rem] leading-none tracking-tight text-ivory min-[960px]:text-[2.4rem]">How Much AI</h1>
+            <p className="mt-0.5 truncate text-[11px] tracking-[0.04em] text-muted min-[960px]:mt-1 min-[960px]:text-[12px] min-[960px]:uppercase min-[960px]:tracking-[0.16em]">{healthLabel}</p>
           </div>
         </div>
 

@@ -283,7 +283,7 @@ export function AccountCard({
         cancelRemove();
       }}
     >
-      <div className={`${controlledMobileLedger ? "account-card-desktop hidden min-[960px]:flex" : "flex"} min-w-0 flex-col gap-3 xs:flex-row xs:items-start xs:justify-between`}>
+      <div className={`${controlledMobileLedger ? "account-card-desktop hidden min-[960px]:flex" : "flex"} min-w-0 flex-col gap-3 min-[960px]:flex-row min-[960px]:items-start min-[960px]:justify-between`}>
         <div className="flex min-w-0 items-center gap-3">
           <div
             aria-hidden="true"
@@ -317,7 +317,7 @@ export function AccountCard({
             )}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1 self-end xs:self-auto">
+        <div className="flex shrink-0 items-center gap-1 self-end min-[960px]:self-auto">
           {(() => {
             const meta = providerMeta(account.provider);
             const ProviderMark = meta.Icon;

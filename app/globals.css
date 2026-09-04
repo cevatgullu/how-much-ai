@@ -197,7 +197,7 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   width: auto;
   margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right));
 }
-.instrument-shell { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+.instrument-shell { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .instrument-overview { border-bottom: 1px solid var(--rule-soft); padding-bottom: 22px; }
 .quota-readings { display: grid; gap: 10px; }
 .quota-reading {
@@ -255,7 +255,12 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   border-top: 2px solid var(--warning-amber);
   background: var(--color-bg-deep);
 }
-.mobile-command-bar > button { min-height: 52px; font-weight: 600; letter-spacing: 0.04em; }
+.mobile-command-bar > button {
+  min-height: 52px;
+  min-inline-size: 0;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
 .dashboard-sheet { padding-bottom: env(safe-area-inset-bottom); }
 .modal-root { padding-right: calc(12px + env(safe-area-inset-right)); padding-left: calc(12px + env(safe-area-inset-left)); }
 .modal-panel { background: var(--panel); border-color: var(--rule-strong); }
@@ -305,10 +310,25 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
    exactly 1919 px neither the upper bound below nor the 1920 px lower bound matched,
    and the three-column layout collapsed to a single 1872 px column. */
 @media (max-width: 959.98px) {
-  .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); padding-top: 14px; }
-  .usage-meter-used { font-size: 2.85rem; }
-  .account-card { padding: 16px 14px 14px 20px; }
-  .login-stage h1 { font-size: 3rem; }
+  .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); padding-top: 12px; padding-bottom: 20px; }
+  .instrument-app > footer { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .dashboard-header-actions { display: none !important; }
+  .dashboard-header h1 { white-space: nowrap; }
+  .account-card { padding: 14px 12px 14px 18px; }
+  .usage-meter-readout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "used" "caption" "remain";
+    gap: 2px;
+  }
+  .usage-meter-used { font-size: 2.15rem; }
+  .usage-meter-remain { padding-bottom: 0; }
+  .quota-reading { padding: 12px 12px; }
+  .quota-reading dt { letter-spacing: 0.04em; text-transform: none; }
+  .dashboard-family-name { font-size: 1rem; }
+  .login-page { align-items: flex-start; }
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select { font-size: 16px; }
 }
 
 @media (min-width: 960px) and (max-width: 1919.98px) {
@@ -388,13 +408,17 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
 }
 .usage-meter-label { min-width: 0; font-size: 13px; color: var(--color-muted); }
 .usage-meter-readout {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "used remain" "caption remain";
+  align-items: end;
+  column-gap: 12px;
+  row-gap: 2px;
+  margin-top: 6px;
 }
 .usage-meter-used {
+  grid-area: used;
+  min-width: 0;
   font-family: var(--font-heading), "Arial Narrow", sans-serif;
   font-size: 2.55rem;
   font-weight: 700;
@@ -403,7 +427,7 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   font-variant-numeric: tabular-nums;
 }
 .usage-meter-caption {
-  margin-left: 8px;
+  grid-area: caption;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.12em;
@@ -411,6 +435,8 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   color: var(--color-faint);
 }
 .usage-meter-remain {
+  grid-area: remain;
+  padding-bottom: 0.35em;
   font-family: var(--font-data), "Cascadia Mono", monospace;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
@@ -446,6 +472,18 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   background: var(--color-ivory);
 }
 
+.login-page {
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding:
+    calc(env(safe-area-inset-top) + 2.75rem)
+    calc(1.25rem + env(safe-area-inset-right))
+    calc(env(safe-area-inset-bottom) + 1.5rem)
+    calc(1.25rem + env(safe-area-inset-left));
+  align-items: center;
+}
 .login-stage { width: 100%; max-width: 26rem; }
 .login-kicker {
   margin: 0;
@@ -457,10 +495,11 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
 }
 .login-stage h1 {
   margin-top: 10px;
-  font-size: 3.4rem;
+  font-size: clamp(2.35rem, 11vw, 3.4rem);
   font-weight: 700;
-  line-height: 0.85;
+  line-height: 0.95;
   letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
 }
 .login-stage form input,
 .login-stage form button { border-radius: 2px; }

@@ -20,8 +20,8 @@ test("the manifest declares an installable standalone shell", () => {
   assert.equal(m.id, "/");
   assert.equal(m.lang, "tr");
   // Matches the instrument canvas so the splash and status bar do not flash a different colour.
-  assert.equal(m.background_color, "#111614");
-  assert.equal(m.theme_color, "#111614");
+  assert.equal(m.background_color, "#0b0d14");
+  assert.equal(m.theme_color, "#0b0d14");
 });
 
 test("icons cover both the plain and maskable purposes", () => {

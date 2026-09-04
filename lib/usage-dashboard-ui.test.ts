@@ -171,7 +171,7 @@ test("the card avatar carries the provider mark, not an initial", () => {
     const markup = renderAccountCard(account(`avatar-${provider}`, provider), undefined);
     // The palette is scoped by this attribute, so the mark and its colours travel together.
     assert.match(markup, new RegExp(`data-provider="${provider}"`));
-    const avatar = markup.match(/rounded-full border"[^>]*>([\s\S]*?)<\/div>/u);
+    const avatar = markup.match(/rounded-sm border"[^>]*>([\s\S]*?)<\/div>/u);
     assert.ok(avatar, `${provider}: avatar bulunamadi`);
     assert.match(avatar[1], /<svg/u, `${provider}: avatarda logo yok`);
     // Guard the regression directly: a bare letter must not come back.

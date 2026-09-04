@@ -2,25 +2,25 @@
 
 @theme {
   --breakpoint-xs: 26rem;
-  --color-bg: #111614;
-  --color-bg-deep: #0d110f;
-  --color-bg-raised: #19201d;
-  --color-surface: #19201d;
-  --color-surface-hover: #222b27;
-  --color-border: #697770;
-  --color-border-light: #7e8c85;
-  --color-ivory: #f1f4ef;
-  --color-secondary: #a5b1aa;
-  --color-muted: #a5b1aa;
-  --color-faint: #89968f;
-  --color-coral: #d97757;
-  --color-coral-bright: #e28a6d;
-  --color-coral-action: #b65435;
-  --color-coral-action-hover: #a84a2d;
-  --color-coral-pressed: #963d23;
-  --color-amber: #d9a557;
-  --color-danger: #e05b5b;
-  --color-track: #303b36;
+  --color-bg: #0b0d14;
+  --color-bg-deep: #07080d;
+  --color-bg-raised: #151821;
+  --color-surface: #151821;
+  --color-surface-hover: #1e2230;
+  --color-border: #5c6170;
+  --color-border-light: #7a7f90;
+  --color-ivory: #f3efe4;
+  --color-secondary: #a39e93;
+  --color-muted: #a39e93;
+  --color-faint: #8a857a;
+  --color-coral: #d36b45;
+  --color-coral-bright: #e08964;
+  --color-coral-action: #b4532e;
+  --color-coral-action-hover: #9e4626;
+  --color-coral-pressed: #863b20;
+  --color-amber: #e6a54a;
+  --color-danger: #e0564a;
+  --color-track: #262a36;
 }
 
 @theme inline {
@@ -30,20 +30,20 @@
 }
 
 :root {
-  --canvas: #111614;
-  --panel: #19201d;
-  --rule-strong: #697770;
-  --rule-soft: color-mix(in srgb, #697770 42%, transparent);
-  --text-primary: #f1f4ef;
-  --text-secondary: #a5b1aa;
-  --calibration-blue: #78a7bf;
-  --claude-coral: #d97757;
-  --warning-amber: #d9a557;
-  --danger-red: #e05b5b;
+  --canvas: #0b0d14;
+  --panel: #151821;
+  --rule-strong: #5c6170;
+  --rule-soft: color-mix(in srgb, #5c6170 42%, transparent);
+  --text-primary: #f3efe4;
+  --text-secondary: #a39e93;
+  --calibration-blue: #6a9bb8;
+  --claude-coral: #d36b45;
+  --warning-amber: #e6a54a;
+  --danger-red: #e0564a;
   --accent: var(--claude-coral);
-  --accent-bright: #e28a6d;
-  --accent-strong: #b65435;
-  --accent-strong-hover: #a84a2d;
+  --accent-bright: #e08964;
+  --accent-strong: #b4532e;
+  --accent-strong-hover: #9e4626;
   --accent-contrast: #fff;
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --avatar-bg: var(--accent-soft);
@@ -53,9 +53,9 @@
 
 [data-provider="anthropic"] {
   --accent: var(--claude-coral);
-  --accent-bright: #e28a6d;
-  --accent-strong: #b65435;
-  --accent-strong-hover: #a84a2d;
+  --accent-bright: #e08964;
+  --accent-strong: #b4532e;
+  --accent-strong-hover: #9e4626;
   --accent-contrast: #fff;
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --avatar-bg: var(--accent-soft);
@@ -65,10 +65,10 @@
 
 [data-provider="openai"] {
   --accent: var(--calibration-blue);
-  --accent-bright: #9bc0d2;
-  --accent-strong: #78a7bf;
-  --accent-strong-hover: #8db7cb;
-  --accent-contrast: #111614;
+  --accent-bright: #8fb6cc;
+  --accent-strong: #6a9bb8;
+  --accent-strong-hover: #7aabc6;
+  --accent-contrast: #0b0d14;
   --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);
   --avatar-bg: var(--accent-soft);
   --avatar-fg: var(--accent-bright);
@@ -76,16 +76,14 @@
 }
 
 /* Grok needs its own identity: without this it falls through to :root, which is the Claude
-   coral, and a Grok card becomes indistinguishable from a Claude one at a glance. The tone is
-   a light neutral rather than a new hue — xAI's mark is monochrome, and the remaining warm
-   colours (amber, red) already carry warning and danger meaning on these cards. The accent
-   only drives chrome and buttons; quota bars keep their own severity colours. */
+   coral, and a Grok card becomes indistinguishable from a Claude one at a glance. Bone, not
+   a new hue — xAI's mark is monochrome, and amber/red already carry warning and danger. */
 [data-provider="grok"] {
-  --accent: #b9c6bf;
-  --accent-bright: #d6e0da;
-  --accent-strong: #8d9a93;
-  --accent-strong-hover: #7e8b84;
-  --accent-contrast: #111614;
+  --accent: #c9c2b0;
+  --accent-bright: #ddd6c6;
+  --accent-strong: #9e9786;
+  --accent-strong-hover: #8c8676;
+  --accent-contrast: #0b0d14;
   --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);
   --avatar-bg: var(--accent-soft);
   --avatar-fg: var(--accent-bright);
@@ -112,7 +110,7 @@ body {
 }
 
 ::selection { background: color-mix(in srgb, var(--calibration-blue) 38%, transparent); }
-.font-display, h1, h2 { font-family: var(--font-heading), "Arial Narrow", sans-serif; letter-spacing: .02em; }
+.font-display, h1, h2 { font-family: var(--font-heading), "Arial Narrow", sans-serif; letter-spacing: .01em; }
 .font-mono, .tabular-nums { font-family: var(--font-data), "Cascadia Mono", monospace; font-variant-numeric: tabular-nums; }
 
 .text-coral { color: var(--accent); }
@@ -200,31 +198,64 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right));
 }
 .instrument-shell { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
-.instrument-overview { border-bottom: 1px solid var(--rule-soft); padding-bottom: 20px; }
+.instrument-overview { border-bottom: 1px solid var(--rule-soft); padding-bottom: 22px; }
 .quota-readings { display: grid; gap: 10px; }
 .quota-reading {
   min-width: 0;
   border: 1px solid var(--rule-soft);
-  border-radius: 10px;
-  background: var(--panel);
-  padding: 12px 14px;
+  border-radius: 2px;
+  background: var(--color-bg-deep);
+  padding: 14px 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
-.quota-reading dt { font-size: 12px; color: var(--color-faint); }
-.quota-reading dd { margin: 6px 0 0; color: var(--color-ivory); }
-.account-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-.account-card { border-radius: 8px; border-color: var(--rule-soft); background: var(--panel); }
+.quota-reading dt {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.quota-reading dd {
+  margin: 8px 0 0;
+  color: var(--color-ivory);
+}
+.quota-reading-value {
+  font-family: var(--font-heading), "Arial Narrow", sans-serif;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+}
+.account-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.account-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 2px;
+  border: 1px solid var(--rule-soft);
+  background: var(--panel);
+  padding: 18px 18px 16px 22px;
+}
+.account-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 5px;
+  background: var(--accent);
+}
 .account-card-desktop { display: none !important; }
 .account-ledger { display: block; }
 .account-ledger-panel[hidden] { display: none !important; }
 .mobile-command-bar {
-  min-height: calc(68px + env(safe-area-inset-bottom));
+  min-height: calc(72px + env(safe-area-inset-bottom));
   padding-right: env(safe-area-inset-right);
   padding-bottom: env(safe-area-inset-bottom);
   padding-left: env(safe-area-inset-left);
-  border-top: 1px solid var(--rule-strong);
-  background: var(--panel);
+  border-top: 2px solid var(--warning-amber);
+  background: var(--color-bg-deep);
 }
-.mobile-command-bar > button { min-height: 48px; }
+.mobile-command-bar > button { min-height: 52px; font-weight: 600; letter-spacing: 0.04em; }
 .dashboard-sheet { padding-bottom: env(safe-area-inset-bottom); }
 .modal-root { padding-right: calc(12px + env(safe-area-inset-right)); padding-left: calc(12px + env(safe-area-inset-left)); }
 .modal-panel { background: var(--panel); border-color: var(--rule-strong); }
@@ -274,7 +305,10 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
    exactly 1919 px neither the upper bound below nor the 1920 px lower bound matched,
    and the three-column layout collapsed to a single 1872 px column. */
 @media (max-width: 959.98px) {
-  .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); padding-top: 18px; }
+  .instrument-shell { width: auto; margin-inline: calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-right)); padding-top: 14px; }
+  .usage-meter-used { font-size: 2.85rem; }
+  .account-card { padding: 16px 14px 14px 20px; }
+  .login-stage h1 { font-size: 3rem; }
 }
 
 @media (min-width: 960px) and (max-width: 1919.98px) {
@@ -328,6 +362,8 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .text-xs, .text-\[11px\] { font-size: 14px; }
   .account-card h2, .account-card .text-\[15px\] { font-size: 20px; }
   .account-card .tabular-nums { font-size: 24px; }
+  .usage-meter-used { font-size: 3.25rem; }
+  .quota-reading-value { font-size: 2.6rem; }
 }
 
 @media (forced-colors: active) {
@@ -342,51 +378,107 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .bar-fill { transition: none; }
 }
 
-/* ---- Cetvel: kota çubuğu bir ölçü aleti gibi okunur ---- */
+/* ---- Sayaç: kota bir yakıt göstergesi gibi okunur ---- */
+.usage-meter { min-width: 0; }
+.usage-meter-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.usage-meter-label { min-width: 0; font-size: 13px; color: var(--color-muted); }
+.usage-meter-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+.usage-meter-used {
+  font-family: var(--font-heading), "Arial Narrow", sans-serif;
+  font-size: 2.55rem;
+  font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.usage-meter-caption {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.usage-meter-remain {
+  font-family: var(--font-data), "Cascadia Mono", monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
 .usage-ruler {
   position: relative;
-  height: 9px;
-  border-radius: 2px;
-  background: var(--color-track);
+  height: 14px;
+  margin-top: 10px;
   overflow: hidden;
-  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.35);
+  border-radius: 1px;
+  background: var(--color-track);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.45);
 }
 .usage-ruler-major {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
 }
 .usage-ruler-fill {
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
-  border-radius: 2px;
 }
 .usage-ruler-edge {
   position: absolute;
   top: -1px;
   bottom: -1px;
-  width: 1.5px;
-  border-radius: 1px;
-  box-shadow: 0 0 5px currentColor;
+  width: 2px;
+  background: var(--color-ivory);
 }
+
+.login-stage { width: 100%; max-width: 26rem; }
+.login-kicker {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--warning-amber);
+}
+.login-stage h1 {
+  margin-top: 10px;
+  font-size: 3.4rem;
+  font-weight: 700;
+  line-height: 0.85;
+  letter-spacing: -0.03em;
+}
+.login-stage form input,
+.login-stage form button { border-radius: 2px; }
 
 /* ---- Aile başlıkları: hesaplar sağlayıcıya göre gruplanır ---- */
 .dashboard-family-head {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin: 6px 0 -6px;
+  gap: 10px;
+  margin: 10px 0 -4px;
   color: var(--color-muted);
 }
 .dashboard-family-name {
-  font-size: 11px;
+  font-family: var(--font-heading), "Arial Narrow", sans-serif;
+  font-size: 1.15rem;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .dashboard-family-rule {

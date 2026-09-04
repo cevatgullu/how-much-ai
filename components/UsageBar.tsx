@@ -20,13 +20,13 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
   const low = !atLimit && !critical && remaining <= 50;
   const state = atLimit ? "Limit bitti" : critical ? "Kritik" : low ? "Az kaldı" : null;
   const stateClass = atLimit || critical
-    ? "bg-danger/15 text-[#ea7b74]"
-    : "bg-amber/15 text-[#e3b56e]";
+    ? "bg-danger/15 text-[#e0564a]"
+    : "bg-amber/15 text-[#e6a54a]";
   // Severity reads low -> high as amber -> coral -> red. The two lighter bands used to be the
   // other way round, so a barely-touched limit looked hotter than a half-spent one.
   //
   // These are fixed severity colours, not the provider accent. The accent is per provider
-  // (coral for Claude, blue for ChatGPT, neutral for Grok), so using it here made the same
+  // (coral for Claude, blue for ChatGPT, bone for Grok), so using it here made the same
   // fill level a different hue on each card and the scale stopped meaning anything.
   const fillColor = atLimit || critical
     ? "var(--color-danger)"
@@ -44,30 +44,28 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
   ].filter(Boolean).join(". ");
 
   return (
-    <div>
-      <div className="grid gap-y-1 xs:grid-cols-[minmax(0,1fr)_auto] xs:items-baseline xs:gap-x-3 xs:gap-y-0">
-        <span className="flex min-w-0 flex-wrap items-baseline gap-2">
-          <span id={labelId} title={bar.label} className="min-w-0 break-words text-[13px] text-muted">
-            {bar.label}
-          </span>
-          {state && (
-            <span className={`shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${stateClass}`}>
-              {state}
-            </span>
-          )}
+    <div className="usage-meter">
+      <div className="usage-meter-head">
+        <span id={labelId} title={bar.label} className="usage-meter-label min-w-0 break-words">
+          {bar.label}
         </span>
-        <span className="flex min-w-0 items-baseline justify-between gap-2 xs:shrink-0 xs:justify-end">
-          <span
-            className="ml-auto shrink-0 text-right text-[15px] font-semibold leading-none tabular-nums"
-            style={{ color: fillColor }}
-          >
+        {state && (
+          <span className={`shrink-0 rounded-sm px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${stateClass}`}>
+            {state}
+          </span>
+        )}
+      </div>
+      <div className="usage-meter-readout">
+        <span className="min-w-0">
+          <span className="usage-meter-used tabular-nums" style={{ color: fillColor }}>
             %{used}
-            <span className="ml-1 text-[10px] font-normal text-faint">kullanıldı</span>
           </span>
+          <span className="usage-meter-caption">kullanıldı</span>
         </span>
+        <span className="usage-meter-remain">%{remaining} kaldı</span>
       </div>
       {reset && (
-        <time dateTime={bar.resetsAt ?? undefined} className="mt-1 block min-w-0 break-words text-[11px] tabular-nums text-faint">
+        <time dateTime={bar.resetsAt ?? undefined} className="mt-1 block min-w-0 break-words text-[12px] tabular-nums text-faint">
           {[reset.countdown, reset.exact].filter(Boolean).join(" · ")}
         </time>
       )}
@@ -79,7 +77,7 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
         aria-valuemax={100}
         aria-valuenow={used}
         aria-valuetext={valueText}
-        className="usage-ruler mt-1.5"
+        className="usage-ruler"
       >
         <span className="usage-ruler-major" style={{ left: "25%" }} aria-hidden="true" />
         <span className="usage-ruler-major" style={{ left: "50%" }} aria-hidden="true" />
@@ -92,12 +90,11 @@ export function UsageBar({ bar, now, stale, freshnessDescriptionId }: UsageBarPr
         {used > 2 && used < 100 && (
           <span
             className="usage-ruler-edge"
-            style={{ left: `calc(${used}% - 1px)`, backgroundColor: fillColor, color: fillColor }}
+            style={{ left: `calc(${used}% - 1px)` }}
             aria-hidden="true"
           />
         )}
       </div>
-      <div className="mt-1 text-[10px] tabular-nums text-faint">%{remaining} kaldı</div>
     </div>
   );
 }

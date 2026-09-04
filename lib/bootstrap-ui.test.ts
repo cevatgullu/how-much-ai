@@ -494,14 +494,14 @@ test("document and visual system expose the Turkish local instrument contract", 
   const shell = readFileSync(path.join(projectRoot, "lib", "pwa-shell.ts"), "utf8");
   const css = readFileSync(path.join(projectRoot, "app", "globals.css"), "utf8");
   assert.match(layout, /<html lang="tr"/);
-  assert.match(layout, /Barlow_Condensed/);
-  assert.match(layout, /Atkinson_Hyperlegible_Next/);
-  assert.match(layout, /Atkinson_Hyperlegible_Mono/);
+  assert.match(layout, /Oswald/);
+  assert.match(layout, /Figtree/);
+  assert.match(layout, /IBM_Plex_Mono/);
   // The document's metadata moved to lib/pwa-shell so it can be asserted as values rather than as
   // file text (see pwa-shell.test.ts); the layout keeps only what needs the font modules.
   assert.match(layout, /from "@\/lib\/pwa-shell"/);
   assert.match(shell, /viewportFit:\s*"cover"/);
-  for (const token of ["#111614", "#19201D", "#697770", "#F1F4EF", "#A5B1AA", "#78A7BF", "#D97757", "#D9A557", "#E05B5B"]) {
+  for (const token of ["#0B0D14", "#151821", "#5C6170", "#F3EFE4", "#A39E93", "#6A9BB8", "#D36B45", "#E6A54A", "#E0564A"]) {
     assert.match(css, new RegExp(token, "i"));
   }
   assert.match(css, /@media \(max-width: 959\.98px\)/);

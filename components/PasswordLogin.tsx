@@ -2,7 +2,6 @@
 
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { StarburstIcon } from "@/components/Icons";
 import { safeInternalPath } from "@/lib/safe-navigation";
 
 function LoginForm() {
@@ -39,11 +38,11 @@ function LoginForm() {
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="animate-rise w-full max-w-sm">
-        <div className="flex flex-col items-center text-center">
-          <StarburstIcon className="h-10 w-10 text-coral" />
-          <h1 className="font-display mt-5 text-2xl text-ivory">How Much AI</h1>
-          <p className="mt-1 text-sm text-muted">Devam etmek için parolayı girin</p>
+      <div className="login-stage animate-rise">
+        <div className="flex flex-col text-left">
+          <p className="login-kicker">Kota sayacı</p>
+          <h1 className="font-display text-ivory">How Much AI</h1>
+          <p className="mt-3 text-sm text-muted">Devam etmek için parolayı girin</p>
         </div>
         <form onSubmit={submit} className="mt-7 space-y-3">
           <label htmlFor="password" className="sr-only">
@@ -94,10 +93,10 @@ export function PasswordLogin({ strictLocal }: { strictLocal: boolean }) {
   if (strictLocal) {
     return (
       <div className="flex min-h-screen items-center justify-center px-4">
-        <div className="animate-rise w-full max-w-sm text-center">
-          <StarburstIcon className="mx-auto h-10 w-10 text-coral" />
-          <h1 className="font-display mt-5 text-2xl text-ivory">How Much AI</h1>
-          <p className="mt-2 text-sm text-muted">
+        <div className="login-stage animate-rise text-left">
+          <p className="login-kicker">Kota sayacı</p>
+          <h1 className="font-display text-ivory">How Much AI</h1>
+          <p className="mt-3 text-sm text-muted">
             Devam etmek için How Much AI&apos;ı güvenli başlatıcıdan açın.
           </p>
         </div>

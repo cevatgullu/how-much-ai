@@ -43,7 +43,7 @@ export function QuotaReadings({ summary, accountsById, providerOrdinals, now }: 
     <dl className="quota-readings min-w-0" aria-label="Kota özeti">
       <div className="quota-reading">
         <dt>Hesap</dt>
-        <dd className="font-mono text-lg tabular-nums">{summary.accountCount}</dd>
+        <dd className="quota-reading-value tabular-nums">{summary.accountCount}</dd>
       </div>
       <div className="quota-reading">
         <dt>En yüksek haftalık kullanım</dt>

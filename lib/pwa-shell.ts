@@ -42,7 +42,7 @@ export const appViewport: Viewport = {
   // Extends the canvas into the notch/dynamic-island area so the safe-area insets become non-zero
   // and the shell can decide for itself where its edges are.
   viewportFit: "cover",
-  themeColor: "#111614",
+  themeColor: "#0b0d14",
   // Deliberately no `maximumScale`/`userScalable: false`. Pinch-zoom is an accessibility
   // affordance, and locking it is not a legitimate way to stop rubber-banding — the scroll
   // containment in globals.css does that without taking zoom away.

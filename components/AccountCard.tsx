@@ -268,7 +268,7 @@ export function AccountCard({
       aria-labelledby={headingId}
       data-provider={account.provider ?? "anthropic"}
       data-stale={oldData || undefined}
-      className="account-card flex h-full min-w-0 flex-col rounded-2xl border border-border bg-surface p-5"
+      className="account-card flex h-full min-w-0 flex-col"
       aria-busy={loading}
       onFocusCapture={() => onInteractionFenceChange?.("focus", true)}
       onBlurCapture={(event) => {
@@ -287,7 +287,7 @@ export function AccountCard({
         <div className="flex min-w-0 items-center gap-3">
           <div
             aria-hidden="true"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border"
             style={{
               background: "var(--avatar-bg)",
               color: "var(--avatar-fg)",
@@ -300,7 +300,7 @@ export function AccountCard({
             <AvatarIcon className="h-5 w-5" />
           </div>
           <div className="min-w-0">
-            <h2 id={headingId} className="truncate text-[11px] font-semibold uppercase tracking-wide text-faint">
+            <h2 id={headingId} className="font-display truncate text-[13px] font-semibold uppercase tracking-[0.16em] text-faint">
               {providerMeta(account.provider).label} {providerOrdinal}
             </h2>
             <button
@@ -308,7 +308,7 @@ export function AccountCard({
               onClick={(event) => beginRename(event.currentTarget)}
               aria-label={`${displayName} hesabını adlandır`}
               title="Bu hesabı adlandır"
-              className="flex min-h-11 min-w-11 max-w-full items-center truncate text-left text-[15px] font-medium text-ivory transition-colors hover:text-[var(--accent-bright)]"
+              className="flex min-h-11 min-w-11 max-w-full items-center truncate text-left text-[17px] font-semibold text-ivory transition-colors hover:text-[var(--accent-bright)]"
             >
               {displayName}
             </button>

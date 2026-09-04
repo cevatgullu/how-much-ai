@@ -1,25 +1,26 @@
 import type { Metadata, Viewport } from "next";
 import {
-  Atkinson_Hyperlegible_Mono,
-  Atkinson_Hyperlegible_Next,
-  Barlow_Condensed,
+  Figtree,
+  IBM_Plex_Mono,
+  Oswald,
 } from "next/font/google";
 import { appMetadata, appViewport } from "@/lib/pwa-shell";
 import "./globals.css";
 
-const headingFont = Barlow_Condensed({
+const headingFont = Oswald({
   subsets: ["latin-ext"],
   weight: ["500", "600", "700"],
   display: "swap",
   variable: "--font-heading",
 });
-const bodyFont = Atkinson_Hyperlegible_Next({
+const bodyFont = Figtree({
   subsets: ["latin-ext"],
   display: "swap",
   variable: "--font-body",
 });
-const dataFont = Atkinson_Hyperlegible_Mono({
+const dataFont = IBM_Plex_Mono({
   subsets: ["latin-ext"],
+  weight: ["400", "500", "600", "700"],
   display: "swap",
   variable: "--font-data",
 });

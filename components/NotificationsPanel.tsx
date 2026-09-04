@@ -586,15 +586,15 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
             onClick={loadPanel}
             className="mt-3 block min-h-11 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ivory transition-colors hover:bg-surface-hover"
           >
-            Retry
+            Yeniden dene
           </button>
         </div>
       ) : !ready ? (
         <p className="mt-6 rounded-xl border border-border bg-bg p-4 text-sm leading-relaxed text-muted">
-          Notifications need a Convex backend (the scheduler and device subscriptions live there). Set{" "}
-          <code className="text-secondary">CONVEX_URL</code> and{" "}
-          <code className="text-secondary">VAULT_ACCESS_SECRET</code>, then deploy the functions in{" "}
-          <code className="text-secondary">./convex</code>. See{" "}
+          Bildirimler için Convex gerekir (zamanlayıcı ve cihaz abonelikleri orada durur).{" "}
+          <code className="text-secondary">CONVEX_URL</code> ve{" "}
+          <code className="text-secondary">VAULT_ACCESS_SECRET</code> değerlerini girip{" "}
+          <code className="text-secondary">./convex</code> işlevlerini yayınlayın. Ayrıntı:{" "}
           <code className="text-secondary">.env.example</code>.
         </p>
       ) : (
@@ -605,8 +605,8 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
             </h3>
             {!settings?.pushConfigured ? (
               <p className="mt-2 rounded-xl border border-border bg-bg p-3 text-xs leading-relaxed text-muted">
-                Web push isn&apos;t configured on the server (no VAPID keys). Telegram and webhook alerts still work
-                if you set those. See <code className="text-secondary">.env.example</code> to enable push.
+                Sunucuda web push yok (VAPID anahtarları girilmemiş). Telegram ve webhook uyarıları
+                ayarladıysanız çalışır. Push için <code className="text-secondary">.env.example</code> dosyasına bakın.
               </p>
             ) : (
               <div className="mt-2 rounded-xl border border-border bg-bg px-4 py-3">

@@ -30,7 +30,6 @@ import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSheets, type DashboardSheet } from "@/components/DashboardSheets";
 import { MobileCommandBar } from "@/components/MobileCommandBar";
 import { QuotaReadings } from "@/components/QuotaReadings";
-import { WeeklyTrend } from "@/components/WeeklyTrend";
 import {
   dashboardVaultReducer,
   initialDashboardVaultState,
@@ -49,17 +48,6 @@ import {
   type QuotaSortMode,
   type WeeklyAccountMetric,
 } from "@/lib/quota-metrics";
-import {
-  historyDayWindow,
-  loadWeeklyHistory,
-  pruneWeeklyHistory,
-  recordWeeklyHistory,
-  saveWeeklyHistory,
-  weeklyHistorySamples,
-  weeklyTrendSeries,
-  WEEKLY_TREND_DAYS,
-  type WeeklyHistory,
-} from "@/lib/weekly-history";
 
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -116,26 +104,6 @@ export function commitDashboardSnapshot(
   updater: (snapshot: AccountSnapshot | undefined) => AccountSnapshot,
 ): Record<string, AccountSnapshot> {
   return { ...snapshots, [accountId]: updater(snapshots[accountId]) };
-}
-
-/**
- * Fold today's fresh readings into the stored history and drop what has aged out.
- *
- * Pruning happens on the same pass as the write so the eight-day bound holds even for a device
- * that is opened once a month: a pass that only appended would keep growing until something else
- * happened to clean up.
- */
-export function advanceWeeklyHistory(
-  history: WeeklyHistory,
-  metrics: readonly WeeklyAccountMetric[],
-  accountIds: readonly string[],
-  now: number,
-): WeeklyHistory {
-  return pruneWeeklyHistory(
-    recordWeeklyHistory(history, weeklyHistorySamples(metrics), now),
-    now,
-    accountIds,
-  );
 }
 
 export function saveDashboardSortMode(
@@ -522,7 +490,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     () => initialDashboardOrderViewState([], "source"),
   );
   const [settledMetrics, setSettledMetrics] = useState<WeeklyAccountMetric[]>([]);
-  const [weeklyHistory, setWeeklyHistory] = useState<WeeklyHistory>(() => ({}));
   const [expandedAccountIds, setExpandedAccountIds] = useState<ReadonlySet<string>>(() => new Set());
   const [lastRefreshAll, setLastRefreshAll] = useState<{ at: number; updated: number; total: number } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -534,9 +501,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
   const orderModeRef = useRef<QuotaSortMode>("source");
   orderModeRef.current = orderState.mode;
   const acceptedEpochRef = useRef(0);
-  // Mirrors weeklyHistory so the settle callback can fold into it without taking a dependency on
-  // the state and re-subscribing every render.
-  const weeklyHistoryRef = useRef<WeeklyHistory>({});
   const accountElementsRef = useRef(new Map<string, HTMLLIElement>());
   const serverVaultRef = useRef<VaultSnapshot | null>(null);
   const failedMutationsRef = useRef<VaultMutation[]>([]);
@@ -574,18 +538,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     acceptedEpochRef.current = acceptedAt;
     const metrics = deriveWeeklyAccountMetrics(accountsRef.current, snapshotsRef.current, acceptedAt);
     setSettledMetrics(metrics);
-    // Settling is the one moment the readings are known to be complete and fresh, which is exactly
-    // the sample the trend wants; writing on every snapshot would record half-refreshed rounds.
-    const history = advanceWeeklyHistory(
-      weeklyHistoryRef.current,
-      metrics,
-      accountsRef.current.map((account) => account.id),
-      acceptedAt,
-    );
-    weeklyHistoryRef.current = history;
-    setWeeklyHistory(history);
-    // A failed write is not worth a banner: the chart is an extra, and the next settle retries.
-    saveWeeklyHistory(history);
     dispatchOrder({
       type: "candidate_order",
       accountIds: resolvedDashboardOrder(metrics, orderModeRef.current),
@@ -923,14 +875,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     }
   }, [adoptSuccessfulVaultSnapshot, refreshAll, replaceSnapshots]);
 
-  // Read the stored trend once, on the client. Doing it in an effect rather than in useState keeps
-  // the server render and the first client render identical — localStorage does not exist during SSR.
-  useEffect(() => {
-    const stored = pruneWeeklyHistory(loadWeeklyHistory(), Date.now());
-    weeklyHistoryRef.current = stored;
-    setWeeklyHistory(stored);
-  }, []);
-
   useEffect(() => {
     if (vaultState === "ready") void refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1072,13 +1016,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
     () => summarizeWeeklyAccountMetrics(presentedMetrics),
     [presentedMetrics],
   );
-  // Keyed off the account order rather than the visible (sorted) order: the legend should not
-  // reshuffle every time the sort mode changes, since the curves themselves do not move.
-  const trendSeries = useMemo(
-    () => weeklyTrendSeries(weeklyHistory, accounts.map((account) => account.id), now),
-    [accounts, now, weeklyHistory],
-  );
-  const trendDays = useMemo(() => historyDayWindow(now, WEEKLY_TREND_DAYS), [now]);
   const sortUnavailable = orderState.mode === "weekly-usage"
     ? !settledMetrics.some((metric) => metric.highestWeeklyUsedPercent !== null)
     : orderState.mode === "weekly-reset"
@@ -1310,12 +1247,6 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
                 accountsById={accountsById}
                 providerOrdinals={providerOrdinals}
                 now={now}
-              />
-              <WeeklyTrend
-                series={trendSeries}
-                days={trendDays}
-                accountsById={accountsById}
-                providerOrdinals={providerOrdinals}
               />
             </section>
             <DashboardAccountList

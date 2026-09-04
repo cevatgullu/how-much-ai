@@ -271,7 +271,7 @@ test("strict-local add-account success, machine, and pairing branches render Tur
     completionError: null,
     onRetry() {},
   }));
-  assert.match(hostedSuccess, /Connected Research/);
+  assert.match(hostedSuccess, /Research bağlandı/);
   assert.match(hostedSuccess, /Kimlik bilgisi güvenle kaydedildi\. Pano eşitleniyor/i);
 
   const machine = renderToStaticMarkup(createElement(ClaudeLocalMachinePanel, {
@@ -527,4 +527,8 @@ test("document and visual system expose the Turkish local instrument contract", 
   // collapses the grid to the one-column base rule.
   assert.doesNotMatch(css, /max-width:\s*(?:959|1919|2879)px/);
   assert.doesNotMatch(css, /(?:radial|linear)-gradient|backdrop-filter|card-lift|@keyframes shimmer/i);
+  // A translateY hide measured from top + safe-area-inset-top still sits on a notched iPhone.
+  assert.match(css, /\.skip-link\s*\{[^}]*clip-path:\s*inset\(50%\)/u);
+  assert.doesNotMatch(css, /translateY\(-160%\)/);
+  assert.match(css, /@media \(hover: none\) and \(pointer: coarse\)/);
 });

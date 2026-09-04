@@ -69,7 +69,7 @@ function connectionDisplayError(strictLocal: boolean, localMessage: string, host
 }
 
 function timeoutError(action: string): Error {
-  return new Error(`${action} timed out after 30 seconds. Check your connection and try again.`);
+  return new Error(`${action} 30 saniye içinde tamamlanmadı. Bağlantıyı denetleyip yeniden deneyin.`);
 }
 
 async function withDeadline<T>(promise: Promise<T>, action: string): Promise<T> {
@@ -135,9 +135,7 @@ export function AddAccountSuccessCard({
         </span>
         <div className="min-w-0">
           <p className="text-sm font-medium text-ivory">
-            {strictLocal
-              ? `${connected.label || connected.email} bağlandı`
-              : `Connected ${connected.label || connected.email}`}
+            {`${connected.label || connected.email} bağlandı`}
           </p>
           <p className="truncate text-xs text-muted">
             {connected.email}
@@ -496,7 +494,7 @@ export function AddAccountModal({
   const reloadAndClose = useCallback(async () => {
     setCompletionError(null);
     try {
-      await withDeadline(Promise.resolve(onServerConnected()), "Dashboard sync");
+      await withDeadline(Promise.resolve(onServerConnected()), "Pano eşitlemesi");
       if (!closedRef.current) onClose();
     } catch {
       if (!closedRef.current) {
@@ -558,7 +556,7 @@ export function AddAccountModal({
           }
           failures = 0;
           if (data.status === "done") {
-            finishServerConnect({ email: data.email ?? "your account" });
+            finishServerConnect({ email: data.email ?? "hesabınız" });
           } else if (data.status === "processing") {
             setPairState("processing");
             schedule(1500);
@@ -823,7 +821,7 @@ export function AddAccountModal({
         });
         return;
       }
-      finishServerConnect({ email: data.email ?? "your account", plan: data.plan, label: data.label });
+      finishServerConnect({ email: data.email ?? "hesabınız", plan: data.plan, label: data.label });
     } catch (connectError) {
       if (!closedRef.current) {
         setLocalError({
@@ -891,7 +889,7 @@ export function AddAccountModal({
         const parsed = parseCredentials(pasted);
         if (!parsed) {
           throw new Error(
-            'Couldn\'t read that. Paste the full Claude Code credential JSON containing "accessToken".',
+            "Bunu okuyamadım. \"accessToken\" içeren tam Claude Code kimlik JSON'unu yapıştırın.",
           );
         }
         res = await fetch("/api/connect/manual", {
@@ -931,7 +929,7 @@ export function AddAccountModal({
       }
       if (oauthFlow) clearPkce();
       finishServerConnect({
-        email: data.email ?? reconnectAccount?.email ?? "your account",
+        email: data.email ?? reconnectAccount?.email ?? "hesabınız",
         plan: data.plan,
         label: data.label,
       });
@@ -994,7 +992,7 @@ export function AddAccountModal({
         });
         return;
       }
-      finishServerConnect({ email: data.email ?? "your ChatGPT account", plan: data.plan, label: data.label });
+      finishServerConnect({ email: data.email ?? "ChatGPT hesabınız", plan: data.plan, label: data.label });
     } catch (connectError) {
       if (!closedRef.current) {
         setLocalError({
@@ -1071,7 +1069,7 @@ export function AddAccountModal({
     try {
       const tokens = parseCodexCredential(pasted);
       if (!tokens) {
-        throw new Error('Couldn\'t read that. Paste the full ~/.codex/auth.json (it contains "access_token").');
+        throw new Error("Bunu okuyamadım. \"access_token\" içeren tam ~/.codex/auth.json içeriğini yapıştırın.");
       }
       const res = await fetch("/api/connect/manual", {
         method: "POST",
@@ -1102,7 +1100,7 @@ export function AddAccountModal({
         );
       }
       finishServerConnect({
-        email: data.email ?? reconnectAccount?.email ?? "your ChatGPT account",
+        email: data.email ?? reconnectAccount?.email ?? "ChatGPT hesabınız",
         plan: data.plan,
         label: data.label,
       });
@@ -1511,8 +1509,8 @@ export function AddAccountModal({
                     {mode === "local" ? "Ya da ~/.codex/auth.json içeriğini yapıştırın" : "~/.codex/auth.json içeriğini yapıştırın"}
                   </label>
                   <p className="mt-1 text-xs leading-relaxed text-muted">
-                    Run <code className="rounded bg-bg px-1 py-0.5 font-mono">cat ~/.codex/auth.json</code> and paste the
-                    whole output. The tokens are stored encrypted and never shown.
+                    <code className="rounded bg-bg px-1 py-0.5 font-mono">cat ~/.codex/auth.json</code> çıktısının
+                    tamamını yapıştırın. Jetonlar şifreli saklanır, bir daha gösterilmez.
                   </p>
                   <textarea
                     id="openai-cli-credentials"
@@ -1535,7 +1533,7 @@ export function AddAccountModal({
                     className={`mt-3 ${PRIMARY_BUTTON}`}
                   >
                     {working ? <SpinnerIcon className="h-4 w-4 animate-spin-slow" /> : null}
-                    {working ? "Connecting…" : "Paylaşılan ChatGPT oturumunu bağla"}
+                    {working ? "Bağlanıyor…" : "Paylaşılan ChatGPT oturumunu bağla"}
                   </button>
                   {error ? (
                     <p role="alert" className="mt-2 text-[11px] leading-relaxed text-[#ff9c95]">

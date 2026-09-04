@@ -65,6 +65,7 @@ const moduleHooks = registerHooks({
 
 const { UsageBar } = await import("../components/UsageBar.tsx");
 const { AccountCard, deriveFiveHourPeak } = await import("../components/AccountCard.tsx");
+const { AnthropicIcon, GrokIcon } = await import("../components/Icons.tsx");
 const {
   dashboardOrderReducer,
   initialDashboardOrderState,
@@ -809,4 +810,21 @@ test("strict-local dashboard recovery and preference messages are Turkish while 
     dashboardVaultRecoveryNotice(false, { archive: "vault.archive" }),
     "Okunamayan kasa vault.archive olarak korundu. Hesaplarınızı şimdi yeniden bağlayabilirsiniz.",
   );
+});
+
+test("the Claude mark is the radial asterisk, not the Anthropic wordmark", () => {
+  const markup = renderToStaticMarkup(createElement(AnthropicIcon, { className: "h-4 w-4" }));
+  assert.equal([...markup.matchAll(/<rect/gu)].length, 12);
+  assert.match(markup, /rotate\(30 12 12\)/u);
+  assert.match(markup, /rotate\(330 12 12\)/u);
+});
+
+test("the Grok mark is the cut G, not a crossed ring", () => {
+  const markup = renderToStaticMarkup(createElement(GrokIcon, { className: "h-4 w-4" }));
+  assert.doesNotMatch(markup, /stroke=/u);
+  assert.match(markup, /fill="currentColor"/u);
+  assert.equal([...markup.matchAll(/<path/gu)].length, 1);
+  const path = /\sd="([^"]+)"/u.exec(markup);
+  assert.ok(path);
+  assert.doesNotMatch(path[1], /[AaCcQqSsTt]/u, "kesik G eğri komut içermemeli");
 });

@@ -29,22 +29,22 @@ export function eventBody({ event, accountLabel }: AccountEvent): string {
   const l = event.limitLabel;
   switch (event.type) {
     case "recovery":
-      return `♻️ ${who}: ${l} reset — peaked ${round(event.peakPct)}%, now ${round(event.percent)}%. You're clear to keep going.`;
+      return `♻️ ${who}: ${l} yenilendi — tepe %${round(event.peakPct)}, şimdi %${round(event.percent)}. Devam edebilirsiniz.`;
     case "warning":
-      return `⚠️ ${who}: ${l} at ${round(event.percent)}% — approaching the limit.`;
+      return `⚠️ ${who}: ${l} %${round(event.percent)} — limite yaklaşıyor.`;
     case "every_reset":
-      return `🔄 ${who}: ${l} reset (now ${round(event.percent)}%).`;
+      return `🔄 ${who}: ${l} yenilendi (şimdi %${round(event.percent)}).`;
   }
 }
 
 function eventTitle(type: NotifyEvent["type"]): string {
   switch (type) {
     case "recovery":
-      return "Limit reset — you're clear";
+      return "Limit yenilendi — devam edebilirsiniz";
     case "warning":
-      return "Approaching a limit";
+      return "Bir limite yaklaşıyorsunuz";
     case "every_reset":
-      return "Limit reset";
+      return "Limit yenilendi";
   }
 }
 

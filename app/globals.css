@@ -165,13 +165,23 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
 }
 .instrument-shell { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
 .instrument-overview { border-bottom: 1px solid var(--rule-soft); padding-bottom: 20px; }
+.quota-readings { display: grid; gap: 10px; }
+.quota-reading {
+  min-width: 0;
+  border: 1px solid var(--rule-soft);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 12px 14px;
+}
+.quota-reading dt { font-size: 12px; color: var(--color-faint); }
+.quota-reading dd { margin: 6px 0 0; color: var(--color-ivory); }
 .account-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .account-card { border-radius: 8px; border-color: var(--rule-soft); background: var(--panel); }
 .account-card-desktop { display: none !important; }
 .account-ledger { display: block; }
 .account-ledger-panel[hidden] { display: none !important; }
 .mobile-command-bar {
-  min-height: calc(64px + env(safe-area-inset-bottom));
+  min-height: calc(68px + env(safe-area-inset-bottom));
   padding-right: env(safe-area-inset-right);
   padding-bottom: env(safe-area-inset-bottom);
   padding-left: env(safe-area-inset-left);
@@ -240,6 +250,11 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .account-grid { grid-template-columns: repeat(2, minmax(420px, 1fr)); gap: 20px; }
   .account-card-desktop { display: flex !important; }
   .account-ledger { display: none !important; }
+  .quota-instrument-overview {
+    grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+    gap: 28px 36px;
+    align-items: start;
+  }
 }
 
 @media (min-width: 1920px) and (max-width: 2879.98px) {
@@ -251,6 +266,11 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .account-grid { grid-template-columns: repeat(3, minmax(560px, 1fr)); gap: 24px; }
   .account-card-desktop { display: flex !important; }
   .account-ledger { display: none !important; }
+  .quota-instrument-overview {
+    grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
+    gap: 32px 48px;
+    align-items: start;
+  }
 }
 
 @media (min-width: 2880px) {
@@ -262,6 +282,11 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .account-grid { grid-template-columns: repeat(4, minmax(600px, 1fr)); gap: 24px; }
   .account-card-desktop { display: flex !important; }
   .account-ledger { display: none !important; }
+  .quota-instrument-overview {
+    grid-template-columns: minmax(20rem, 26rem) minmax(0, 1fr);
+    gap: 36px 56px;
+    align-items: start;
+  }
 }
 
 @media (orientation: landscape) and (min-width: 900px) and (max-height: 500px) {
@@ -272,6 +297,7 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .account-ledger { display: block !important; }
   .mobile-command-bar { display: flex !important; }
   .instrument-overview { margin-bottom: 12px; }
+  .quota-instrument-overview { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (min-width: 3200px) {
@@ -279,6 +305,10 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   .text-xs, .text-\[11px\] { font-size: 14px; }
   .account-card h2, .account-card .text-\[15px\] { font-size: 20px; }
   .account-card .tabular-nums { font-size: 24px; }
+  .weekly-trend-cell { min-height: 76px; }
+  .weekly-trend-cell-value { font-size: 1.25rem; }
+  .weekly-trend-weekday-date { font-size: 1.5rem; }
+  .weekly-trend-account-now-value { font-size: 1.75rem; }
 }
 
 @media (forced-colors: active) {
@@ -351,46 +381,191 @@ html :where(a[href], button, input, textarea, select, [role="button"], [role="sw
   color: var(--color-faint);
 }
 
-/* ---- 7 günlük eğri: özetin altında, kartların üstünde ---- */
-.weekly-trend-plot {
-  height: auto;
-  /* The plot is geometry, not text: without this it inherits the surrounding line-height and gains
-     a few pixels of phantom descender space under the last gridline. */
-  display: block;
-  overflow: visible;
-}
-.weekly-trend-grid {
-  stroke: var(--rule-soft);
-  stroke-width: 1;
-}
-.weekly-trend-days {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  margin: 2px 0 0;
-  padding: 0;
-  font-size: 10px;
-  color: var(--color-faint);
-  text-align: center;
-}
-.weekly-trend-days > li:first-child { text-align: left; }
-.weekly-trend-days > li:last-child { text-align: right; }
-.weekly-trend-legend {
+/* ---- Son 7 gün: her hesap kendi satırı, her gün kendi kutusu ---- */
+.weekly-trend-intro {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 8px 0 0;
-  padding: 0;
-  font-size: 11px;
-  color: var(--color-muted);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 14px;
 }
-.weekly-trend-legend-item {
+.weekly-trend-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ivory);
+}
+.weekly-trend-hint,
+.weekly-trend-note {
+  margin: 6px 0 0;
+  max-width: 42rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--color-faint);
+}
+.weekly-trend-note { color: var(--color-muted); }
+.weekly-trend-weekdays,
+.weekly-trend-cells,
+.weekly-trend-accounts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.weekly-trend-weekdays,
+.weekly-trend-cells {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+.weekly-trend-weekdays { margin-bottom: 4px; }
+.weekly-trend-weekdays-label { display: none; }
+.weekly-trend-weekday { text-align: center; }
+.weekly-trend-weekday-date {
+  display: block;
+  font-family: var(--font-data), "Cascadia Mono", monospace;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--color-ivory);
+}
+.weekly-trend-weekday-name {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: var(--color-faint);
+}
+.weekly-trend-accounts {
+  display: flex;
+  flex-direction: column;
+}
+.weekly-trend-account {
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule-soft);
+}
+.weekly-trend-account-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+}
+.weekly-trend-account-name {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-ivory);
 }
 .weekly-trend-swatch {
-  width: 16px;
+  width: 8px;
   height: 8px;
   flex: none;
+  border-radius: 999px;
+}
+.weekly-trend-account-now {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin: 0;
+  line-height: 1.1;
+}
+.weekly-trend-account-now-value {
+  font-family: var(--font-data), "Cascadia Mono", monospace;
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ivory);
+}
+.weekly-trend-account-now-label {
+  margin-top: 2px;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.weekly-trend-cells { grid-column: 1 / -1; }
+.weekly-trend-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: 8px;
+  background: var(--color-track);
+}
+.weekly-trend-cell[data-empty="true"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--rule-soft);
+}
+.weekly-trend-cell-fill {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0;
+  opacity: 0.9;
+}
+.weekly-trend-cell-value {
+  position: relative;
+  z-index: 1;
+  font-family: var(--font-data), "Cascadia Mono", monospace;
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ivory);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.weekly-trend-cell[data-empty="true"] .weekly-trend-cell-value {
+  font-weight: 500;
+  color: var(--color-faint);
+  text-shadow: none;
+}
+
+@media (min-width: 960px) {
+  .weekly-trend-weekdays,
+  .weekly-trend-account-grid {
+    grid-template-columns: minmax(10rem, 16rem) repeat(7, minmax(0, 1fr)) 5.5rem;
+    align-items: center;
+    gap: 8px;
+  }
+  .weekly-trend-weekdays-label {
+    display: flex;
+    align-items: flex-end;
+    min-height: 2.4rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-faint);
+  }
+  .weekly-trend-weekdays-now { justify-content: flex-end; }
+  .weekly-trend-cells { display: contents; }
+  .weekly-trend-account-now { justify-self: end; }
+  .weekly-trend-cell { min-height: 56px; }
+}
+
+@media (min-width: 1920px) {
+  .weekly-trend-weekdays,
+  .weekly-trend-account-grid {
+    grid-template-columns: minmax(12rem, 18rem) repeat(7, minmax(0, 1fr)) 6rem;
+    gap: 10px;
+  }
+  .weekly-trend-cell { min-height: 64px; border-radius: 10px; }
+  .weekly-trend-cell-value { font-size: 1rem; }
+  .weekly-trend-weekday-date { font-size: 1.25rem; }
+  .weekly-trend-account-now-value { font-size: 1.5rem; }
+  .weekly-trend-account-name { font-size: 1.05rem; }
+}
+
+@media (max-width: 959.98px) {
+  .instrument-shell { padding-top: 18px; }
+  .weekly-trend-title { font-size: 0.875rem; }
+  .weekly-trend-hint { font-size: 0.8125rem; }
 }

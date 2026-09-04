@@ -757,7 +757,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           commitSnapshot(id, (previous) => ({
               ...previous,
               status: "error",
-              error: errText(data.error, `Usage request failed (${res.status}).`),
+              error: errText(data.error, `Kullanım isteği başarısız oldu (${res.status}).`),
               cooldownUntil: data.cooldownUntil,
               stale: data.stale,
           }));
@@ -787,7 +787,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             commitSnapshot(id, (previous) => ({
                 ...previous,
                 status: "error",
-                error: errText(data.error, "Couldn't load usage."),
+                error: errText(data.error, "Kullanım verisi yüklenemedi."),
                 cooldownUntil: data.cooldownUntil,
                 stale: data.stale,
             }));

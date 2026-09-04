@@ -51,8 +51,8 @@ export function DashboardHeader({
         <div className="flex min-w-0 items-center gap-3">
           <StarburstIcon className="h-6 w-6 shrink-0 text-coral" />
           <div className="min-w-0">
-            <h1 className="font-display text-xl leading-none text-ivory">How Much AI</h1>
-            <p className="mt-1 truncate text-xs text-muted">{healthLabel}</p>
+            <h1 className="font-display text-[1.35rem] leading-none text-ivory min-[960px]:text-xl">How Much AI</h1>
+            <p className="mt-1 truncate text-[13px] text-muted min-[960px]:text-xs">{healthLabel}</p>
           </div>
         </div>
 

@@ -97,13 +97,13 @@ interface ThresholdValidation {
 
 function parseThreshold(label: string, value: string): { value: number | null; error: string | null } {
   const trimmed = value.trim();
-  if (!trimmed) return { value: null, error: `Enter a ${label.toLowerCase()}.` };
+  if (!trimmed) return { value: null, error: `${label} girin.` };
   if (!/^\d+$/.test(trimmed)) {
-    return { value: null, error: `${label} must be a whole number from 1 to 100.` };
+    return { value: null, error: `${label} 1 ile 100 arasında tam sayı olmalı.` };
   }
   const parsed = Number(trimmed);
   if (parsed < 1 || parsed > 100) {
-    return { value: null, error: `${label} must be from 1 to 100.` };
+    return { value: null, error: `${label} 1 ile 100 arasında olmalı.` };
   }
   return { value: parsed, error: null };
 }

@@ -1,24 +1,16 @@
 "use client";
 
-// Seven days of weekly usage, drawn as inline SVG.
+// Seven days of weekly usage, one row per account.
 //
-// No charting library. One polyline per account over a fixed 0–100 scale is the whole requirement,
-// and every library that draws it also brings a layout engine, a tooltip system, and a bundle
-// larger than this page. The viewBox is fixed and the element is width-fluid, so the geometry is
-// computed once and the browser scales it — which also means the same markup renders identically
-// server-side, where there is no layout to measure.
+// A shared line chart with eight overlapping curves is geometry, not a reading: the eye cannot
+// tell Claude 4 from ChatGPT 3, and the day labels sit too small to name a Tuesday. Each account
+// gets its own strip of seven cells instead. The number in the cell is the weekly-limit percent
+// that day; a missing cell is a day the app was not open, not a day of zero usage.
 
 import type { BrowserAccount } from "@/lib/types";
 import type { WeeklyTrendSeries } from "@/lib/weekly-history";
-import { WEEKLY_TREND_DAYS, weeklyTrendFilledDays } from "@/lib/weekly-history";
+import { weeklyTrendFilledDays } from "@/lib/weekly-history";
 import { quotaRulerAccountName } from "./QuotaReadings";
-
-const VIEW_WIDTH = 336;
-const VIEW_HEIGHT = 108;
-const PAD_X = 6;
-const PAD_TOP = 8;
-const PAD_BOTTOM = 10;
-const PLOT_HEIGHT = VIEW_HEIGHT - PAD_TOP - PAD_BOTTOM;
 
 export interface WeeklyTrendProps {
   series: readonly WeeklyTrendSeries[];
@@ -28,9 +20,9 @@ export interface WeeklyTrendProps {
 }
 
 /**
- * Line colour follows the account's provider accent, so a curve and its card read as the same
- * thing. Two accounts on one provider share the hue and separate by dash pattern instead — a
- * per-account palette would collide with the severity colours the bars already own.
+ * Cell colour follows the account's provider accent, so a row and its card read as the same
+ * thing. Severity colours stay on the quota bars: a 90% week is not the same signal as a
+ * danger-red five-hour bar.
  */
 export function weeklyTrendStroke(provider: BrowserAccount["provider"] | undefined): string {
   if (provider === "openai") return "var(--calibration-blue)";
@@ -38,26 +30,11 @@ export function weeklyTrendStroke(provider: BrowserAccount["provider"] | undefin
   return "var(--claude-coral)";
 }
 
-const DASHES = ["", "5 3", "2 3", "8 3 2 3"];
-
-export function weeklyTrendDash(providerOrdinal: number): string | undefined {
-  return DASHES[(Math.max(1, providerOrdinal) - 1) % DASHES.length] || undefined;
-}
-
-function slotX(slot: number): number {
-  return PAD_X + ((VIEW_WIDTH - PAD_X * 2) * slot) / (WEEKLY_TREND_DAYS - 1);
-}
-
-function percentY(percent: number): number {
-  return PAD_TOP + PLOT_HEIGHT * (1 - Math.max(0, Math.min(100, percent)) / 100);
-}
-
 /**
  * Split a series into unbroken runs.
  *
- * A missing day is a day the app was not open, not a day of zero usage. Bridging the gap with a
- * straight line would draw usage that was never measured, so each run is its own polyline and the
- * gap simply shows.
+ * A missing day is a day the app was not open, not a day of zero usage. Bridging the gap would
+ * invent a measurement, so each run stays separate — the cells simply leave the hole empty.
  */
 export function weeklyTrendRuns(points: readonly (number | null)[]): { slot: number; percent: number }[][] {
   const runs: { slot: number; percent: number }[][] = [];
@@ -74,9 +51,22 @@ export function weeklyTrendRuns(points: readonly (number | null)[]): { slot: num
   return runs;
 }
 
-function dayLabel(day: string): string {
+export function weeklyTrendDayParts(day: string): { weekday: string; dayOfMonth: string; spoken: string } {
   const [year, month, date] = day.split("-").map(Number);
-  return new Intl.DateTimeFormat("tr-TR", { weekday: "short" }).format(new Date(year, month - 1, date));
+  const value = new Date(year, month - 1, date);
+  return {
+    weekday: new Intl.DateTimeFormat("tr-TR", { weekday: "short" }).format(value).replace(/\.$/u, ""),
+    dayOfMonth: String(date),
+    spoken: new Intl.DateTimeFormat("tr-TR", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+    }).format(value),
+  };
+}
+
+function cellLabel(spoken: string, percent: number | null): string {
+  return percent === null ? `${spoken}: ölçüm yok` : `${spoken}: %${percent}`;
 }
 
 export function WeeklyTrend({ series, days, accountsById, providerOrdinals }: WeeklyTrendProps) {
@@ -84,101 +74,80 @@ export function WeeklyTrend({ series, days, accountsById, providerOrdinals }: We
   if (drawn.length === 0) return null;
 
   const filledDays = weeklyTrendFilledDays(drawn);
+  const captions = days.map(weeklyTrendDayParts);
   const named = drawn.map((entry) => {
     const account = accountsById.get(entry.accountId);
     const ordinal = providerOrdinals.get(entry.accountId);
     return {
       entry,
-      account,
       name: quotaRulerAccountName(account, ordinal),
       stroke: weeklyTrendStroke(account?.provider),
-      dash: weeklyTrendDash(ordinal ?? 1),
     };
   });
 
   return (
-    <section className="weekly-trend min-w-0" aria-label="7 günlük haftalık kullanım eğrisi">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h2 className="text-xs text-faint">7 günlük haftalık kullanım</h2>
+    <section className="weekly-trend min-w-0" aria-label="Son 7 günün haftalık kullanımı">
+      <div className="weekly-trend-intro">
+        <div className="min-w-0">
+          <h2 className="weekly-trend-title">Son 7 gün</h2>
+          <p className="weekly-trend-hint">
+            Her kutu o günün haftalık kota yüzdesi. Boş kutu sıfır kullanım değil: o gün ölçüm yok.
+          </p>
+        </div>
         {filledDays <= 1 && (
-          // Not an error state: one day of data is exactly what the first run looks like, and the
-          // single dot below is meaningless without saying why there is no line yet.
-          <p className="text-[11px] text-faint">Bugünden itibaren birikmeye başladı.</p>
+          // Not an error state: one day of data is exactly what the first run looks like, and a
+          // single filled cell is meaningless without saying why the other six are empty.
+          <p className="weekly-trend-note">Bugünden itibaren birikmeye başladı.</p>
         )}
       </div>
 
-      <svg
-        viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
-        className="weekly-trend-plot mt-2 w-full"
-        role="img"
-        aria-label={named
-          .map(({ name, entry }) => `${name}: %${entry.latest}`)
-          .join(", ")}
-      >
-        {[0, 50, 100].map((percent) => (
-          <line
-            key={percent}
-            x1={PAD_X}
-            x2={VIEW_WIDTH - PAD_X}
-            y1={percentY(percent)}
-            y2={percentY(percent)}
-            className="weekly-trend-grid"
-          />
+      <ul className="weekly-trend-weekdays" aria-hidden="true">
+        <li className="weekly-trend-weekdays-label">Hesap</li>
+        {captions.map((caption, index) => (
+          <li key={days[index]} className="weekly-trend-weekday">
+            <span className="weekly-trend-weekday-date">{caption.dayOfMonth}</span>
+            <span className="weekly-trend-weekday-name">{caption.weekday}</span>
+          </li>
         ))}
-        {named.map(({ entry, name, stroke, dash }) => (
-          <g key={entry.accountId} data-account={entry.accountId}>
-            <title>{name}</title>
-            {weeklyTrendRuns(entry.points).map((run) =>
-              // A run of one has no line to draw, so the day is marked as a dot instead — which is
-              // also exactly what the very first day of collection looks like.
-              run.length === 1 ? (
-                <circle
-                  key={`${entry.accountId}-${run[0].slot}`}
-                  cx={slotX(run[0].slot)}
-                  cy={percentY(run[0].percent)}
-                  r="2.8"
-                  fill={stroke}
-                />
-              ) : (
-                <polyline
-                  key={`${entry.accountId}-${run[0].slot}`}
-                  fill="none"
-                  stroke={stroke}
-                  strokeDasharray={dash}
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  points={run.map(({ slot, percent }) => `${slotX(slot)},${percentY(percent)}`).join(" ")}
-                />
-              ),
-            )}
-          </g>
-        ))}
-      </svg>
+        <li className="weekly-trend-weekdays-label weekly-trend-weekdays-now">Şimdi</li>
+      </ul>
 
-      <ol role="list" className="weekly-trend-days list-none" aria-hidden="true">
-        {days.map((day) => (
-          <li key={day}>{dayLabel(day)}</li>
-        ))}
-      </ol>
-
-      <ul role="list" className="weekly-trend-legend list-none">
-        {named.map(({ entry, name, stroke, dash }) => (
-          <li key={entry.accountId} className="weekly-trend-legend-item">
-            <svg viewBox="0 0 16 8" className="weekly-trend-swatch" aria-hidden="true">
-              <line
-                x1="1"
-                y1="4"
-                x2="15"
-                y2="4"
-                stroke={stroke}
-                strokeDasharray={dash}
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="min-w-0 truncate">{name}</span>
-            <span className="font-mono tabular-nums text-ivory">%{entry.latest}</span>
+      <ul className="weekly-trend-accounts">
+        {named.map(({ entry, name, stroke }) => (
+          <li key={entry.accountId} className="weekly-trend-account" data-account={entry.accountId}>
+            <div className="weekly-trend-account-grid">
+              <div className="weekly-trend-account-name">
+                <span className="weekly-trend-swatch" style={{ background: stroke }} aria-hidden="true" />
+                <span className="min-w-0 truncate">{name}</span>
+              </div>
+              <ul className="weekly-trend-cells">
+                {entry.points.map((percent, slot) => {
+                  const empty = percent === null;
+                  const spoken = captions[slot]?.spoken ?? days[slot] ?? "";
+                  return (
+                    <li
+                      key={`${entry.accountId}-${days[slot] ?? slot}`}
+                      className="weekly-trend-cell"
+                      data-empty={empty ? "true" : "false"}
+                      aria-label={cellLabel(spoken, percent)}
+                    >
+                      {!empty && percent > 0 && (
+                        <span
+                          className="weekly-trend-cell-fill"
+                          style={{ height: `max(3px, ${percent}%)`, background: stroke }}
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="weekly-trend-cell-value">{empty ? "—" : percent}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="weekly-trend-account-now">
+                <span className="weekly-trend-account-now-value">%{entry.latest}</span>
+                <span className="weekly-trend-account-now-label">şimdi</span>
+              </p>
+            </div>
           </li>
         ))}
       </ul>

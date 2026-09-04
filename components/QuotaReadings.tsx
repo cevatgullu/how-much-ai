@@ -40,14 +40,14 @@ export function QuotaReadings({ summary, accountsById, providerOrdinals, now }: 
   const nearest = summary.nearestReset;
   const nearestSchedule = formatResetSchedule(nearest?.nearestWeeklyResetAt ?? null, now);
   return (
-    <dl className="quota-readings grid min-w-0 gap-3" aria-label="Kota özeti">
-      <div className="min-w-0 border-t border-border pt-2">
-        <dt className="text-xs text-faint">Hesap</dt>
-        <dd className="font-mono text-lg tabular-nums text-ivory">{summary.accountCount}</dd>
+    <dl className="quota-readings min-w-0" aria-label="Kota özeti">
+      <div className="quota-reading">
+        <dt>Hesap</dt>
+        <dd className="font-mono text-lg tabular-nums">{summary.accountCount}</dd>
       </div>
-      <div className="min-w-0 border-t border-border pt-2">
-        <dt className="text-xs text-faint">En yüksek haftalık kullanım</dt>
-        <dd className="min-w-0 text-sm text-ivory">
+      <div className="quota-reading">
+        <dt>En yüksek haftalık kullanım</dt>
+        <dd className="min-w-0 text-sm">
           {highest ? (
             <>
               <span>{metricAccountName(highest, accountsById, providerOrdinals)}</span>{" "}
@@ -57,9 +57,9 @@ export function QuotaReadings({ summary, accountsById, providerOrdinals, now }: 
           ) : "—"}
         </dd>
       </div>
-      <div className="min-w-0 border-t border-border pt-2">
-        <dt className="text-xs text-faint">En yakın haftalık yenilenme</dt>
-        <dd className="min-w-0 text-sm text-ivory">
+      <div className="quota-reading">
+        <dt>En yakın haftalık yenilenme</dt>
+        <dd className="min-w-0 text-sm">
           {nearest ? (
             <>
               <span>{metricAccountName(nearest, accountsById, providerOrdinals)}</span>{" "}

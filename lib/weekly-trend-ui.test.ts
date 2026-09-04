@@ -52,7 +52,7 @@ const moduleHooks = registerHooks({
   },
 });
 
-const { WeeklyTrend, weeklyTrendRuns, weeklyTrendStroke, weeklyTrendDash } =
+const { WeeklyTrend, weeklyTrendRuns, weeklyTrendStroke, weeklyTrendDayParts } =
   await import("../components/WeeklyTrend.tsx");
 const { AnthropicIcon, GrokIcon } = await import("../components/Icons.tsx");
 
@@ -96,24 +96,26 @@ test("a missing day stays a gap instead of being bridged", () => {
   assert.deepEqual(weeklyTrendRuns([null, null, null]), []);
 });
 
-test("the first day of collection is a dot with an explanation, not an empty frame", () => {
+test("the first day of collection is one filled cell with an explanation, not an empty frame", () => {
   const markup = render([series("a", [null, null, null, null, null, null, 6])], [account("a", "grok", "Grok")]);
   assert.match(markup, /Bugünden itibaren birikmeye başladı\./u);
-  // One point has no line to draw; without the dot the chart would look broken on day one.
-  assert.match(markup, /<circle/u);
+  assert.equal([...markup.matchAll(/data-empty="false"/gu)].length, 1);
+  assert.equal([...markup.matchAll(/data-empty="true"/gu)].length, 6);
+  assert.match(markup, />6</u);
   assert.doesNotMatch(markup, /<polyline/u);
+  assert.doesNotMatch(markup, /<circle/u);
 });
 
-test("a second day turns the dot into a line and drops the starting note", () => {
+test("a second day fills two cells and drops the starting note", () => {
   const markup = render(
     [series("a", [null, null, null, null, null, 4, 6])],
     [account("a", "anthropic", "Claude")],
   );
-  assert.match(markup, /<polyline/u);
+  assert.equal([...markup.matchAll(/data-empty="false"/gu)].length, 2);
   assert.doesNotMatch(markup, /birikmeye başladı/u);
 });
 
-test("each curve carries its account's name and latest reading", () => {
+test("each row carries its account's name and latest reading", () => {
   const accounts = [account("a", "anthropic", "Ana Claude"), account("b", "grok", "Grok hesabı")];
   const markup = render(
     [series("a", [null, 30, 40, 50, 60, 70, 80]), series("b", [null, null, 2, 3, 4, 5, 6])],
@@ -123,8 +125,8 @@ test("each curve carries its account's name and latest reading", () => {
   assert.match(markup, /Grok hesabı/u);
   assert.match(markup, /%80/u);
   assert.match(markup, /%6/u);
-  // A screen reader gets the same summary the legend shows sighted users.
-  assert.match(markup, /aria-label="Ana Claude: %80, Grok hesabı: %6"/u);
+  assert.match(markup, /aria-label="[^"]*%80/u);
+  assert.match(markup, /aria-label="[^"]*%6/u);
 });
 
 test("accounts with no reading yet are absent rather than drawn flat at zero", () => {
@@ -140,26 +142,31 @@ test("nothing renders at all until some account has a reading", () => {
   assert.equal(render([series("a", [null, null, null, null, null, null, null])], [account("a", "grok", "Grok")]), "");
 });
 
-test("curve colour follows the provider accent and repeats separate by dash", () => {
-  // Reusing the severity palette here would make a 90%-spent Claude curve the same red as a
+test("cell colour follows the provider accent, not the severity palette", () => {
+  // Reusing the severity palette here would make a 90%-spent Claude row the same red as a
   // danger bar, and the two scales mean different things.
   assert.equal(weeklyTrendStroke("anthropic"), "var(--claude-coral)");
   assert.equal(weeklyTrendStroke("openai"), "var(--calibration-blue)");
   assert.notEqual(weeklyTrendStroke("grok"), weeklyTrendStroke("anthropic"));
-  assert.equal(weeklyTrendDash(1), undefined);
-  assert.notEqual(weeklyTrendDash(2), undefined);
-  assert.notEqual(weeklyTrendDash(2), weeklyTrendDash(3));
+  const markup = render(
+    [series("a", [10, 20, 30, 40, 50, 60, 70]), series("b", [1, 2, 3, 4, 5, 6, 7])],
+    [account("a", "anthropic", "Claude"), account("b", "openai", "ChatGPT")],
+  );
+  assert.match(markup, /background:var\(--claude-coral\)/u);
+  assert.match(markup, /background:var\(--calibration-blue\)/u);
 });
 
-test("the plot geometry is fixed, so a server render is the whole picture", () => {
+test("each account is a row of seven day cells, with holes left empty", () => {
   const markup = render([series("a", [0, null, null, null, null, null, 100])], [account("a", "grok", "Grok")]);
-  assert.match(markup, /viewBox="0 0 336 108"/u);
-  // 0% sits on the bottom gridline and 100% on the top one; an inverted axis here would read as
-  // "more left" and invert the meaning of every curve on the chart.
-  const zero = /cy="([\d.]+)"[^>]*\/><\/g>|<circle[^>]*cy="([\d.]+)"/u;
-  assert.ok(zero.test(markup));
-  assert.match(markup, /<line[^>]*y1="8"/u, "üst kılavuz çizgisi %100'de değil");
-  assert.match(markup, /<line[^>]*y1="98"/u, "alt kılavuz çizgisi %0'da değil");
+  assert.equal([...markup.matchAll(/class="weekly-trend-cell"/gu)].length, 7);
+  assert.match(markup, />0</u);
+  assert.match(markup, />100</u);
+  assert.match(markup, /data-empty="true"/u);
+  assert.doesNotMatch(markup, /viewBox=/u);
+  const tenth = weeklyTrendDayParts("2026-08-10");
+  assert.equal(tenth.dayOfMonth, "10");
+  assert.match(markup, />10</u);
+  assert.match(markup, new RegExp(tenth.weekday, "u"));
 });
 
 // --- provider marks -----------------------------------------------------------------------------

@@ -19,9 +19,9 @@ export function MobileCommandBar({
   onNotifications,
   onMenu,
 }: MobileCommandBarProps) {
-  const buttonClass = "flex min-h-12 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-0.5 text-[11px] text-ivory disabled:opacity-40";
+  const buttonClass = "flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-0.5 text-[11px] text-ivory disabled:opacity-40";
   return (
-    <nav aria-label="Hızlı komutlar" className="mobile-command-bar fixed inset-x-0 bottom-0 z-40 flex min-[960px]:hidden">
+    <nav aria-label="Hızlı komutlar" className="mobile-command-bar fixed inset-x-0 bottom-0 z-40">
       <button type="button" aria-label="Yenile" className={buttonClass} onClick={onRefresh} disabled={!canRefresh || refreshing}>
         <RefreshIcon className={`h-4 w-4 ${refreshing ? "animate-spin-slow" : ""}`} />
         <span>Yenile</span>

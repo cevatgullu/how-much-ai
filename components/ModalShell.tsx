@@ -195,7 +195,9 @@ export function ModalShell({
   return (
     <div
       ref={rootRef}
-      className={`modal-root fixed inset-0 z-50 overflow-y-auto overscroll-contain ${placement === "sheet" ? "px-3 pt-3" : "p-3 sm:p-6"}`}
+      className={`modal-root fixed inset-0 z-[60] overflow-y-auto overscroll-contain ${
+        placement === "sheet" ? "modal-root-sheet" : "modal-root-center"
+      }`}
     >
       <div
         aria-hidden="true"
@@ -211,10 +213,10 @@ export function ModalShell({
           aria-describedby={description ? descriptionId : undefined}
           data-placement={placement}
           tabIndex={-1}
-          className={`animate-modal-in modal-panel modal-scroll relative w-full overflow-y-auto border border-border bg-bg-raised p-5 outline-none sm:p-6 ${
+          className={`animate-modal-in modal-panel modal-scroll relative w-full overflow-y-auto border border-border bg-bg-raised outline-none ${
             placement === "sheet"
-              ? "max-h-[calc(100dvh-0.75rem)] rounded-t-2xl border-b-0"
-              : "max-h-[calc(100dvh-1.5rem)] rounded-2xl sm:max-h-[calc(100dvh-3rem)]"
+              ? "rounded-t-2xl border-b-0"
+              : "rounded-2xl"
           } ${maxWidthClassName}`}
         >
           <div className="flex items-start justify-between gap-4">

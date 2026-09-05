@@ -237,6 +237,7 @@ function LocalNotificationsPanel({
   return (
     <ModalShell
       open={open}
+      placement="sheet"
       title="Bildirimler"
       description="Limit geçişlerini yalnızca bu cihazda takip edin."
       onClose={onClose}
@@ -561,6 +562,7 @@ function HostedNotificationsPanel({ open, onClose }: Pick<NotificationsPanelProp
   return (
     <ModalShell
       open={open}
+      placement="sheet"
       title="Bildirimler"
       description="Bir limit yenilendiğinde ya da dolmaya yaklaştığında haber alın."
       onClose={requestClose}

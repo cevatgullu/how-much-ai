@@ -102,15 +102,35 @@ test("phone meter, quota, and login overrides are declared after the base rules 
 test("every shell edge still pads by its safe-area inset", () => {
   // black-translucent draws under the clock and the home indicator; without these the header sits
   // beneath the status bar and the command bar under the gesture area.
-  for (const [selector, inset] of [
-    [".instrument-header", "safe-area-inset-top"],
-    [".instrument-shell", "safe-area-inset-bottom"],
-    [".mobile-command-bar", "safe-area-inset-bottom"],
+  assert.match(css, /--safe-top:\s*env\(safe-area-inset-top/u);
+  assert.match(css, /--safe-bottom:\s*env\(safe-area-inset-bottom/u);
+  for (const [selector, token] of [
+    [".instrument-header", "--safe-top"],
+    [".instrument-shell", "--safe-bottom"],
+    [".mobile-command-bar", "--safe-bottom"],
   ] as const) {
-    // The selector appears in several rules (shared margins in one, its own padding in another),
-    // so the inset only has to land in one of them.
     const rules = [...css.matchAll(new RegExp(`\\${selector}[^{]*\\{([^}]*)\\}`, "gu"))];
     assert.ok(rules.length > 0, `${selector} kuralı yok`);
-    assert.ok(rules.some((rule) => rule[1].includes(inset)), `${selector}: ${inset} yok`);
+    assert.ok(rules.some((rule) => rule[1].includes(token)), `${selector}: ${token} yok`);
   }
+});
+
+test("sheets consume the safe area and hide the tab bar while open", () => {
+  assert.match(css, /\.modal-root-center\s*\{[^}]*var\(--safe-top\)/u);
+  assert.match(css, /\.modal-panel\[data-placement="sheet"\]\s*\{[^}]*var\(--safe-bottom\)/u);
+  assert.match(css, /html:has\(\.modal-root\) \.mobile-command-bar/u);
+});
+
+test("the phone command bar is an iOS tab row, not a padded iPhone 8 brick", () => {
+  // 72px content + home-indicator padding floated the labels above a dead band.
+  // Native item row is ~50px; the inset is padding on the same painted bar.
+  assert.match(css, /--tab-content:\s*50px/u);
+  const bar = /\.mobile-command-bar\s*\{([^}]*)\}/u.exec(css);
+  assert.ok(bar);
+  assert.match(bar[1], /min-height:\s*calc\(var\(--tab-content\) \+ var\(--safe-bottom\)\)/u);
+  assert.match(bar[1], /padding-bottom:\s*var\(--safe-bottom\)/u);
+  assert.doesNotMatch(bar[1], /72px/u);
+  const item = /\.mobile-command-bar > button\s*\{([^}]*)\}/u.exec(css);
+  assert.ok(item);
+  assert.match(item[1], /height:\s*var\(--tab-content\)/u);
 });

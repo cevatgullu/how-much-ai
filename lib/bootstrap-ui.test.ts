@@ -509,18 +509,18 @@ test("document and visual system expose the Turkish local instrument contract", 
   assert.match(css, /@media \(min-width: 1920px\) and \(max-width: 2879\.98px\)/);
   assert.match(css, /@media \(min-width: 2880px\)/);
   assert.match(css, /orientation:\s*landscape[^\{]*min-width:\s*900px[^\{]*max-height:\s*500px/);
-  assert.match(css, /env\(safe-area-inset-(?:top|right|bottom|left)\)/);
+  assert.match(css, /env\(safe-area-inset-(?:top|right|bottom|left)/);
   assert.match(
     css,
-    /@media \(min-width: 960px\) and \(max-width: 1919\.98px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*calc\(100% - 2 \* clamp\(24px, 4vw, 64px\)\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+    /@media \(min-width: 960px\) and \(max-width: 1919\.98px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*calc\(100% - 2 \* clamp\(24px, 4vw, 64px\)\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*var\(--safe-left\) var\(--safe-right\)/,
   );
   assert.match(
     css,
-    /@media \(min-width: 1920px\) and \(max-width: 2879\.98px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+    /@media \(min-width: 1920px\) and \(max-width: 2879\.98px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*var\(--safe-left\) var\(--safe-right\)/,
   );
   assert.match(
     css,
-    /@media \(min-width: 2880px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*env\(safe-area-inset-left\) env\(safe-area-inset-right\)/,
+    /@media \(min-width: 2880px\)[\s\S]*?\.instrument-shell\s*\{[^}]*width:\s*min\(3264px, 90vw\)[^}]*margin-inline:\s*auto[^}]*\}[\s\S]*?padding-inline:\s*var\(--safe-left\) var\(--safe-right\)/,
   );
   // Regression guard for the fractional-pixel gap: an integer upper bound adjacent to the next
   // breakpoint's integer min-width leaves fractional viewports matching no query at all, which

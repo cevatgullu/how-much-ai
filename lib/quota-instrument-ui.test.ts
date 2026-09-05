@@ -265,6 +265,8 @@ test("ModalShell renders center and sheet placements through the same dialog bou
   }));
   assert.match(center, /role="dialog"[^>]*data-placement="center"/);
   assert.match(sheet, /role="dialog"[^>]*data-placement="sheet"/);
+  assert.match(center, /modal-root-center/);
+  assert.match(sheet, /modal-root-sheet/);
   assert.equal((center.match(/aria-modal="true"/g) ?? []).length, 1);
   assert.equal((sheet.match(/aria-modal="true"/g) ?? []).length, 1);
 });

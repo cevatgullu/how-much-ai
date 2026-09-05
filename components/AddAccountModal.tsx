@@ -1552,6 +1552,7 @@ export function AddAccountModal({
   return (
     <ModalShell
       open={open}
+      placement="sheet"
       title={reconnectAccount ? `${reconnectAccount.label || reconnectAccount.email} hesabını yeniden bağla` : "Hesap bağla"}
       description={
         reconnectAccount

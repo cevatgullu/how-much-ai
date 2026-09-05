@@ -51,7 +51,7 @@ export function DashboardSheets({
           {SORT_OPTIONS.map((option) => (
             <label
               key={option.value}
-              className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border border-border px-3 text-sm text-ivory"
+              className="flex min-h-11 cursor-pointer items-center gap-3 rounded-sm border border-border px-3 text-sm text-ivory"
             >
               <input
                 type="radio"
@@ -73,7 +73,7 @@ export function DashboardSheets({
               role="switch"
               aria-checked={autoRefresh}
               onClick={() => onAutoRefreshChange(!autoRefresh)}
-              className="min-h-11 rounded-lg border border-border px-3 text-sm text-ivory"
+              className="min-h-11 rounded-sm border border-border px-3 text-sm text-ivory"
             >
               {autoRefresh ? "Açık" : "Kapalı"}
             </button>

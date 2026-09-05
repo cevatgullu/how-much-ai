@@ -283,56 +283,47 @@ export function AccountCard({
         cancelRemove();
       }}
     >
-      <div className={`${controlledMobileLedger ? "account-card-desktop hidden min-[960px]:flex" : "flex"} min-w-0 flex-col gap-3 min-[960px]:flex-row min-[960px]:items-start min-[960px]:justify-between`}>
-        <div className="flex min-w-0 items-center gap-3">
-          <div
-            aria-hidden="true"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border"
-            style={{
-              background: "var(--avatar-bg)",
-              color: "var(--avatar-fg)",
-              borderColor: "var(--avatar-border)",
-            }}
-          >
-            {/* The provider mark reads faster than an initial: the card is scanned for "which
-                service", and the heading beside it already carries the account name. Every icon
-                paints with currentColor, so the per-provider avatar palette still drives it. */}
-            <AvatarIcon className="h-5 w-5" />
-          </div>
-          <div className="min-w-0">
+      <div className={`${controlledMobileLedger ? "account-card-desktop hidden min-[960px]:flex" : "flex"} min-w-0 items-start gap-3`}>
+        <div
+          aria-hidden="true"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border"
+          style={{
+            background: "var(--avatar-bg)",
+            color: "var(--avatar-fg)",
+            borderColor: "var(--avatar-border)",
+          }}
+        >
+          {/* The provider mark reads faster than an initial: the card is scanned for "which
+              service", and the heading beside it already carries the account name. Every icon
+              paints with currentColor, so the per-provider avatar palette still drives it. */}
+          <AvatarIcon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             <h2 id={headingId} className="font-display truncate text-[13px] font-semibold uppercase tracking-[0.16em] text-faint">
               {providerMeta(account.provider).label} {providerOrdinal}
             </h2>
-            <button
-              type="button"
-              onClick={(event) => beginRename(event.currentTarget)}
-              aria-label={`${displayName} hesabını adlandır`}
-              title="Bu hesabı adlandır"
-              className="flex min-h-11 min-w-11 max-w-full items-center truncate text-left text-[17px] font-semibold text-ivory transition-colors hover:text-[var(--accent-bright)]"
+            <span
+              title={`${providerMeta(account.provider).label} · ${account.plan}`}
+              className="inline-flex max-w-full truncate rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted"
             >
-              {displayName}
-            </button>
-            {displayName !== account.email && (
-              <p className="truncate text-xs text-faint">{account.email}</p>
-            )}
+              {account.plan}
+            </span>
           </div>
+          <button
+            type="button"
+            onClick={(event) => beginRename(event.currentTarget)}
+            aria-label={`${displayName} hesabını adlandır`}
+            title="Bu hesabı adlandır"
+            className="flex min-h-11 min-w-11 max-w-full items-center truncate text-left text-[17px] font-semibold text-ivory transition-colors hover:text-[var(--accent-bright)]"
+          >
+            {displayName}
+          </button>
+          {displayName !== account.email && (
+            <p className="truncate text-xs text-faint">{account.email}</p>
+          )}
         </div>
-        <div className="flex shrink-0 items-center gap-1 self-end min-[960px]:self-auto">
-          {(() => {
-            const meta = providerMeta(account.provider);
-            const ProviderMark = meta.Icon;
-            return (
-              <span
-                title={`${meta.label} · ${account.plan}`}
-                className="mr-1 inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted"
-              >
-                <span className="inline-flex" style={{ color: "var(--accent-bright)" }}>
-                  <ProviderMark className="h-3 w-3 shrink-0" />
-                </span>
-                {account.plan}
-              </span>
-            );
-          })()}
+        <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
             className={ICON_BTN}
@@ -480,7 +471,7 @@ export function AccountCard({
           }}
           placeholder={account.fullName || account.email}
           maxLength={40}
-          className="mt-3 min-h-11 w-full min-w-0 rounded-md border border-border bg-bg px-2 py-1 text-[15px] font-medium text-ivory focus:border-[var(--accent)] focus:outline-none"
+          className="mt-3 min-h-11 w-full min-w-0 rounded-sm border border-border bg-bg px-2 py-1 text-base font-medium text-ivory focus:border-[var(--accent)] focus:outline-none"
         />
       )}
 
@@ -575,7 +566,7 @@ export function AccountCard({
         </div>
       )}
 
-      <div className={`mt-5 ${controlledMobileLedger ? "hidden min-[960px]:block" : "block"} min-w-0 flex-1 space-y-4 transition-opacity duration-300 ${loading && hasBars ? "opacity-60" : ""}`}>
+      <div className={`mt-4 ${controlledMobileLedger ? "hidden min-[960px]:block" : "block"} min-w-0 flex-1 space-y-3 transition-opacity duration-300 min-[960px]:mt-5 min-[960px]:space-y-4 ${loading && hasBars ? "opacity-60" : ""}`}>
         {renderUsageDetails()}
       </div>
 

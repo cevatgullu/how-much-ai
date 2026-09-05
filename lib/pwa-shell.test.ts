@@ -83,6 +83,22 @@ test("the standalone lock is declared after the rule it has to override", () => 
   );
 });
 
+test("phone meter, quota, and login overrides are declared after the base rules they replace", () => {
+  // Media queries add no specificity. The meter/login blocks used to sit below the 959.98px
+  // query, so the phone font-size and login alignment never won.
+  const baseMeter = css.indexOf(".usage-meter-used {");
+  const baseLogin = css.indexOf(".login-page {");
+  const phone = css.lastIndexOf("@media (max-width: 959.98px)");
+  assert.ok(baseMeter >= 0 && baseLogin >= 0 && phone >= 0);
+  assert.ok(phone > baseMeter, "telefon sayaç kuralı temel kuraldan önce");
+  assert.ok(phone > baseLogin, "telefon giriş kuralı temel kuraldan önce");
+  const nextQuery = css.indexOf("@media (min-width: 960px)", phone);
+  const phoneBlock = css.slice(phone, nextQuery === -1 ? undefined : nextQuery);
+  assert.match(phoneBlock, /html \.usage-meter-used\s*\{[^}]*font-size:\s*1\.85rem/u);
+  assert.match(phoneBlock, /html \.quota-readings\s*\{[^}]*grid-template-columns:\s*5\.25rem/u);
+  assert.match(phoneBlock, /html \.login-page\s*\{[^}]*align-items:\s*flex-start/u);
+});
+
 test("every shell edge still pads by its safe-area inset", () => {
   // black-translucent draws under the clock and the home indicator; without these the header sits
   // beneath the status bar and the command bar under the gesture area.

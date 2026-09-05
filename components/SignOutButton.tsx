@@ -30,10 +30,10 @@ export function SignOutButton({ onError }: Props) {
       aria-label={busy ? "Oturum kapatılıyor" : "Oturumu kapat"}
       aria-busy={busy}
       title="Oturumu kapat"
-      className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border text-faint transition-all enabled:hover:border-border-light enabled:hover:bg-surface-hover enabled:hover:text-ivory disabled:opacity-50 sm:w-auto sm:gap-2 sm:px-3"
+      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm border border-border px-3 text-sm text-faint transition-all enabled:hover:border-border-light enabled:hover:bg-surface-hover enabled:hover:text-ivory disabled:opacity-50"
     >
       <SignOutIcon className="h-4 w-4" />
-      <span className="hidden sm:inline">{busy ? "Oturum kapatılıyor…" : "Oturumu kapat"}</span>
+      <span>{busy ? "Oturum kapatılıyor…" : "Oturumu kapat"}</span>
     </button>
   );
 }

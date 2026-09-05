@@ -1086,6 +1086,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
         sortUnavailable={sortUnavailable}
         refreshing={refreshing}
         canRefresh={accounts.length > 0}
+        showSort={vaultState === "ready" && accounts.length > 0}
         addAccountButtonRef={addAccountButtonRef}
         onRefresh={() => void refreshAll()}
         onAddAccount={handleAddClick}
@@ -1148,13 +1149,19 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
           </div>
         )}
         {vaultState === "loading" ? (
-          <div className="mx-auto mt-14 max-w-md space-y-4" aria-label="Kayıtlı hesaplar yükleniyor" role="status">
-            <div className="skeleton mx-auto h-12 w-12 rounded-full" />
-            <div className="skeleton mx-auto h-8 w-3/4 rounded-lg" />
-            <div className="skeleton mx-auto h-4 w-full rounded" />
+          <div className="account-card mx-auto mt-4 max-w-md" aria-label="Kayıtlı hesaplar yükleniyor" role="status">
+            <div className="flex items-start gap-3">
+              <div className="skeleton h-11 w-11 shrink-0 rounded-sm" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="skeleton h-3 w-1/3 rounded-sm" />
+                <div className="skeleton h-5 w-2/3 rounded-sm" />
+              </div>
+            </div>
+            <div className="skeleton mt-5 h-2 w-full rounded-sm" />
+            <div className="skeleton mt-3 h-2 w-4/5 rounded-sm" />
           </div>
         ) : vaultState === "error" ? (
-          <div className="animate-rise mx-auto mt-14 max-w-md rounded-2xl border border-danger/30 bg-danger/10 p-6 text-center">
+          <div className="animate-rise mx-auto mt-8 max-w-md rounded-sm border border-danger/30 bg-danger/10 p-6 text-center">
             <StarburstIcon className="mx-auto h-10 w-10 text-[#ff9c95]" />
             <h2 className="font-display mt-5 text-2xl text-ivory">Kayıtlı hesaplar yüklenemedi</h2>
             <p role="alert" className="mt-3 text-sm leading-relaxed text-muted">
@@ -1221,16 +1228,16 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             )}
           </div>
         ) : accounts.length === 0 ? (
-          <div className="animate-rise mx-auto mt-12 max-w-md text-center sm:mt-16">
-            <StarburstIcon className="mx-auto h-12 w-12 text-coral" />
-            <h2 className="font-display mt-6 text-[2.1rem] leading-[0.95] tracking-tight text-ivory min-[960px]:text-5xl min-[960px]:leading-[0.9]">Tüm hesaplar. Tek sayaç.</h2>
+          <div className="mx-auto flex min-h-[calc(100dvh-18rem)] max-w-md flex-col items-center justify-center text-center">
+            <StarburstIcon className="h-12 w-12 text-coral" />
+            <h2 className="font-display mt-5 text-[1.85rem] leading-[0.95] tracking-tight text-ivory min-[960px]:text-5xl min-[960px]:leading-[0.9]">Tüm hesaplar. Tek sayaç.</h2>
             <p className="mt-3 text-sm leading-relaxed text-muted">
-              Claude ve ChatGPT/Codex hesaplarınızı bağlayın; kullanım limitlerini tek yerde, otomatik olarak izleyin.
+              Claude, ChatGPT/Codex ve Grok hesaplarınızı bağlayın; kullanım limitlerini tek yerde, otomatik olarak izleyin.
             </p>
             <button
               type="button"
               onClick={handleAddClick}
-              className="mt-7 inline-flex min-h-11 items-center gap-2 rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white transition-colors enabled:hover:bg-coral-pressed"
+              className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-sm bg-coral px-5 py-2.5 text-sm font-medium text-white transition-colors enabled:hover:bg-coral-pressed"
             >
               <PlusIcon className="h-4 w-4" />
               İlk hesabı bağla
@@ -1241,7 +1248,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
             {/* The 0-100 ruler was removed: with eight accounts its markers stacked into three
                 rows of name+percentage chips and stopped being readable at a glance. The readings
                 below answer the same question in plain text, and the sort modes surface the rest. */}
-            <section className="quota-instrument-overview instrument-overview mb-6 grid min-w-0 gap-4" aria-label="Kota görünümü">
+            <section className="quota-instrument-overview instrument-overview mb-4 grid min-w-0 gap-4 min-[960px]:mb-6" aria-label="Kota görünümü">
               <QuotaReadings
                 summary={quotaSummary}
                 accountsById={accountsById}
@@ -1271,7 +1278,7 @@ export function Dashboard({ showSignOut, strictLocal }: DashboardProps) {
       </main>
 
       <footer className="border-t border-border/60">
-        <div className="mx-auto flex w-full max-w-6xl flex-col items-center gap-1 px-6 py-6 text-center text-[11px] leading-relaxed text-faint">
+        <div className="mx-auto flex w-full max-w-6xl flex-col items-center gap-1 px-6 py-3 text-center text-[11px] leading-relaxed text-faint min-[960px]:py-6">
           <p>Resmî olmayan araç — Anthropic veya OpenAI ile bağlantılı değildir. Hesap belirteçleri şifreli saklanır.</p>
           {lastRefreshAll && (
             <p>

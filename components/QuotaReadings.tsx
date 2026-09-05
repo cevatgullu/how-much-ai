@@ -41,7 +41,7 @@ export function QuotaReadings({ summary, accountsById, providerOrdinals, now }: 
   const nearestSchedule = formatResetSchedule(nearest?.nearestWeeklyResetAt ?? null, now);
   return (
     <dl className="quota-readings min-w-0" aria-label="Kota özeti">
-      <div className="quota-reading">
+      <div className="quota-reading quota-reading-count">
         <dt>Hesap</dt>
         <dd className="quota-reading-value tabular-nums">{summary.accountCount}</dd>
       </div>
@@ -65,7 +65,7 @@ export function QuotaReadings({ summary, accountsById, providerOrdinals, now }: 
               <span>{metricAccountName(nearest, accountsById, providerOrdinals)}</span>{" "}
               <span className="text-faint">{nearest.nearestWeeklyResetLabel ?? "Haftalık limit"}</span>{" "}
               {nearest.nearestWeeklyResetAt && nearestSchedule ? (
-                <time className="font-mono text-xs tabular-nums" dateTime={nearest.nearestWeeklyResetAt}>
+                <time className="mt-0.5 block font-mono text-xs tabular-nums" dateTime={nearest.nearestWeeklyResetAt}>
                   {nearestSchedule.state === "past"
                     ? "yenilenme verisi bekleniyor"
                     : `${nearestSchedule.countdown} · ${nearestSchedule.exact}`}

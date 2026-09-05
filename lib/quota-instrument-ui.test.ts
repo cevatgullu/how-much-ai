@@ -210,6 +210,27 @@ test("local dashboard controls expose exact Turkish sorting and compact actions 
   assert.doesNotMatch(allControls, /canlı görünüm|sunucu izleyici|PWA|bulut|cloud|server monitor/i);
 });
 
+test("empty-board header can omit the sort strip", () => {
+  const markup = renderToStaticMarkup(createElement(DashboardHeader, {
+    healthLabel: "İlk veri bekleniyor",
+    autoRefresh: true,
+    sortMode: "source",
+    sortUnavailable: false,
+    refreshing: false,
+    canRefresh: false,
+    showSort: false,
+    onRefresh() {},
+    onAddAccount() {},
+    onNotifications() {},
+    onSort() {},
+    onMenu() {},
+  }));
+  assert.match(markup, />How Much AI</);
+  assert.match(markup, />İlk veri bekleniyor</);
+  assert.doesNotMatch(markup, /dashboard-sort-strip/);
+  assert.doesNotMatch(markup, />Sıralama</);
+});
+
 test("compact controls explain unavailable weekly sorting without changing the selected mode", () => {
   const markup = renderToStaticMarkup(createElement(DashboardHeader, {
     healthLabel: "İlk veri bekleniyor",
